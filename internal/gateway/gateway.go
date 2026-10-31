@@ -16,12 +16,14 @@ import (
 )
 
 type Config struct {
-	ListenAddr string
-	Provider   string
-	Model      string
-	Endpoint   string
-	APIKey     string
-	Timeout    time.Duration
+	ListenAddr      string
+	Provider        string
+	Model           string
+	Endpoint        string
+	APIKey          string
+	Timeout         time.Duration
+	ThinkingLevel   string
+	MaxOutputTokens int
 }
 
 func ConfigFromEnvironment() Config {
@@ -48,12 +50,14 @@ func ConfigFromEnvironment() Config {
 		}
 	}
 	return Config{
-		ListenAddr: envOr("CYPHER_GATEWAY_ADDR", "127.0.0.1:8787"),
-		Provider:   provider,
-		Model:      envOr("CYPHER_GATEWAY_MODEL", "qwen2.5:7b"),
-		Endpoint:   endpoint,
-		APIKey:     apiKey,
-		Timeout:    timeout,
+		ListenAddr:      envOr("CYPHER_GATEWAY_ADDR", "127.0.0.1:8787"),
+		Provider:        provider,
+		Model:           envOr("CYPHER_GATEWAY_MODEL", "qwen2.5:7b"),
+		Endpoint:        endpoint,
+		APIKey:          apiKey,
+		Timeout:         timeout,
+		ThinkingLevel:   envOr("CYPHER_GATEWAY_THINKING_LEVEL", "low"),
+		MaxOutputTokens: 4096,
 	}
 }
 
@@ -96,6 +100,7 @@ type chatRequest struct {
 	Temperature    *float64       `json:"temperature,omitempty"`
 	Stream         bool           `json:"stream,omitempty"`
 	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
 }
 
 type chatMessage struct {
@@ -152,6 +157,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Model == "" {
 		request.Model = s.config.Model
+	}
+	if request.MaxTokens <= 0 {
+		request.MaxTokens = s.config.MaxOutputTokens
 	}
 	content, usage, err := s.complete(r.Context(), request)
 	if err != nil {
@@ -231,6 +239,12 @@ func (s *Server) completeGemini(ctx context.Context, request chatRequest) (strin
 	body := map[string]any{"contents": []any{map[string]any{"parts": parts}}}
 	if request.ResponseFormat != nil {
 		generation := map[string]any{"responseMimeType": "application/json"}
+		if strings.HasPrefix(request.Model, "gemini-3") && s.config.ThinkingLevel != "" {
+			generation["thinkingConfig"] = map[string]any{"thinkingLevel": s.config.ThinkingLevel}
+		}
+		if request.MaxTokens > 0 {
+			generation["maxOutputTokens"] = request.MaxTokens
+		}
 		if schema, ok := request.ResponseFormat["json_schema"].(map[string]any); ok {
 			if responseSchema, ok := schema["schema"]; ok {
 				generation["responseSchema"] = responseSchema

@@ -397,7 +397,7 @@ func repositorySourceContext(repo string) (string, error) {
 			}
 			return nil
 		}
-		if count >= 12 || filepath.Ext(path) != ".py" {
+		if count >= 8 || filepath.Ext(path) != ".py" {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -409,11 +409,11 @@ func repositorySourceContext(repo string) (string, error) {
 			return nil
 		}
 		b.WriteString("\n--- " + filepath.ToSlash(rel) + " ---\n")
-		b.WriteString(bounded(string(data), 4000))
+		b.WriteString(bounded(string(data), 2500))
 		count++
 		return nil
 	})
-	return bounded(b.String(), 12000), err
+	return bounded(b.String(), 8000), err
 }
 
 // Models occasionally render repository-relative paths with one leading slash.

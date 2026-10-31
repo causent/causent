@@ -28,6 +28,7 @@ type gatewayChatRequest struct {
 	Messages       []gatewayMessage `json:"messages"`
 	Temperature    float64          `json:"temperature,omitempty"`
 	ResponseFormat map[string]any   `json:"response_format,omitempty"`
+	MaxTokens      int              `json:"max_tokens,omitempty"`
 }
 
 type gatewayMessage struct {
@@ -65,6 +66,7 @@ func (p GatewayProvider) complete(ctx context.Context, prompt string, schema map
 	body, err := json.Marshal(gatewayChatRequest{
 		Model: p.model(), Messages: []gatewayMessage{{Role: "user", Content: prompt}},
 		ResponseFormat: map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "cypher_output", "strict": true, "schema": schema}},
+		MaxTokens:      4096,
 	})
 	if err != nil {
 		return "", err
@@ -132,7 +134,7 @@ func (p GatewayProvider) GeneratePatches(ctx context.Context, request PatchReque
 		contextBuilder.WriteString("REPOSITORY_SOURCE\n")
 		contextBuilder.WriteString(source)
 	}
-	prompt := fmt.Sprintf("Return JSON with a patches array. Each item must contain hypothesis_ids, explanation, expected_behavior, changed_files, edits, and risks. Each edit must contain a non-empty file, non-empty old_text copied exactly from the current source, and new_text. Use exact repository-relative existing files and make old_text match the current source exactly once; do not use an empty old_text or describe an insertion without an exact source anchor. Modify the existing function or code path that caused the failure; do not add a replacement function, duplicate implementation, example, regression test, or executable test block. The patch must make the reproduced failing test pass while preserving non-target behavior. %sUse only these exact hypothesis IDs: %s. Do not invent IDs, paths, diffs, commands, markdown, or prose. Cypher will construct the unified diff.%s\n\n%s", testChangeInstruction(request.DisallowTestChanges), strings.Join(validIDs, ", "), validationFeedback(request.ValidationError), bounded(contextBuilder.String(), 24000))
+	prompt := fmt.Sprintf("Return exactly one patch candidate in a patches array. Each item must contain hypothesis_ids, explanation, expected_behavior, changed_files, edits, and risks. Each edit must contain a non-empty file, non-empty old_text copied exactly from the current source, and new_text. Use exact repository-relative existing files and make old_text match the current source exactly once; do not use an empty old_text or describe an insertion without an exact source anchor. Modify the existing function or code path that caused the failure; do not add a replacement function, duplicate implementation, example, regression test, or executable test block. The patch must make the reproduced failing test pass while preserving non-target behavior. %sUse only these exact hypothesis IDs: %s. Do not invent IDs, paths, diffs, commands, markdown, or prose. Cypher will construct the unified diff.%s\n\n%s", testChangeInstruction(request.DisallowTestChanges), strings.Join(validIDs, ", "), validationFeedback(request.ValidationError), bounded(contextBuilder.String(), 16000))
 	content, err := p.complete(ctx, prompt, ollamaPatchSchema)
 	if err != nil {
 		return nil, err
