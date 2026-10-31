@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -201,65 +200,49 @@ func (d *Diagnoser) walk(ctx context.Context, head string) (string, string, stri
 	return "", "", fmt.Sprintf("unavailable: no passing commit in the last %d commits", d.cfg.MaxCommits)
 }
 
-// bisect runs `git bisect run` between a known-good and known-bad commit.
+// bisect locates the first failing commit between a known-good and known-bad
+// revision. It deliberately performs the binary search itself instead of
+// parsing human-oriented `git bisect` output, which differs across Git
+// versions and platforms.
 func (d *Diagnoser) bisect(ctx context.Context, good, bad string) (string, string, string) {
-	dir, cleanup, err := isolatedWorkspace(ctx, d.cfg.RepoPath, bad)
-	if err != nil {
-		return "", "unavailable: " + err.Error(), ""
+	bisectCtx := ctx
+	if budget := time.Duration(d.cfg.MaxCommits+2) * d.cfg.Timeout; budget > 0 {
+		if budget > 30*time.Minute {
+			budget = 30 * time.Minute
+		}
+		var cancel context.CancelFunc
+		bisectCtx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
 	}
-	defer cleanup()
 
-	script := filepath.Join(os.TempDir(), "cypher-bisect-"+strings.TrimPrefix(newID(), ".")+".sh")
-	body := "#!/bin/sh\n" + strings.Join(shellQuoteAll(d.cfg.Command), " ") + "\n"
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
-		return "", "unavailable: " + err.Error(), ""
+	raw := strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-list", "--first-parent", "--reverse", good+".."+bad))
+	commits := strings.Fields(raw)
+	if len(commits) == 0 {
+		return "", "unavailable: no commits between known-good and known-bad revisions", raw
 	}
-	defer os.Remove(script)
-
-	budget := time.Duration(d.cfg.MaxCommits+2) * d.cfg.Timeout
-	if budget <= 0 || budget > 30*time.Minute {
-		budget = 30 * time.Minute
-	}
-	bisectCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
 
 	var log strings.Builder
-	steps := [][]string{
-		{"bisect", "start"},
-		{"bisect", "bad", bad},
-		{"bisect", "good", good},
-		{"bisect", "run", script},
+	fmt.Fprintf(&log, "known good: %s\nknown bad: %s\n", good, bad)
+	low, high := -1, len(commits)-1 // good is the virtual lower bound
+	if !d.passesAt(bisectCtx, commits[high]) {
+		fmt.Fprintf(&log, "bad endpoint %s: failed\n", commits[high])
+	} else {
+		return "", "unavailable: known-bad revision passes the recorded command", log.String()
 	}
-	for _, step := range steps {
-		out, err := gitRun(bisectCtx, dir, step...)
-		log.WriteString("$ git " + strings.Join(step, " ") + "\n" + bound(out, 2000) + "\n")
-		if err != nil && step[0] == "bisect" && len(step) > 1 && step[1] == "run" {
-			// bisect run exits non-zero when it finds the first bad commit.
-			log.WriteString("exit: " + err.Error() + "\n")
+	for high-low > 1 {
+		if bisectCtx.Err() != nil {
+			return "", "cancelled", log.String()
+		}
+		mid := low + (high-low)/2
+		passed := d.passesAt(bisectCtx, commits[mid])
+		fmt.Fprintf(&log, "probe %s: passed=%t\n", commits[mid], passed)
+		if passed {
+			low = mid
+		} else {
+			high = mid
 		}
 	}
-	// Git versions differ in whether `bisect run` prints the result to stdout,
-	// stderr, or only records it in the bisect log. Read the canonical log so
-	// localization does not depend on runner-specific Git output formatting.
-	if out, err := gitRun(bisectCtx, dir, "bisect", "log"); err == nil {
-		log.WriteString("$ git bisect log\n" + bound(out, 2000) + "\n")
-	}
-	_, _ = gitRun(context.Background(), dir, "bisect", "reset")
-
-	text := log.String()
-	firstBadRE := regexp.MustCompile(`(?m)^# first bad commit:\s*\[([0-9a-fA-F]+)\]`)
-	if match := firstBadRE.FindStringSubmatch(text); len(match) == 2 {
-		return match[1], "confirmed", text
-	}
-	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, "is the first bad commit") {
-			fields := strings.Fields(line)
-			if len(fields) > 0 {
-				return strings.TrimSpace(fields[0]), "confirmed", text
-			}
-		}
-	}
-	return "", "unavailable: bisect did not identify a first bad commit", text
+	return commits[high], "confirmed", log.String()
 }
 
 func (d *Diagnoser) diffScope(loc Localization) ([]string, []CommitInfo, string) {

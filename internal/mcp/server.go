@@ -37,9 +37,10 @@ type Config struct {
 }
 
 type Server struct {
-	cfg     Config
-	mu      sync.Mutex
-	running map[domain.ID]context.CancelFunc
+	cfg       Config
+	mu        sync.Mutex
+	running   map[domain.ID]context.CancelFunc
+	cancelled map[domain.ID]bool
 }
 
 type request struct {
@@ -59,6 +60,21 @@ type response struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// persistCancellation makes a cancellation request durable even if an
+// executor returns a normal result after its context was cancelled. The
+// investigation worker also records its normal cancellation event when it
+// observes the context; this final write prevents a late result from
+// overwriting the requested terminal state.
+func (s *Server) persistCancellation(id domain.ID) {
+	inv, err := s.cfg.Store.GetInvestigation(id)
+	if err != nil || domain.IsTerminal(inv.Status) && inv.Status != domain.StatusCancelled {
+		return
+	}
+	inv.Status = domain.StatusCancelled
+	inv.UpdatedAt = time.Now().UTC()
+	_ = s.cfg.Store.SaveInvestigation(inv)
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -84,7 +100,7 @@ func NewServer(cfg Config) (*Server, error) {
 		roots = append(roots, canonical)
 	}
 	cfg.AuthorizedRoots = roots
-	return &Server{cfg: cfg, running: map[domain.ID]context.CancelFunc{}}, nil
+	return &Server{cfg: cfg, running: map[domain.ID]context.CancelFunc{}, cancelled: map[domain.ID]bool{}}, nil
 }
 
 func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -194,8 +210,13 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 			go func(id domain.ID) {
 				<-finished
 				s.mu.Lock()
+				wasCancelled := s.cancelled[id]
+				delete(s.cancelled, id)
 				delete(s.running, id)
 				s.mu.Unlock()
+				if wasCancelled {
+					s.persistCancellation(id)
+				}
 				cancel()
 			}(inv.ID)
 			return map[string]interface{}{"investigation_id": inv.ID, "status": inv.Status, "repository": repo}, nil
@@ -235,6 +256,9 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 		if !ok {
 			return nil, errors.New("investigation is not running or already completed")
 		}
+		s.mu.Lock()
+		s.cancelled[id] = true
+		s.mu.Unlock()
 		cancel()
 		// Persist the terminal state immediately. The worker will also observe
 		// the cancelled context and record its normal cancellation event, but
