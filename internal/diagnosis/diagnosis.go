@@ -134,6 +134,8 @@ type Environment struct {
 	HeadCommit    string    `json:"head_commit"`
 	DirtyWorktree bool      `json:"dirty_worktree"`
 	Isolation     string    `json:"isolation"`
+	Executor      string    `json:"executor,omitempty"`
+	Image         string    `json:"image,omitempty"`
 	RecordedAt    time.Time `json:"recorded_at"`
 }
 
@@ -178,7 +180,9 @@ type Config struct {
 	Timeout  time.Duration
 	// Executor runs the command. It is required so local and container
 	// execution stay interchangeable behind one interface.
-	Executor execution.Executor
+	Executor      execution.Executor
+	ExecutorName  string
+	ExecutorImage string
 	// Store is optional. When set, events are persisted and can be streamed by
 	// the gateway over SSE.
 	Store *persistence.Store
@@ -266,6 +270,8 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	defer cleanup()
 
 	report.Baseline = baseline
+	env.Executor = cfg.ExecutorName
+	env.Image = cfg.ExecutorImage
 	report.Environment = env
 	report.Classification = Classify(baseline.Results)
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence,

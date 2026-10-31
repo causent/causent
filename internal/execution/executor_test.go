@@ -204,16 +204,7 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	dir := t.TempDir()
 	p := testPolicy(dir, 5*time.Second)
 	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
-	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp)
-
-	// Missing workspace must be rejected before any docker invocation.
-	if _, err := ex.Run(context.Background(), domain.ExecutionRequest{
-		Command: []string{"sh", "-c", "true"},
-		Dir:     dir,
-		Timeout: time.Second,
-	}); err == nil {
-		t.Fatal("expected error for missing workspace path")
-	}
+	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "alpine:3.20")
 
 	// Workspace escape via ".." must be rejected.
 	if _, err := ex.Run(context.Background(), domain.ExecutionRequest{
@@ -225,6 +216,65 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected error for workspace path traversal")
 	}
+}
+
+func TestDockerExecutorRequiresImage(t *testing.T) {
+	dir := t.TempDir()
+	p := testPolicy(dir, 5*time.Second)
+	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "")
+	_, err := ex.Run(context.Background(), domain.ExecutionRequest{Command: []string{"sh"}, Dir: dir, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "Docker image is required") {
+		t.Fatalf("expected missing image error, got %v", err)
+	}
+}
+
+func TestDockerExecutorBuildsSecureRunCommand(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "docker-args")
+	dockerPath := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS_FILE\"\nprintf 'container output\\n'\n"
+	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_ARGS_FILE", argsPath)
+
+	p := testPolicy(dir, 5*time.Second)
+	p.AllowedCommands["go"] = true
+	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "example/test:latest")
+	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
+		Command: []string{"go", "version"}, Dir: dir, Timeout: time.Second, MaxOutput: 1024,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Stdout != "container output\n" {
+		t.Fatalf("stdout = %q", res.Stdout)
+	}
+	data, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Fields(string(data))
+	for _, want := range []string{"run", "--rm", "--workdir", "/workspace", "--network", "none", "--read-only", "--cap-drop", "ALL", "example/test:latest", "go"} {
+		if !contains(args, want) {
+			t.Fatalf("docker args missing %q: %v", want, args)
+		}
+	}
+	if contains(args, "--detach") {
+		t.Fatal("docker execution must wait for the container, not detach")
+	}
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCollectPolicyValidate(t *testing.T) {

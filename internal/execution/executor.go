@@ -300,14 +300,16 @@ type DockerExecutor struct {
 	policy          Policy
 	artifactFactory *ArtifactFactory
 	collectPolicy   CollectPolicy
+	image           string
 }
 
 // NewDockerExecutor creates a new Docker executor.
-func NewDockerExecutor(policy Policy, artifactFactory *ArtifactFactory, collectPolicy CollectPolicy) *DockerExecutor {
+func NewDockerExecutor(policy Policy, artifactFactory *ArtifactFactory, collectPolicy CollectPolicy, image string) *DockerExecutor {
 	return &DockerExecutor{
 		policy:          policy,
 		artifactFactory: artifactFactory,
 		collectPolicy:   collectPolicy,
+		image:           strings.TrimSpace(image),
 	}
 }
 
@@ -315,6 +317,9 @@ func NewDockerExecutor(policy Policy, artifactFactory *ArtifactFactory, collectP
 func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (domain.ExecutionResult, error) {
 	if len(req.Command) == 0 {
 		return domain.ExecutionResult{}, fmt.Errorf("command is required")
+	}
+	if e.image == "" {
+		return domain.ExecutionResult{}, fmt.Errorf("Docker image is required")
 	}
 	//Validate policy
 	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
@@ -332,9 +337,15 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	}
 
 	//Set up workspace
-	workdir := req.Dir
+	workdir := "/workspace"
 	workspacePath := req.WorkspacePath
+	if workspacePath == "" {
+		workspacePath = req.Dir
+	}
 	instanceID := req.InstanceID
+	if instanceID == "" {
+		instanceID = string(domain.NewID())
+	}
 
 	//Validate workspace
 	if workspacePath == "" {
@@ -362,12 +373,6 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 
 	//Set working directory
 	wd := workdir
-	if wd == "" {
-		wd = "/workspace"
-	}
-	if !filepath.IsAbs(wd) {
-		wd = filepath.Join("/", wd)
-	}
 
 	//Build container environment
 	env := append([]string{}, req.Environ...)
@@ -376,10 +381,10 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	args := []string{
 		"run",
 		"--rm",
-		"--name", fmt.Sprintf("hades-exec-%s", instanceID),
-		"--detach",
+		"--name", fmt.Sprintf("causent-exec-%s", instanceID),
 		"--workdir", wd,
 		"--mount", fmt.Sprintf("type=bind,source=%s,target=/workspace,ro", workspacePath),
+		"--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
 		"--network", "none",
 		"--memory", fmt.Sprintf("%d", e.collectPolicy.MemoryLimitMB),
 		"--memory-swap", fmt.Sprintf("%d", e.collectPolicy.MemoryLimitMB+100),
@@ -390,6 +395,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--user", "65534:65534",
+		e.image,
 	}
 
 	for _, pair := range env {
@@ -435,7 +441,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		}
 		return result, nil
 	case <-ctx.Done():
-		name := fmt.Sprintf("hades-exec-%s", instanceID)
+		name := fmt.Sprintf("causent-exec-%s", instanceID)
 		res := domain.ExecutionResult{
 			ExitCode: -1,
 			Stdout:   stdoutBuf.String(),
