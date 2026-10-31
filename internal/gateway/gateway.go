@@ -120,7 +120,12 @@ type chatResponse struct {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "provider": s.config.Provider, "model": s.config.Model})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":             "ok",
+		"provider":           s.config.Provider,
+		"model":              s.config.Model,
+		"api_key_configured": s.config.APIKey != "",
+	})
 }
 
 func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
