@@ -396,8 +396,8 @@ func buildExecutor(mode, image, repoPath string, timeout time.Duration, command 
 		if image == "" {
 			return nil, fmt.Errorf("Docker image is required; pass --image or set CAUSENT_EXECUTOR_IMAGE")
 		}
-		collect := execution.CollectPolicy{MaxOutput: 64 << 10, Timeout: timeout, MemoryLimitMB: 512, CPULimitPercent: 80, ProcessLimit: 128}
-		return execution.NewDockerExecutor(policy, artifacts, collect, image), nil
+		collect := execution.CollectPolicy{Image: image, MaxOutput: 64 << 10, Timeout: timeout, MemoryLimitMB: 512, CPULimitPercent: 80, ProcessLimit: 128}
+		return execution.NewDockerExecutor(policy, artifacts, collect), nil
 	default:
 		return nil, fmt.Errorf("unsupported executor %q; choose local or docker", mode)
 	}

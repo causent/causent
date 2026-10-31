@@ -203,8 +203,17 @@ func TestPolicyValidate(t *testing.T) {
 func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	dir := t.TempDir()
 	p := testPolicy(dir, 5*time.Second)
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
-	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "alpine:3.20")
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp)
+
+	// Missing workspace must be rejected before any docker invocation.
+	if _, err := ex.Run(context.Background(), domain.ExecutionRequest{
+		Command: []string{"sh", "-c", "true"},
+		Dir:     dir,
+		Timeout: time.Second,
+	}); err == nil {
+		t.Fatal("expected error for missing workspace path")
+	}
 
 	// Workspace escape via ".." must be rejected.
 	if _, err := ex.Run(context.Background(), domain.ExecutionRequest{
@@ -216,69 +225,75 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected error for workspace path traversal")
 	}
+
+	// A missing image must be rejected rather than letting the command name be
+	// interpreted as the image by `docker run`.
+	noImage := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), CollectPolicy{})
+	if _, err := noImage.Run(context.Background(), domain.ExecutionRequest{
+		Command:       []string{"go", "test", "./..."},
+		Dir:           dir,
+		WorkspacePath: dir,
+		InstanceID:    "no-image",
+	}); err == nil {
+		t.Fatal("expected error for missing container image")
+	}
 }
 
-func TestDockerExecutorRequiresImage(t *testing.T) {
+func TestDockerExecutorContainerArgs(t *testing.T) {
 	dir := t.TempDir()
-	p := testPolicy(dir, 5*time.Second)
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
-	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "")
-	_, err := ex.Run(context.Background(), domain.ExecutionRequest{Command: []string{"sh"}, Dir: dir, Timeout: time.Second})
-	if err == nil || !strings.Contains(err.Error(), "Docker image is required") {
-		t.Fatalf("expected missing image error, got %v", err)
-	}
-}
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: time.Minute, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	ex := NewDockerExecutor(testPolicy(dir, time.Minute), nil, cp)
 
-func TestDockerExecutorBuildsSecureRunCommand(t *testing.T) {
-	dir := t.TempDir()
-	argsPath := filepath.Join(dir, "docker-args")
-	dockerPath := filepath.Join(dir, "docker")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS_FILE\"\nprintf 'container output\\n'\n"
-	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	name := containerName("inst/with spaces:1")
+	if !strings.HasPrefix(name, "hades-exec-inst-with-spaces-1-") {
+		t.Fatalf("unexpected container name %q", name)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("DOCKER_ARGS_FILE", argsPath)
+	if strings.ContainsAny(name, " /:") {
+		t.Fatalf("container name contains invalid characters: %q", name)
+	}
 
-	p := testPolicy(dir, 5*time.Second)
-	p.AllowedCommands["go"] = true
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
-	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp, "example/test:latest")
-	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
-		Command: []string{"go", "version"}, Dir: dir, Timeout: time.Second, MaxOutput: 1024,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.Stdout != "container output\n" {
-		t.Fatalf("stdout = %q", res.Stdout)
-	}
-	data, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Fields(string(data))
-	for _, want := range []string{"run", "--rm", "--workdir", "/workspace", "--network", "none", "--read-only", "--cap-drop", "ALL", "example/test:latest", "go"} {
-		if !contains(args, want) {
-			t.Fatalf("docker args missing %q: %v", want, args)
+	env := []string{"HOME=/tmp", "TMPDIR=/tmp", "PATH=/usr/bin"}
+	args := strings.Join(ex.containerArgs(name, "/workspace", dir, env), "\x00")
+	joined := strings.ReplaceAll(args, "\x00", " ")
+
+	for _, want := range []string{
+		"run --rm ",
+		" --init ",
+		" --name " + name + " ",
+		" --workdir /workspace ",
+		" --mount type=bind,source=" + dir + ",target=/workspace ",
+		" --tmpfs /tmp:rw,exec,nosuid,nodev ",
+		" --network none ",
+		" --read-only ",
+		" --cap-drop ALL ",
+		" --security-opt no-new-privileges ",
+		" --memory 512m ",
+		" --memory-swap 1024m ",
+		" --cpu-quota 50000 ",
+		" --pids-limit 128 ",
+		" --env HOME=/tmp ",
+		" --env PATH=/usr/bin ",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("container args missing %q in: %s", want, joined)
 		}
 	}
-	if contains(args, "--detach") {
-		t.Fatal("docker execution must wait for the container, not detach")
-	}
-}
 
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
+	// The image must terminate the option list, and the command must follow it.
+	last := ex.containerArgs(name, "/workspace", dir, env)
+	if last[len(last)-1] != "golang:1.22" {
+		t.Fatalf("expected image as final argument, got %q", last[len(last)-1])
 	}
-	return false
+	if strings.Contains(joined, "--detach") {
+		t.Fatal("detached mode would return before the command completes")
+	}
+	if strings.Contains(joined, ",ro ") {
+		t.Fatal("read-only workspace mount would break build output")
+	}
 }
 
 func TestCollectPolicyValidate(t *testing.T) {
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
 
 	if err := cp.Validate([]string{"go", "test"}, "/tmp", []string{"PATH=/usr/bin"}, 1024, time.Second); err != nil {
 		t.Fatalf("unexpected error: %v", err)
