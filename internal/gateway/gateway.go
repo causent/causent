@@ -12,7 +12,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"log/slog"
 	"time"
+
+	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/Yashbhu/Hades/internal/persistence"
 )
 
 type Config struct {
@@ -24,6 +28,7 @@ type Config struct {
 	Timeout         time.Duration
 	ThinkingLevel   string
 	MaxOutputTokens int
+	Store           *persistence.Store
 }
 
 func ConfigFromEnvironment() Config {
@@ -78,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/v1/models", s.models)
 	mux.HandleFunc("/v1/chat/completions", s.chatCompletions)
+	mux.HandleFunc("/v1/investigations/{id}/events", s.sseInvestigationEvents)
 	return mux
 }
 
@@ -184,6 +190,147 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Content string `json:"content"`
 	}{Role: "assistant", Content: content}})
 	writeJSON(w, http.StatusOK, response)
+}
+
+// sseInvestigationEvents streams investigation events as Server-Sent Events.
+// GET /v1/investigations/{id}/events
+// Supports Last-Event-ID header for reconnection and cursor-based pagination.
+// Sends heartbeat comments every 15 seconds to keep connections alive.
+func (s *Server) sseInvestigationEvents(w http.ResponseWriter, r *http.Request) {
+	// Guard: ensure Store is configured
+	if s.config.Store == nil {
+		writeError(w, http.StatusInternalServerError, "SSE store not configured")
+		return
+	}
+
+	path := r.URL.Path
+	parts := strings.Split(path, "/")
+	investigationID := ""
+	if len(parts) >= 3 {
+		investigationID = parts[len(parts)-1]
+	}
+	if investigationID == "" {
+		writeError(w, http.StatusBadRequest, "investigation ID is required")
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Support Last-Event-ID header for reconnection
+	lastEventID := r.Header.Get("Last-Event-ID")
+	var cursor domain.ID
+	if lastEventID != "" {
+		cursor = domain.ID(lastEventID)
+		if cursor == "" {
+			writeError(w, http.StatusBadRequest, "invalid Last-Event-ID format")
+			return
+		}
+	}
+
+	// Fetch events newer than the cursor (if provided)
+	// Event IDs are unique snowflakes; comparing as strings gives deterministic order.
+	var initialEvents []domain.InvestigationEvent
+	var err error
+	if cursor == "" {
+		initialEvents, err = s.config.Store.ListEvents(domain.ID(investigationID))
+	} else {
+		initialEvents, err = s.config.Store.ListEventsAfterCursor(domain.ID(investigationID), cursor)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to list events: %v", err))
+		return
+	}
+
+	// Determine the starting index: skip events up to and including the cursor
+	startIdx := 0
+	if cursor != "" {
+		cursorStr := string(cursor)
+		for i, ev := range initialEvents {
+			if string(ev.ID) == cursorStr {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+
+	// Track the last event ID sent, for cursor tracking in the polling loop
+	lastSentID := domain.ID("")
+
+	// Single select loop handles both heartbeats and polling events,
+	// preventing SSE frame interleaving from multiple goroutines.
+	pollTicker := time.NewTicker(1 * time.Second)
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+
+	// Send initial events (those after the cursor)
+	for i := startIdx; i < len(initialEvents); i++ {
+		ev := initialEvents[i]
+		lastSentID = ev.ID
+		data, _ := json.Marshal(map[string]any{
+			"id":           ev.ID,
+			"timestamp":    ev.Timestamp.UTC().Format(time.RFC3339),
+			"trigger":      ev.Trigger,
+			"previous_status": string(ev.PreviousStatus),
+			"next_status":      string(ev.NextStatus),
+			"experiment_id":  string(ev.ExperimentID),
+			"evidence_id":    string(ev.EvidenceID),
+			"error":          ev.Error,
+		})
+		fmt.Fprintf(w, "event: investigation_event\nid: %s\ndata: %s\n\n", string(ev.ID), string(data))
+		flusher.Flush()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeatTicker.C:
+			// Send a blank comment line as a heartbeat to keep connections
+			// alive through proxies and load balancers that might otherwise
+			// time out the idle connection.
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		case <-pollTicker.C:
+			// Fetch events after the last sent cursor
+			events, err := s.config.Store.ListEventsAfterCursor(domain.ID(investigationID), lastSentID)
+			if err != nil {
+				slog.Warn("failed to list events for SSE", "investigation_id", investigationID, "error", err)
+				// Continue polling; don't break the connection
+				continue
+			}
+			if len(events) == 0 {
+				// No new events; the heartbeat ticker will keep the connection alive.
+				continue
+			}
+			for _, ev := range events {
+				if string(ev.ID) <= string(lastSentID) {
+					continue
+				}
+				lastSentID = ev.ID
+				data, _ := json.Marshal(map[string]any{
+					"id":           ev.ID,
+					"timestamp":    ev.Timestamp.UTC().Format(time.RFC3339),
+					"trigger":      ev.Trigger,
+					"previous_status": string(ev.PreviousStatus),
+					"next_status":      string(ev.NextStatus),
+					"experiment_id":  string(ev.ExperimentID),
+					"evidence_id":    string(ev.EvidenceID),
+					"error":          ev.Error,
+				})
+				fmt.Fprintf(w, "event: investigation_event\nid: %s\ndata: %s\n\n", string(ev.ID), string(data))
+				flusher.Flush()
+			}
+		}
+	}
 }
 
 func (s *Server) complete(ctx context.Context, request chatRequest) (string, map[string]any, error) {

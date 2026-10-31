@@ -900,6 +900,31 @@ func (s *Store) ListEvents(invID domain.ID) ([]domain.InvestigationEvent, error)
 	return out, rows.Err()
 }
 
+// ListEventsAfterCursor returns events for an investigation with IDs strictly
+// greater than the given cursor, ordered by event ID. This supports cursor-based
+// pagination for SSE reconnection without relying on timestamps.
+func (s *Store) ListEventsAfterCursor(invID domain.ID, cursor domain.ID) ([]domain.InvestigationEvent, error) {
+	rows, err := s.db.Query(`SELECT id, investigation_id, previous_status, next_status, timestamp, trigger, experiment_id, evidence_id, error FROM investigation_events WHERE investigation_id=? AND id > ? ORDER BY id`, invID, cursor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.InvestigationEvent
+	for rows.Next() {
+		var ev domain.InvestigationEvent
+		var ts, exid, eid, errStr string
+		if err := rows.Scan(&ev.ID, &ev.InvestigationID, &ev.PreviousStatus, &ev.NextStatus, &ts, &ev.Trigger, &exid, &eid, &errStr); err != nil {
+			return nil, err
+		}
+		ev.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+		ev.ExperimentID = domain.ID(exid)
+		ev.EvidenceID = domain.ID(eid)
+		ev.Error = errStr
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // Artifact persistence
 
 // MaxArtifactSize bounds a single stored artifact file.
