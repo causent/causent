@@ -73,6 +73,7 @@ func runDiagnose(args []string) {
 	db := fs.String("db", envOr("HADES_DB", dbPath()), "sqlite db path for persisted events")
 	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.cypher/bundles/<timestamp>)")
 	good := fs.String("good", "", "known-good revision; enables git bisect")
+	base := fs.String("base", "", "known base revision; compare its outcome with HEAD")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
 	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
@@ -128,6 +129,7 @@ func runDiagnose(args []string) {
 		Store:         store,
 		BundleDir:     bundleDir,
 		GoodRef:       *good,
+		BaseRef:       *base,
 		MaxCommits:    *maxCommits,
 	}
 	for _, probe := range probes {
