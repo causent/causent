@@ -271,7 +271,16 @@ func runEvaluationCommand(args []string) {
 			strategies = append(strategies, domain.EvaluationStrategy(strings.TrimSpace(raw)))
 		}
 		provider := engine.ProviderFromEnvironment()
-		modelMetadata := domain.ModelMetadata{Provider: os.Getenv("HADES_MODEL_PROVIDER"), Model: os.Getenv("HADES_OLLAMA_MODEL"), Endpoint: os.Getenv("HADES_OLLAMA_ENDPOINT")}
+		providerName := os.Getenv("HADES_MODEL_PROVIDER")
+		modelName := os.Getenv("HADES_MODEL")
+		endpoint := os.Getenv("HADES_GATEWAY_ENDPOINT")
+		if modelName == "" {
+			modelName = os.Getenv("HADES_OLLAMA_MODEL")
+		}
+		if endpoint == "" {
+			endpoint = os.Getenv("HADES_OLLAMA_ENDPOINT")
+		}
+		modelMetadata := domain.ModelMetadata{Provider: providerName, Model: modelName, Endpoint: endpoint}
 		summary, err := evaluation.RunSuite(context.Background(), evaluation.Config{Suite: suite, Strategies: strategies, Budget: *budget, Timeout: *timeout, Model: modelMetadata, Store: store, Provider: provider, Executor: execution.NewLocalExecutor(policy, execution.NewArtifactFactory(filepath.Join(filepath.Dir(*db), "artifacts")))})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

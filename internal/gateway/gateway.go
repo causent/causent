@@ -155,7 +155,12 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "streaming is not supported by this gateway version")
 		return
 	}
-	if request.Model == "" {
+	// A gateway process has one configured upstream model. For Gemini, keep
+	// that model authoritative so a stale client setting cannot consume quota
+	// on a different model than the health endpoint advertises.
+	if s.config.Provider == "gemini" && s.config.Model != "" {
+		request.Model = s.config.Model
+	} else if request.Model == "" {
 		request.Model = s.config.Model
 	}
 	if request.MaxTokens <= 0 {
