@@ -1,6 +1,6 @@
-# Cypher
+# Causent
 
-Cypher is a provider-agnostic code investigation and patch verification engine.
+Causent is a provider-agnostic code investigation and patch verification engine.
 It reproduces a failure, collects evidence, generates structured hypotheses and
 patch candidates, applies candidates in disposable workspaces, and runs the
 original and regression tests before accepting a patch.
@@ -11,7 +11,7 @@ added through the `ModelProvider` and `PatchProvider` interfaces.
 
 ## Inference gateway
 
-Cypher includes a small OpenAI-compatible gateway. It normalizes Ollama,
+Causent includes a small OpenAI-compatible gateway. It normalizes Ollama,
 Gemini, and OpenAI-compatible endpoints so the repair engine does not depend on
 provider-specific request formats.
 
@@ -40,11 +40,11 @@ HADES_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
 HADES_MODEL=gemini-3.8-flash \
 go run ./cmd/debug evaluation run \
   --corpus benchmarks/corpus-v1.json --repo "$PWD" \
-  --db /tmp/cypher-gemini.db --strategy direct_repair \
+  --db /tmp/causent-gemini.db --strategy direct_repair \
   --timeout 5m --budget 20
 ```
 
-The gateway is a local routing component in this repository. A hosted Cypher
+The gateway is a local routing component in this repository. A hosted Causent
 inference service, quotas, authentication, and billing are separate deployment
 work that should be added only after the provider and patch benchmarks are
 stable. Do not expose this development gateway publicly without adding
@@ -80,7 +80,7 @@ go test ./...
 go run ./cmd/debug evaluation run \
   --corpus benchmarks/corpus-v1.json \
   --repo "$PWD" \
-  --db /tmp/cypher-evaluation.db \
+  --db /tmp/causent-evaluation.db \
   --strategy direct_repair,evidence_guided \
   --timeout 5m --budget 20
 ```
