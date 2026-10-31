@@ -50,6 +50,12 @@ work that should be added only after the provider and patch benchmarks are
 stable. Do not expose this development gateway publicly without adding
 authentication and request limits.
 
+## Requirements
+
+- Go 1.26 or newer (see `go.mod`)
+- a C toolchain: persistence uses `mattn/go-sqlite3` through cgo
+- Docker, only if you intend to run `DockerExecutor`
+
 ## Quick start
 
 ```sh
@@ -66,6 +72,24 @@ The seed corpus currently contains deterministic Python repair fixtures. The
 evaluation engine is intended to expand to Go, JavaScript/TypeScript, Rust, and
 other repository test commands.
 
+## Testing
+
+Unit tests hit no network and need no model runtime:
+
+```sh
+go test -race -shuffle=on -count=1 ./...
+go vet ./...
+```
+
+`HADES_MODEL_PROVIDER` selects the provider for anything that generates
+hypotheses. Leave it unset to use the deterministic heuristic provider; setting
+it to `ollama` or `gateway` makes those tests require a reachable model server.
+CI runs with no provider variables set, so tests must not depend on them.
+
+Docker-backed execution is not yet wired into the engine. When it is, tests
+that need a daemon belong behind a build tag and must skip when `docker info`
+fails.
+
 ## Safety properties
 
 - patches are represented as exact structured edits;
@@ -74,12 +98,23 @@ other repository test commands.
 - original and regression commands run before a patch is accepted;
 - investigations and provider metadata are persisted in SQLite.
 
+`DockerExecutor` is the container path: no network, read-only root filesystem
+with a tmpfs for scratch, all capabilities dropped, and memory/CPU/pid limits
+applied. It requires `CollectPolicy.Image` and is not yet used by the
+investigator, which still runs commands on the host through `LocalExecutor`
+under an allow-list policy.
+
 ## Project layout
 
 - `internal/engine`: investigation, evidence, model, and patch workflows
 - `internal/evaluation`: reproducible benchmark runner
-- `internal/execution`: bounded command execution
+- `internal/execution`: bounded command execution, local and container
+- `internal/gateway`: OpenAI-compatible gateway
+- `internal/mcp`: MCP server for investigations, evidence, and artifacts
 - `internal/persistence`: SQLite investigation and patch records
 - `cmd/debug`: development CLI and evaluation commands
+- `cmd/gateway`: inference gateway
+- `cmd/mcp-server`: MCP server entrypoint
 - `benchmarks`: versioned repair fixtures and recorded results
+
 
