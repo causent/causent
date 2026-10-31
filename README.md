@@ -50,6 +50,29 @@ work that should be added only after the provider and patch benchmarks are
 stable. Do not expose this development gateway publicly without adding
 authentication and request limits.
 
+### Investigation event stream
+
+The gateway exposes investigation state transitions as Server-Sent Events:
+
+```sh
+curl -N http://127.0.0.1:8787/v1/investigations/<id>/events
+```
+
+Each frame carries its event ID, so a native `EventSource` reconnects with
+`Last-Event-ID` and resumes after the last event it received:
+
+```
+event: investigation_event
+id: 20261031T120001.000000000-ab1234cd
+data: {"id":"...","timestamp":"...","trigger":"...","previous_status":"...","next_status":"..."}
+```
+
+Events are ordered by ID and paged with `WHERE id > cursor`, so a reconnect
+neither skips nor duplicates. A comment heartbeat is sent every 15 seconds.
+The stream is filtered by the investigation ID in the path; there is no
+authentication or tenant authorization, so treat event and investigation IDs
+as secrets.
+
 ## Quick start
 
 ```sh
