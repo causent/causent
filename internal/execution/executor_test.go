@@ -203,7 +203,7 @@ func TestPolicyValidate(t *testing.T) {
 func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	dir := t.TempDir()
 	p := testPolicy(dir, 5*time.Second)
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
 	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp)
 
 	// Missing workspace must be rejected before any docker invocation.
@@ -225,10 +225,75 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected error for workspace path traversal")
 	}
+
+	// A missing image must be rejected rather than letting the command name be
+	// interpreted as the image by `docker run`.
+	noImage := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), CollectPolicy{})
+	if _, err := noImage.Run(context.Background(), domain.ExecutionRequest{
+		Command:       []string{"go", "test", "./..."},
+		Dir:           dir,
+		WorkspacePath: dir,
+		InstanceID:    "no-image",
+	}); err == nil {
+		t.Fatal("expected error for missing container image")
+	}
+}
+
+func TestDockerExecutorContainerArgs(t *testing.T) {
+	dir := t.TempDir()
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: time.Minute, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	ex := NewDockerExecutor(testPolicy(dir, time.Minute), nil, cp)
+
+	name := containerName("inst/with spaces:1")
+	if !strings.HasPrefix(name, "hades-exec-inst-with-spaces-1-") {
+		t.Fatalf("unexpected container name %q", name)
+	}
+	if strings.ContainsAny(name, " /:") {
+		t.Fatalf("container name contains invalid characters: %q", name)
+	}
+
+	env := []string{"HOME=/tmp", "TMPDIR=/tmp", "PATH=/usr/bin"}
+	args := strings.Join(ex.containerArgs(name, "/workspace", dir, env), "\x00")
+	joined := strings.ReplaceAll(args, "\x00", " ")
+
+	for _, want := range []string{
+		"run --rm ",
+		" --init ",
+		" --name " + name + " ",
+		" --workdir /workspace ",
+		" --mount type=bind,source=" + dir + ",target=/workspace ",
+		" --tmpfs /tmp:rw,exec,nosuid,nodev ",
+		" --network none ",
+		" --read-only ",
+		" --cap-drop ALL ",
+		" --security-opt no-new-privileges ",
+		" --memory 512m ",
+		" --memory-swap 1024m ",
+		" --cpu-quota 50000 ",
+		" --pids-limit 128 ",
+		" --env HOME=/tmp ",
+		" --env PATH=/usr/bin ",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("container args missing %q in: %s", want, joined)
+		}
+	}
+
+	// The image must terminate the option list, and the command must follow it.
+	last := ex.containerArgs(name, "/workspace", dir, env)
+	if last[len(last)-1] != "golang:1.22" {
+		t.Fatalf("expected image as final argument, got %q", last[len(last)-1])
+	}
+	if strings.Contains(joined, "--detach") {
+		t.Fatal("detached mode would return before the command completes")
+	}
+	if strings.Contains(joined, ",ro ") {
+		t.Fatal("read-only workspace mount would break build output")
+	}
 }
 
 func TestCollectPolicyValidate(t *testing.T) {
-	cp := CollectPolicy{MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
+	cp := CollectPolicy{Image: "golang:1.22", MaxOutput: 4096, Timeout: 5 * time.Second, MemoryLimitMB: 512, CPULimitPercent: 50, ProcessLimit: 128}
 
 	if err := cp.Validate([]string{"go", "test"}, "/tmp", []string{"PATH=/usr/bin"}, 1024, time.Second); err != nil {
 		t.Fatalf("unexpected error: %v", err)

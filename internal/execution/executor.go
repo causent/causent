@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -320,10 +321,6 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
 		return domain.ExecutionResult{}, err
 	}
-	//Validate collect policy
-	if err := e.collectPolicy.Validate(req.Command, req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
-		return domain.ExecutionResult{}, err
-	}
 	//Enforce the requested timeout
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -354,6 +351,11 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		return domain.ExecutionResult{}, fmt.Errorf("instance ID required")
 	}
 
+	//Validate collect policy once the request shape is known.
+	if err := e.collectPolicy.Validate(req.Command, req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
+		return domain.ExecutionResult{}, err
+	}
+
 	//Prepare container command
 	containerCmd := req.Command
 	if len(containerCmd) == 0 {
@@ -369,36 +371,14 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		wd = filepath.Join("/", wd)
 	}
 
-	//Build container environment
-	env := append([]string{}, req.Environ...)
+	//Container environment. HOME/TMPDIR point at the writable tmpfs so
+	//toolchains (go build cache, pip, cargo) can write despite --read-only.
+	env := []string{"HOME=/tmp", "TMPDIR=/tmp"}
+	env = append(env, req.Environ...)
 
-	//Construct Docker arguments
-	args := []string{
-		"run",
-		"--rm",
-		"--name", fmt.Sprintf("hades-exec-%s", instanceID),
-		"--detach",
-		"--workdir", wd,
-		"--mount", fmt.Sprintf("type=bind,source=%s,target=/workspace,ro", workspacePath),
-		"--network", "none",
-		"--memory", fmt.Sprintf("%d", e.collectPolicy.MemoryLimitMB),
-		"--memory-swap", fmt.Sprintf("%d", e.collectPolicy.MemoryLimitMB+100),
-		"--cpu-period", "100000",
-		"--cpu-quota", fmt.Sprintf("%d", e.collectPolicy.CPULimitPercent*1000),
-		"--pids-limit", fmt.Sprintf("%d", e.collectPolicy.ProcessLimit),
-		"--read-only",
-		"--cap-drop", "ALL",
-		"--security-opt", "no-new-privileges",
-		"--user", "65534:65534",
-	}
-
-	for _, pair := range env {
-		args = append(args, "--env", pair)
-	}
-
-	//Add command
-	args = append(args, req.Command[0])
-	args = append(args, req.Command[1:]...)
+	name := containerName(instanceID)
+	args := e.containerArgs(name, wd, workspacePath, env)
+	args = append(args, req.Command...)
 
 	//Execute container
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -409,6 +389,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	if err := cmd.Start(); err != nil {
 		return domain.ExecutionResult{}, fmt.Errorf("docker start: %w", err)
 	}
+	startedAt := time.Now()
 
 	//Wait for result
 	done := make(chan error, 1)
@@ -421,34 +402,105 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
 		result := domain.ExecutionResult{
-			ExitCode: cmd.ProcessState.ExitCode(),
-			Stdout:   boundOutput(stdout, req.MaxOutput),
-			Stderr:   boundOutput(stderr, req.MaxOutput),
-			TimedOut: false,
+			ExitCode:   cmd.ProcessState.ExitCode(),
+			Stdout:     boundOutput(stdout, req.MaxOutput),
+			Stderr:     boundOutput(stderr, req.MaxOutput),
+			TimedOut:   false,
+			Duration:   time.Since(startedAt),
+			StartedAt:  startedAt,
+			FinishedAt: time.Now(),
 		}
-		if err != nil {
-			if ctx.Err() != nil {
-				result.TimedOut = true
-			} else {
-				result.Error = err.Error()
-			}
+		// docker exits 125 for daemon/CLI failures (bad image, no daemon),
+		// which is not a test failure and must not look like one.
+		if result.ExitCode == 125 {
+			result.Error = "docker could not start the container: " + strings.TrimSpace(stderr)
+		} else if err != nil && ctx.Err() == nil {
+			result.Error = err.Error()
 		}
 		return result, nil
 	case <-ctx.Done():
-		name := fmt.Sprintf("hades-exec-%s", instanceID)
 		res := domain.ExecutionResult{
-			ExitCode: -1,
-			Stdout:   stdoutBuf.String(),
-			Stderr:   stderrBuf.String(),
-			TimedOut: true,
+			ExitCode:  -1,
+			Stdout:    boundOutput(stdoutBuf.String(), req.MaxOutput),
+			Stderr:    boundOutput(stderrBuf.String(), req.MaxOutput),
+			TimedOut:  true,
+			StartedAt: startedAt,
 		}
 		//Cleanup is best effort; failures are reported, not silently ignored.
 		if cleanupErr := e.cleanupContainer(ctx, name); cleanupErr != nil {
 			res.Error = "container cleanup failed: " + cleanupErr.Error()
 			slog.Warn("container cleanup failed", "container", name, "error", cleanupErr)
 		}
+		//The docker CLI may still be waiting; --rm plus the explicit rm above
+		//guarantee the container itself is gone.
+		<-done
 		return res, ctx.Err()
 	}
+}
+
+// containerName derives a unique, docker-safe container name so concurrent
+// runs of the same instance cannot collide.
+func containerName(instanceID string) string {
+	var b strings.Builder
+	for _, r := range instanceID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	buf := make([]byte, 3)
+	_, _ = rand.Read(buf)
+	return "hades-exec-" + b.String() + "-" + hex.EncodeToString(buf)
+}
+
+// containerArgs builds the `docker run` argument list (everything before the
+// command). It is a pure function so the invocation can be asserted without a
+// running daemon.
+func (e *DockerExecutor) containerArgs(name, wd, workspacePath string, env []string) []string {
+	args := []string{
+		"run",
+		"--rm",
+		"--init",
+		"--name", name,
+		"--workdir", wd,
+		// The candidate workspace is a disposable copy owned by the caller, so
+		// it is mounted read-write: toolchains write build output inside the
+		// tree (target/, node_modules/). /tmp gets its own tmpfs because the
+		// container root filesystem is read-only.
+		"--mount", fmt.Sprintf("type=bind,source=%s,target=/workspace", workspacePath),
+		"--tmpfs", "/tmp:rw,exec,nosuid,nodev",
+		"--network", "none",
+		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+	}
+	if e.collectPolicy.MemoryLimitMB > 0 {
+		args = append(args,
+			"--memory", fmt.Sprintf("%dm", e.collectPolicy.MemoryLimitMB),
+			"--memory-swap", fmt.Sprintf("%dm", e.collectPolicy.MemoryLimitMB*2),
+		)
+	}
+	if e.collectPolicy.CPULimitPercent > 0 {
+		args = append(args,
+			"--cpu-period", "100000",
+			"--cpu-quota", fmt.Sprintf("%d", e.collectPolicy.CPULimitPercent*1000),
+		)
+	}
+	if e.collectPolicy.ProcessLimit > 0 {
+		args = append(args, "--pids-limit", fmt.Sprintf("%d", e.collectPolicy.ProcessLimit))
+	}
+	args = append(args, "--ulimit", "nofile=1024:1024")
+	for _, pair := range env {
+		args = append(args, "--env", pair)
+	}
+	// The image terminates the option list; everything after it is the command.
+	return append(args, e.collectPolicy.Image)
 }
 
 // cleanupContainer force-removes a container. It deliberately ignores parent
@@ -465,6 +517,9 @@ func (e *DockerExecutor) cleanupContainer(ctx context.Context, name string) erro
 
 // CollectPolicy defines collection constraints.
 type CollectPolicy struct {
+	// Image is the container image used for execution. It is required: without
+	// it `docker run` would treat the command as the image name.
+	Image           string
 	MaxOutput       int
 	Timeout         time.Duration
 	MemoryLimitMB   int
@@ -480,6 +535,13 @@ func (p CollectPolicy) Validate(command []string, dir string, env []string, maxO
 	}
 	if !allowedCommand(command[0]) {
 		return fmt.Errorf("command %q not allowed", command[0])
+	}
+	//Validate image
+	if p.Image == "" {
+		return fmt.Errorf("container image is required")
+	}
+	if strings.HasPrefix(p.Image, "-") || strings.ContainsAny(p.Image, " \t\n") {
+		return fmt.Errorf("invalid container image %q", p.Image)
 	}
 	//Validate directory
 	if !filepath.IsAbs(dir) {
