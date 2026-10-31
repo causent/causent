@@ -236,6 +236,15 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 			return nil, errors.New("investigation is not running or already completed")
 		}
 		cancel()
+		// Persist the terminal state immediately. The worker will also observe
+		// the cancelled context and record its normal cancellation event, but
+		// updating the investigation here makes the API's acknowledgement
+		// truthful even when the executor is slow to return after cancellation.
+		if inv, getErr := s.cfg.Store.GetInvestigation(id); getErr == nil && !domain.IsTerminal(inv.Status) {
+			inv.Status = domain.StatusCancelled
+			inv.UpdatedAt = time.Now().UTC()
+			_ = s.cfg.Store.SaveInvestigation(inv)
+		}
 		return map[string]interface{}{"status": "cancellation_requested", "investigation_id": id}, nil
 	case "get_evidence":
 		var input struct {

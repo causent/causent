@@ -238,9 +238,19 @@ func (d *Diagnoser) bisect(ctx context.Context, good, bad string) (string, strin
 			log.WriteString("exit: " + err.Error() + "\n")
 		}
 	}
+	// Git versions differ in whether `bisect run` prints the result to stdout,
+	// stderr, or only records it in the bisect log. Read the canonical log so
+	// localization does not depend on runner-specific Git output formatting.
+	if out, err := gitRun(bisectCtx, dir, "bisect", "log"); err == nil {
+		log.WriteString("$ git bisect log\n" + bound(out, 2000) + "\n")
+	}
 	_, _ = gitRun(context.Background(), dir, "bisect", "reset")
 
 	text := log.String()
+	firstBadRE := regexp.MustCompile(`(?m)^# first bad commit:\s*\[([0-9a-fA-F]+)\]`)
+	if match := firstBadRE.FindStringSubmatch(text); len(match) == 2 {
+		return match[1], "confirmed", text
+	}
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "is the first bad commit") {
 			fields := strings.Fields(line)
