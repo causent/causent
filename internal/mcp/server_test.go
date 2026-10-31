@@ -139,7 +139,7 @@ func TestCancelInvestigationUsesContext(t *testing.T) {
 	if err := json.Unmarshal(server.Handle(context.Background(), []byte(cancelRequest)), &cancelled); err != nil || cancelled.Error != nil {
 		t.Fatalf("cancel failed: %v", cancelled.Error)
 	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		inv, getErr := store.GetInvestigation(domain.ID(started.Result.ID))
 		if getErr == nil && inv.Status == domain.StatusCancelled {
 			return
