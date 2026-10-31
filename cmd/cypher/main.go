@@ -74,6 +74,8 @@ func runDiagnose(args []string) {
 	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.cypher/bundles/<timestamp>)")
 	good := fs.String("good", "", "known-good revision; enables git bisect")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
+	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	var probes stringList
 	fs.Var(&probes, "probe", "optional diagnostic command; repeatable; never a fix")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
@@ -110,16 +112,23 @@ func runDiagnose(args []string) {
 	}
 	defer store.Close()
 
+	executor, err := buildExecutor(*executorMode, *image, repoPath, *timeout, cmd, probes)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "executor: "+err.Error())
+		os.Exit(2)
+	}
 	cfg := diagnosis.Config{
-		RepoPath:   repoPath,
-		Command:    cmd,
-		Attempts:   *attempts,
-		Timeout:    *timeout,
-		Executor:   localExecutor(repoPath, *timeout, cmd, probes),
-		Store:      store,
-		BundleDir:  bundleDir,
-		GoodRef:    *good,
-		MaxCommits: *maxCommits,
+		RepoPath:      repoPath,
+		Command:       cmd,
+		Attempts:      *attempts,
+		Timeout:       *timeout,
+		Executor:      executor,
+		ExecutorName:  strings.ToLower(*executorMode),
+		ExecutorImage: strings.TrimSpace(*image),
+		Store:         store,
+		BundleDir:     bundleDir,
+		GoodRef:       *good,
+		MaxCommits:    *maxCommits,
 	}
 	for _, probe := range probes {
 		cfg.Probes = append(cfg.Probes, splitCommand(probe))
@@ -145,6 +154,8 @@ func runReplay(args []string) {
 	fs := flag.NewFlagSet("replay", flag.ExitOnError)
 	repo := fs.String("repo", "", "override the recorded repository path")
 	timeout := fs.Duration("timeout", diagnosis.DefaultTimeout, "timeout per attempt")
+	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
 
@@ -173,10 +184,15 @@ func runReplay(args []string) {
 		repoPath = abs
 	}
 
+	executor, err := buildExecutor(*executorMode, *image, repoPath, *timeout, command, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "executor: "+err.Error())
+		os.Exit(2)
+	}
 	result, err := diagnosis.Replay(context.Background(), diagnosis.ReplayConfig{
 		BundleDir: bundleDir,
 		RepoPath:  repoPath,
-		Executor:  localExecutor(repoPath, *timeout, command, nil),
+		Executor:  executor,
 		Timeout:   *timeout,
 	})
 	if err != nil {
@@ -200,6 +216,8 @@ func runRepair(args []string) {
 	command := fs.String("command", "", "command that reproduces the failure")
 	timeout := fs.Duration("timeout", 2*time.Minute, "timeout per command")
 	budget := fs.Int("budget", 20, "maximum investigation steps")
+	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	db := fs.String("db", envOr("HADES_DB", dbPath()), "sqlite db path")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
@@ -222,9 +240,14 @@ func runRepair(args []string) {
 	}
 	defer store.Close()
 
+	executor, err := buildExecutor(*executorMode, *image, repoPath, *timeout, cmd, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "executor: "+err.Error())
+		os.Exit(2)
+	}
 	investigator := &engine.Investigator{
 		Store:               store,
-		Executor:            localExecutor(repoPath, *timeout, cmd, nil),
+		Executor:            executor,
 		Provider:            engine.ProviderFromEnvironment(),
 		DisallowTestChanges: true,
 	}
@@ -342,6 +365,11 @@ func replayText(result diagnosis.ReplayResult) string {
 // derived from the commands the user explicitly asked to run; everything else
 // stays behind the execution.Executor interface.
 func localExecutor(repoPath string, timeout time.Duration, command []string, probes []string) execution.Executor {
+	executor, _ := buildExecutor("local", "", repoPath, timeout, command, probes)
+	return executor
+}
+
+func buildExecutor(mode, image, repoPath string, timeout time.Duration, command []string, probes []string) (execution.Executor, error) {
 	allowed := map[string]bool{}
 	if len(command) > 0 {
 		allowed[command[0]] = true
@@ -359,7 +387,20 @@ func localExecutor(repoPath string, timeout time.Duration, command []string, pro
 		MaxOutput:          64 << 10,
 		Timeout:            timeout,
 	}
-	return execution.NewLocalExecutor(policy, execution.NewArtifactFactory(filepath.Join(filepath.Dir(dbPath()), "artifacts")))
+	artifacts := execution.NewArtifactFactory(filepath.Join(filepath.Dir(dbPath()), "artifacts"))
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "local":
+		return execution.NewLocalExecutor(policy, artifacts), nil
+	case "docker":
+		image = strings.TrimSpace(image)
+		if image == "" {
+			return nil, fmt.Errorf("Docker image is required; pass --image or set CAUSENT_EXECUTOR_IMAGE")
+		}
+		collect := execution.CollectPolicy{Image: image, MaxOutput: 64 << 10, Timeout: timeout, MemoryLimitMB: 512, CPULimitPercent: 80, ProcessLimit: 128}
+		return execution.NewDockerExecutor(policy, artifacts, collect), nil
+	default:
+		return nil, fmt.Errorf("unsupported executor %q; choose local or docker", mode)
+	}
 }
 
 func recordedCommand(bundleDir string) []string {

@@ -15,6 +15,13 @@ import (
 	"github.com/Yashbhu/Hades/internal/persistence"
 )
 
+type blockingExecutor struct{}
+
+func (blockingExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (domain.ExecutionResult, error) {
+	<-ctx.Done()
+	return domain.ExecutionResult{TimedOut: true}, ctx.Err()
+}
+
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
@@ -23,7 +30,7 @@ func testServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	policy := execution.Policy{AllowedCommands: map[string]bool{"python3": true}, AllowedDirs: map[string]bool{root: true}, AllowedDirPrefixes: []string{root}, AllowedEnviron: map[string]bool{}, MaxOutput: 4096}
+	policy := execution.Policy{AllowedCommands: map[string]bool{"python3": true, "sh": true}, AllowedDirs: map[string]bool{root: true}, AllowedDirPrefixes: []string{root}, AllowedEnviron: map[string]bool{}, MaxOutput: 4096}
 	server, err := NewServer(Config{Store: store, Executor: execution.NewLocalExecutor(policy, execution.NewArtifactFactory(filepath.Join(root, "artifacts"))), Provider: engine.HeuristicProvider{}, AuthorizedRoots: []string{root}, AllowedCommands: policy.AllowedCommands})
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +91,7 @@ func makeGitStore(t *testing.T) (*Server, *persistence.Store, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	policy := execution.Policy{AllowedCommands: map[string]bool{"python3": true}, AllowedDirs: map[string]bool{root: true}, AllowedDirPrefixes: []string{root}, AllowedEnviron: map[string]bool{}, MaxOutput: 16 << 10, Timeout: 10 * time.Second}
+	policy := execution.Policy{AllowedCommands: map[string]bool{"python3": true, "sh": true}, AllowedDirs: map[string]bool{root: true}, AllowedDirPrefixes: []string{root}, AllowedEnviron: map[string]bool{}, MaxOutput: 16 << 10, Timeout: 10 * time.Second}
 	server, err := NewServer(Config{Store: store, Executor: execution.NewLocalExecutor(policy, execution.NewArtifactFactory(filepath.Join(root, "artifacts"))), Provider: engine.HeuristicProvider{}, AuthorizedRoots: []string{root}, AllowedCommands: policy.AllowedCommands, MaxTimeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +131,8 @@ func TestStartInvestigationPersistsAndCompletes(t *testing.T) {
 
 func TestCancelInvestigationUsesContext(t *testing.T) {
 	server, store, root := makeGitStore(t)
-	start := `{"jsonrpc":"2.0","id":1,"method":"start_investigation","params":{"repo":"` + root + `","command":["python3","-c","import time; time.sleep(10)"],"timeout":10000000000,"budget":10}}`
+	server.cfg.Executor = blockingExecutor{}
+	start := `{"jsonrpc":"2.0","id":1,"method":"start_investigation","params":{"repo":"` + root + `","command":["sh","-c","sleep 10"],"timeout":10000000000,"budget":10}}`
 	var started struct {
 		Result struct {
 			ID string `json:"investigation_id"`

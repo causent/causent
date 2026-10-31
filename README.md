@@ -89,6 +89,24 @@ The seed corpus currently contains deterministic Python repair fixtures. The
 evaluation engine is intended to expand to Go, JavaScript/TypeScript, Rust, and
 other repository test commands.
 
+### Docker execution
+
+Local execution is the default. For isolated diagnosis runs, select Docker and
+provide an image containing the repository's runtime and test tools:
+
+```sh
+go run ./cmd/cypher diagnose \
+  --repo . \
+  --command "pytest -q" \
+  --executor docker \
+  --image ghcr.io/causent/python:3.12
+```
+
+The same settings can be supplied through `CAUSENT_EXECUTOR=docker` and
+`CAUSENT_EXECUTOR_IMAGE`. Docker runs use a read-only repository mount at
+`/workspace`, a temporary `/tmp`, disabled networking, dropped capabilities,
+and bounded memory, CPU, process, output, and timeout limits.
+
 ## Safety properties
 
 - patches are represented as exact structured edits;
