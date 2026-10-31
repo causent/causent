@@ -273,9 +273,10 @@ func (s *Server) postJSON(ctx context.Context, endpoint, apiKey string, body, ou
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
 		if s.config.Provider == "gemini" {
 			req.Header.Set("x-goog-api-key", apiKey)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 	}
 	resp, err := s.client.Do(req)
