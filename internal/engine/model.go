@@ -178,10 +178,14 @@ type OllamaProvider struct {
 }
 
 func providerFromEnvironment() ModelProvider {
-	if strings.EqualFold(os.Getenv("HADES_MODEL_PROVIDER"), "ollama") {
+	switch strings.ToLower(os.Getenv("HADES_MODEL_PROVIDER")) {
+	case "ollama":
 		return OllamaProvider{Endpoint: os.Getenv("HADES_OLLAMA_ENDPOINT"), Model: os.Getenv("HADES_OLLAMA_MODEL")}
+	case "gateway", "hosted", "byok", "self_hosted":
+		return GatewayProvider{Endpoint: os.Getenv("HADES_GATEWAY_ENDPOINT"), Model: os.Getenv("HADES_MODEL")}
+	default:
+		return HeuristicProvider{}
 	}
-	return HeuristicProvider{}
 }
 
 // ProviderFromEnvironment selects the configured provider without exposing
