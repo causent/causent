@@ -267,28 +267,48 @@ func (s *Server) postJSON(ctx context.Context, endpoint, apiKey string, body, ou
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		if s.config.Provider == "gemini" {
-			req.Header.Set("x-goog-api-key", apiKey)
-		} else {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			if s.config.Provider == "gemini" {
+				req.Header.Set("x-goog-api-key", apiKey)
+			} else {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if resp.StatusCode/100 == 2 {
+			return json.Unmarshal(data, output)
+		}
+		lastErr = fmt.Errorf("upstream returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		if !retryableStatus(resp.StatusCode) || attempt == 2 {
+			return lastErr
+		}
+		delay := time.Duration(500*(1<<attempt)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
 		}
 	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upstream returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(output)
+	return lastErr
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusInternalServerError || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
