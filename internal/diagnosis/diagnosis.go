@@ -28,6 +28,7 @@ const (
 	ClassDependencyDrift Classification = "dependency_or_toolchain_drift"
 	ClassInfrastructure  Classification = "infrastructure_or_environment"
 	ClassNotReproduced   Classification = "not_reproduced"
+	ClassPreExisting     Classification = "pre_existing_failure"
 )
 
 // Event names emitted to the event store and to events.jsonl.
@@ -151,6 +152,16 @@ type Baseline struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+// Comparison records the counterfactual base-versus-head evidence.
+type Comparison struct {
+	BaseRef    string         `json:"base_ref"`
+	BaseCommit string         `json:"base_commit"`
+	HeadCommit string         `json:"head_commit"`
+	Base       Baseline       `json:"base"`
+	Head       Baseline       `json:"head"`
+	Verdict    Classification `json:"verdict"`
+}
+
 // Report is the final diagnosis.
 type Report struct {
 	InvestigationID string         `json:"investigation_id"`
@@ -159,6 +170,7 @@ type Report struct {
 	Classification  Classification `json:"classification"`
 	Environment     Environment    `json:"environment"`
 	Baseline        Baseline       `json:"baseline"`
+	Comparison      *Comparison    `json:"comparison,omitempty"`
 	Localization    Localization   `json:"localization"`
 	Evidence        []EvidenceItem `json:"evidence"`
 	Claims          []Claim        `json:"claims"`
@@ -192,6 +204,7 @@ type Config struct {
 	// GoodRef is an optional known-good revision. When set, localization uses
 	// git bisect instead of walking back from HEAD.
 	GoodRef    string
+	BaseRef    string
 	MaxCommits int
 	Probes     [][]string
 }
@@ -274,6 +287,15 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	env.Image = cfg.ExecutorImage
 	report.Environment = env
 	report.Classification = Classify(baseline.Results)
+	if cfg.BaseRef != "" {
+		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
+		if cmpErr != nil {
+			report.Uncertainty = append(report.Uncertainty, "base comparison incomplete: "+cmpErr.Error())
+		} else {
+			report.Comparison = &comparison
+			report.Classification = comparison.Verdict
+		}
+	}
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence,
 		fmt.Sprintf("%d/%d attempts failed", baseline.Failures, baseline.Attempts))
 	d.emit(EventClassificationComplete, domain.StatusCollectingEvidence, string(report.Classification))
@@ -319,6 +341,53 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	finish(&report, d, workspace)
 	return report, nil
+}
+
+func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, headCommit string) (Comparison, error) {
+	baseCommit := strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-parse", baseRef))
+	if baseCommit == "" {
+		return Comparison{}, fmt.Errorf("base revision %q could not be resolved", baseRef)
+	}
+	base := Baseline{Attempts: d.cfg.Attempts, Command: d.cfg.Command, StartedAt: time.Now().UTC()}
+	dir, cleanup, err := isolatedWorkspace(ctx, d.cfg.RepoPath, baseCommit)
+	if err != nil {
+		return Comparison{}, err
+	}
+	defer cleanup()
+	for i := 0; i < d.cfg.Attempts; i++ {
+		a := d.runOnce(ctx, dir, i)
+		base.Results = append(base.Results, a)
+		if a.Failed() {
+			base.Failures++
+		}
+		if a.Passed() {
+			base.Passes++
+		}
+		if a.TimedOut {
+			base.TimedOut++
+		}
+	}
+	base.FinishedAt = time.Now().UTC()
+	return Comparison{BaseRef: baseRef, BaseCommit: baseCommit, HeadCommit: headCommit, Base: base, Head: head, Verdict: compareVerdict(base, head)}, nil
+}
+
+func compareVerdict(base, head Baseline) Classification {
+	if (base.Failures > 0 && base.Passes > 0) || (head.Failures > 0 && head.Passes > 0) {
+		return ClassFlaky
+	}
+	if base.Failures > 0 || head.Failures > 0 {
+		if base.Passes > 0 && head.Failures > 0 && head.Passes == 0 {
+			return ClassRealRegression
+		}
+		if base.Failures > 0 && head.Failures > 0 {
+			return ClassPreExisting
+		}
+		if base.Passes > 0 && head.Passes > 0 {
+			return ClassNotReproduced
+		}
+		return ClassFlaky
+	}
+	return ClassNotReproduced
 }
 
 // finish writes the bundle, emits the terminal events, and persists the final
