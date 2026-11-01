@@ -1,0 +1,286 @@
+name: Causent Diagnose
+
+# Reusable workflow. Call it from a job in another repository:
+#
+#   jobs:
+#     causent:
+#       if: github.event.workflow_run.conclusion == 'failure'
+#       permissions:
+#         actions: read
+#         contents: read
+#         pull-requests: write
+#       uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+#       with:
+#         run_id: ${{ github.event.workflow_run.id }}
+#         head_sha: ${{ github.event.workflow_run.head_sha }}
+#
+# The target repository supplies the source code, the failing command (through
+# .causent.yml or the `command` input), and its runtime. Causent supplies the
+# diagnosis engine.
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: Failing command; overrides command in .causent.yml
+        type: string
+        required: false
+        default: ''
+      head_sha:
+        description: Commit to diagnose; defaults to the checked-out commit
+        type: string
+        required: false
+        default: ''
+      base_sha:
+        description: Exact base commit; wins over base_ref
+        type: string
+        required: false
+        default: ''
+      base_ref:
+        description: Base revision or ref; defaults to merge-base with the default branch
+        type: string
+        required: false
+        default: ''
+      run_id:
+        description: Failed workflow run id whose logs should be collected
+        type: string
+        required: false
+        default: ''
+      attempts:
+        description: Reproduction attempts; overrides attempts in .causent.yml
+        type: string
+        required: false
+        default: ''
+      docker_image:
+        description: Docker image for the docker executor; overrides image in .causent.yml
+        type: string
+        required: false
+        default: ''
+      agent:
+        description: Ask the configured model gateway to analyze the collected evidence
+        type: boolean
+        required: false
+        default: false
+      causent_version:
+        description: Causent release tag to install, or "latest"
+        type: string
+        required: false
+        default: latest
+      causent_repository:
+        description: Repository that publishes Causent releases
+        type: string
+        required: false
+        default: causent/causent
+      comment:
+        description: Post the diagnosis as a pull request comment when the run belongs to a PR
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      CAUSENT_GATEWAY_ENDPOINT:
+        required: false
+      CAUSENT_GATEWAY_MODEL:
+        required: false
+    outputs:
+      classification:
+        description: Deterministic classification of the failure
+        value: ${{ jobs.diagnose.outputs.classification }}
+      refused:
+        description: Whether Causent refused to classify the failure
+        value: ${{ jobs.diagnose.outputs.refused }}
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  diagnose:
+    name: Diagnose failure
+    runs-on: ubuntu-latest
+    outputs:
+      classification: ${{ steps.diagnose.outputs.classification }}
+      refused: ${{ steps.diagnose.outputs.refused }}
+    steps:
+      - name: Checkout failing commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve revisions
+        id: revisions
+        run: |
+          set -euo pipefail
+          head="${{ inputs.head_sha }}"
+          if [ -z "$head" ]; then
+            head="$(git rev-parse HEAD)"
+          fi
+          git checkout --force --detach "$head"
+
+          base="${{ inputs.base_sha }}"
+          if [ -z "$base" ]; then
+            ref="${{ inputs.base_ref }}"
+            if [ -z "$ref" ]; then
+              ref="origin/${{ github.event.repository.default_branch || 'main' }}"
+            fi
+            fetch_ref="${ref#origin/}"
+            git fetch --no-tags origin "$fetch_ref" || true
+            base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
+          fi
+
+          pr="${{ github.event.workflow_run.pull_requests[0].number }}"
+          if [ -z "$pr" ] || [ "$pr" = "null" ]; then
+            pr="${{ github.event.pull_request.number }}"
+          fi
+          if [ "$pr" = "null" ]; then
+            pr=""
+          fi
+
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Collect failed job logs
+        if: inputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          gh run view "${{ inputs.run_id }}" --repo "${{ github.repository }}" \
+            --log-failed > "$RUNNER_TEMP/causent-failed.log" 2>&1 || true
+          gh run view "${{ inputs.run_id }}" --repo "${{ github.repository }}" \
+            --json jobs \
+            --jq '.jobs[] | select(.conclusion == "failure") | "\(.name) (\(.databaseId))"' \
+            > "$RUNNER_TEMP/causent-failed-jobs.txt" 2>&1 || true
+
+      - name: Install causent
+        run: |
+          set -euo pipefail
+          version="${{ inputs.causent_version }}"
+          if [ "$version" = "latest" ]; then
+            url="https://github.com/${{ inputs.causent_repository }}/releases/latest/download/cypher_linux_amd64"
+          else
+            url="https://github.com/${{ inputs.causent_repository }}/releases/download/${version}/cypher_linux_amd64"
+          fi
+          curl -fsSL "$url" -o "$RUNNER_TEMP/cypher"
+          chmod +x "$RUNNER_TEMP/cypher"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/cypher" version
+
+      - name: Set up Go
+        if: inputs.docker_image == '' && hashFiles('go.mod') != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Diagnose
+        id: diagnose
+        env:
+          CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
+          CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
+          INPUT_COMMAND: ${{ inputs.command }}
+          INPUT_ATTEMPTS: ${{ inputs.attempts }}
+          INPUT_DOCKER_IMAGE: ${{ inputs.docker_image }}
+          INPUT_AGENT: ${{ inputs.agent }}
+          INPUT_BASE: ${{ steps.revisions.outputs.base }}
+        run: |
+          set -euo pipefail
+          args=(diagnose --repo . --json --bundle "$RUNNER_TEMP/causent-bundle")
+
+          if [ -n "$INPUT_COMMAND" ]; then
+            args+=(--command "$INPUT_COMMAND")
+          fi
+          if [ -n "$INPUT_BASE" ]; then
+            args+=(--base "$INPUT_BASE")
+          fi
+          if [ -n "$INPUT_ATTEMPTS" ]; then
+            args+=(--attempts "$INPUT_ATTEMPTS")
+          fi
+          if [ -n "$INPUT_DOCKER_IMAGE" ]; then
+            args+=(--executor docker --image "$INPUT_DOCKER_IMAGE")
+          fi
+          if [ "$INPUT_AGENT" = "true" ]; then
+            args+=(--agent)
+          fi
+
+          status=0
+          cypher "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
+            2> "$RUNNER_TEMP/causent-stderr.log" || status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+          if ! jq -e . "$RUNNER_TEMP/causent-report.json" > /dev/null 2>&1; then
+            {
+              echo "## Causent diagnosis"
+              echo
+              echo "Causent did not produce a report (exit $status)."
+              echo
+              echo '```'
+              tail -50 "$RUNNER_TEMP/causent-stderr.log"
+              echo '```'
+            } > "$RUNNER_TEMP/causent-summary.md"
+            cat "$RUNNER_TEMP/causent-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          classification="$(jq -r '.classification // "unknown"' "$RUNNER_TEMP/causent-report.json")"
+          refused="$(jq -r '.refused // false' "$RUNNER_TEMP/causent-report.json")"
+          echo "classification=$classification" >> "$GITHUB_OUTPUT"
+          echo "refused=$refused" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Causent diagnosis"
+            echo
+            echo "**Classification**: \`$classification\`"
+            echo
+            jq -r '
+              "**Reproduced**: \(.baseline.failures)/\(.baseline.attempts) attempts failed  ",
+              "**Confidence**: \(.confidence)  ",
+              (if .comparison then
+                "**Base/head**: base \(.comparison.base.failures)/\(.comparison.base.attempts), head \(.comparison.head.failures)/\(.comparison.head.attempts) → `\(.comparison.verdict)`  "
+              else empty end),
+              (if .localization.first_known_bad then
+                "**First known bad**: `\(.localization.first_known_bad)`  "
+              else empty end),
+              (if .refused then "**Refused**: \(.refusal_reason)  " else empty end),
+              "",
+              (if ((.localization.likely_files // []) | length) > 0 then
+                "**Likely files**:\n" + ((.localization.likely_files // []) | map("- `\(.)`") | join("\n"))
+              else empty end),
+              "",
+              (if ((.claims // []) | length) > 0 then
+                "**Hypotheses**:\n" + ((.claims // []) | map("- (confidence \(.confidence)) \(.statement)") | join("\n"))
+              else empty end),
+              "",
+              (if ((.uncertainty // []) | length) > 0 then
+                "**Uncertainty**:\n" + ((.uncertainty // []) | map("- \(.)") | join("\n"))
+              else empty end)
+            ' "$RUNNER_TEMP/causent-report.json"
+            echo
+            echo "Bundle: \`$(jq -r '.bundle_path // "not written"' "$RUNNER_TEMP/causent-report.json")\`"
+          } > "$RUNNER_TEMP/causent-summary.md"
+          cat "$RUNNER_TEMP/causent-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnosis bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causent-diagnosis-${{ steps.revisions.outputs.head || github.run_id }}
+          path: |
+            ${{ runner.temp }}/causent-report.json
+            ${{ runner.temp }}/causent-summary.md
+            ${{ runner.temp }}/causent-stderr.log
+            ${{ runner.temp }}/causent-failed.log
+            ${{ runner.temp }}/causent-failed-jobs.txt
+            ${{ runner.temp }}/causent-bundle
+          if-no-files-found: ignore
+
+      - name: Comment on pull request
+        if: inputs.comment && steps.revisions.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ steps.revisions.outputs.pr }}" \
+            --repo "${{ github.repository }}" \
+            --body-file "$RUNNER_TEMP/causent-summary.md" || true
