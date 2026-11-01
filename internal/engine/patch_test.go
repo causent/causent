@@ -50,6 +50,35 @@ func (patchExecutor) Run(context.Context, domain.ExecutionRequest) (domain.Execu
 	return domain.ExecutionResult{ExitCode: 0, StartedAt: time.Now(), FinishedAt: time.Now()}, nil
 }
 
+type feedbackPatchProvider struct {
+	diff     string
+	feedback []string
+}
+
+func (*feedbackPatchProvider) Generate(context.Context, ModelRequest) (ModelResponse, error) {
+	return ModelResponse{}, nil
+}
+
+func (p *feedbackPatchProvider) GeneratePatches(_ context.Context, request PatchRequest) ([]domain.PatchProposal, error) {
+	p.feedback = append(p.feedback, request.ValidationError)
+	return []domain.PatchProposal{{
+		HypothesisIDs: []domain.ID{"h1"}, ChangedFiles: []string{"bug.py"}, Diff: p.diff,
+		Explanation: "fix", ExpectedBehavior: "passes", Metadata: domain.ModelMetadata{Provider: "fake"},
+	}}, nil
+}
+
+type feedbackPatchExecutor struct{ calls int }
+
+func (e *feedbackPatchExecutor) Run(context.Context, domain.ExecutionRequest) (domain.ExecutionResult, error) {
+	e.calls++
+	result := domain.ExecutionResult{ExitCode: 0, StartedAt: time.Now(), FinishedAt: time.Now()}
+	if e.calls == 1 {
+		result.ExitCode = 1
+		result.Stderr = "candidate still fails"
+	}
+	return result, nil
+}
+
 func initGitRepo(t *testing.T, repo string, files map[string]string) {
 	t.Helper()
 	for name, content := range files {
@@ -96,6 +125,35 @@ func TestGenerateAndVerifyPatchUsesDisposableWorkspace(t *testing.T) {
 	}
 	if _, err := store.GetVerificationReport(patch.ID); err != nil {
 		t.Fatalf("verification report not persisted: %v", err)
+	}
+}
+
+func TestGenerateAndVerifyPatchFeedsVerificationFailureBackToNextAttempt(t *testing.T) {
+	repo := t.TempDir()
+	initGitRepo(t, repo, map[string]string{"bug.py": "return 1\n"})
+	store, err := persistence.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	inv := domain.Investigation{ID: "inv-feedback", RepoPath: repo, Command: []string{"python3", "bug.py"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := store.SaveInvestigation(inv); err != nil {
+		t.Fatal(err)
+	}
+	provider := &feedbackPatchProvider{diff: "--- a/bug.py\n+++ b/bug.py\n@@ -1 +1 @@\n-return 1\n+return 0\n"}
+	executor := &feedbackPatchExecutor{}
+	investigator := &Investigator{
+		Store: store, Provider: provider, Executor: executor, PatchAttempts: 2,
+	}
+	patch, err := investigator.GenerateAndVerifyPatch(context.Background(), inv, domain.Reproduction{Result: &domain.ExecutionResult{ExitCode: 1}}, nil, []domain.Hypothesis{{ID: "h1"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patch == nil || patch.VerificationStatus != string(domain.VerificationPassed) {
+		t.Fatalf("expected second attempt to pass, got %+v", patch)
+	}
+	if executor.calls != 2 || len(provider.feedback) != 2 || !strings.Contains(provider.feedback[1], "verification exit_code=1") {
+		t.Fatalf("verification feedback was not provided: calls=%d feedback=%q", executor.calls, provider.feedback)
 	}
 }
 

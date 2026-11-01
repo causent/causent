@@ -288,6 +288,7 @@ func runRepair(args []string) {
 	command := fs.String("command", "", "command that reproduces the failure")
 	timeout := fs.Duration("timeout", 2*time.Minute, "timeout per command")
 	budget := fs.Int("budget", 20, "maximum investigation steps")
+	maxAttempts := fs.Int("max-attempts", 0, "maximum isolated patch verification attempts (default 2, max 5)")
 	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path")
@@ -302,6 +303,17 @@ func runRepair(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	repoCfg, err := loadRepoConfig(repoPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: "+err.Error())
+		os.Exit(2)
+	}
+	if *command == "" {
+		*command = repoCfg.Command
+	}
+	if *maxAttempts == 0 {
+		*maxAttempts = repoCfg.Repair.MaxAttempts
 	}
 	cmd := splitCommand(*command)
 
@@ -321,6 +333,7 @@ func runRepair(args []string) {
 		Store:               store,
 		Executor:            executor,
 		Provider:            engine.ProviderFromEnvironment(),
+		PatchAttempts:       *maxAttempts,
 		DisallowTestChanges: true,
 	}
 	inv, result, err := investigator.Investigate(context.Background(), repoPath, cmd, *timeout, *budget)

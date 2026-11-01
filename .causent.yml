@@ -19,6 +19,11 @@ executor: local
 # Ask the configured gateway model to analyze collected evidence.
 agent: false
 
+# Repair is opt-in. It proposes a patch through the configured model provider,
+# applies it only in a temporary workspace, and runs verification there.
+# repair:
+#   max_attempts: 2
+
 # Optional extra diagnostic commands. These never modify the repository.
 # probes:
 #   - go version

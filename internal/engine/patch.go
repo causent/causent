@@ -17,19 +17,47 @@ import (
 
 const maxPatchBytes = 256 << 10
 const maxPatchGenerationAttempts = 2
+const defaultPatchAttempts = 2
 
 // GenerateAndVerifyPatch creates candidates through the structured provider and
 // verifies each candidate in an independent copy of the repository.
 func (i *Investigator) GenerateAndVerifyPatch(ctx context.Context, inv domain.Investigation, baseline domain.Reproduction, evidence []domain.Evidence, hypotheses []domain.Hypothesis, experiments []domain.Experiment) (*domain.Patch, error) {
+	attempts := i.PatchAttempts
+	if attempts <= 0 {
+		attempts = defaultPatchAttempts
+	}
+	if attempts > 5 {
+		attempts = 5
+	}
+
+	var last *domain.Patch
+	feedback := ""
+	for attempt := 1; attempt <= attempts; attempt++ {
+		patch, err := i.generateAndVerifyPatchOnce(ctx, inv, baseline, evidence, hypotheses, experiments, feedback)
+		if err != nil {
+			return patch, err
+		}
+		last = patch
+		if patch != nil && patch.VerificationStatus == string(domain.VerificationPassed) {
+			return patch, nil
+		}
+		feedback = patchVerificationFeedback(patch, attempt, attempts)
+	}
+	return last, nil
+}
+
+func (i *Investigator) generateAndVerifyPatchOnce(ctx context.Context, inv domain.Investigation, baseline domain.Reproduction, evidence []domain.Evidence, hypotheses []domain.Hypothesis, experiments []domain.Experiment, feedback string) (*domain.Patch, error) {
 	provider, ok := i.Provider.(PatchProvider)
 	if !ok {
 		return nil, fmt.Errorf("configured model provider does not support patch generation")
 	}
-	request := PatchRequest{Investigation: inv, Evidence: evidence, Hypotheses: hypotheses, Experiments: experiments, DisallowTestChanges: i.DisallowTestChanges}
+	request := PatchRequest{Investigation: inv, Evidence: evidence, Hypotheses: hypotheses, Experiments: experiments, DisallowTestChanges: i.DisallowTestChanges, ValidationError: feedback}
 	var proposals []domain.PatchProposal
 	var err error
 	for attempt := 1; attempt <= maxPatchGenerationAttempts; attempt++ {
-		request.ValidationError = errString(err)
+		if err != nil {
+			request.ValidationError = errString(err)
+		}
 		proposals, err = provider.GeneratePatches(ctx, request)
 		if err != nil {
 			return nil, err
@@ -177,6 +205,24 @@ func (i *Investigator) GenerateAndVerifyPatch(ctx context.Context, inv domain.In
 		return &patch, err
 	}
 	return &patch, nil
+}
+
+func patchVerificationFeedback(patch *domain.Patch, attempt, limit int) string {
+	if patch == nil {
+		return fmt.Sprintf("previous patch attempt %d/%d did not produce a candidate", attempt, limit)
+	}
+	feedback := fmt.Sprintf("previous patch attempt %d/%d was not verified: status=%s verification=%s", attempt, limit, patch.Status, patch.VerificationStatus)
+	if patch.Error != "" {
+		feedback += "; error=" + bounded(patch.Error, 4000)
+	}
+	if patch.OriginalTestResult != nil {
+		feedback += fmt.Sprintf("; verification exit_code=%d timed_out=%t", patch.OriginalTestResult.ExitCode, patch.OriginalTestResult.TimedOut)
+		output := bounded(strings.TrimSpace(patch.OriginalTestResult.Stdout+"\n"+patch.OriginalTestResult.Stderr), 6000)
+		if output != "" {
+			feedback += "\nverification output:\n" + output
+		}
+	}
+	return feedback
 }
 
 // CancelPatch records cancellation without fabricating a verification result.

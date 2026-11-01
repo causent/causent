@@ -89,6 +89,62 @@ Repositories that require reproducible dependency updates can replace `@v1`
 with a specific Causent release tag after checking the release notes. The
 reusable workflow downloads the matching `causent_linux_amd64` binary.
 
+## Optional model-assisted repair
+
+Diagnosis is the default path. It is deterministic and does not modify the
+repository. Repair is a separate, opt-in workflow for testing a candidate
+patch in an isolated temporary workspace.
+
+Repair does not commit to the current branch or silently change a pull
+request. It proposes a patch, applies it to a disposable copy, runs the
+configured failing command, and reports whether verification passed. If the
+candidate fails, the configured bounded retry loop sends the verification
+feedback to the model for another candidate.
+
+Set the optional retry limit in `.causent.yml`:
+
+```yaml
+command: go test ./...
+
+repair:
+  max_attempts: 2
+```
+
+Then configure a model provider. For a local Causent gateway:
+
+```sh
+export CAUSENT_MODEL_PROVIDER=gateway
+export CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787
+export CAUSENT_MODEL=your-model
+```
+
+Run repair explicitly:
+
+```sh
+causent repair --repo . --command "go test ./..." --max-attempts 2
+```
+
+The command can read `command` and `repair.max_attempts` from `.causent.yml`:
+
+```sh
+causent repair --repo .
+```
+
+The result reports one of these outcomes:
+
+- `passed`: the candidate patch applied and the configured test passed in the isolated workspace.
+- `failed`: the candidate applied but verification still failed.
+- `inconclusive`: the patch could not be safely applied or verification could not complete.
+
+A passing test verifies the reproduced behavior. It does not prove that the
+patch is universally correct or that the exact root cause is proven. Review
+the diff before applying it with `git apply`.
+
+GitHub Actions currently runs deterministic diagnosis only. This keeps model
+credentials away from jobs that execute untrusted pull request code. A model-
+enabled repair workflow must be explicitly designed with a trusted, separate
+job before it is enabled in CI.
+
 ## Local diagnosis
 
 ```sh
