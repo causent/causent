@@ -295,6 +295,12 @@ func diagnosisText(report diagnosis.Report) string {
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "confidence: %.2f\n", report.Confidence)
+	if report.Comparison != nil {
+		cmp := report.Comparison
+		fmt.Fprintf(&b, "comparison: base=%s (%d/%d failed), head=%s (%d/%d failed), verdict=%s\n",
+			cmp.BaseCommit, cmp.Base.Failures, cmp.Base.Attempts,
+			cmp.HeadCommit, cmp.Head.Failures, cmp.Head.Attempts, cmp.Verdict)
+	}
 
 	if report.Refused {
 		fmt.Fprintf(&b, "refused: %s\n", report.RefusalReason)
