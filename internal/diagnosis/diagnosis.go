@@ -210,6 +210,9 @@ type Config struct {
 	Agent      *agent.Client
 	MaxCommits int
 	Probes     [][]string
+	// ExternalEvidence is bounded evidence collected by an integration such as
+	// GitHub Actions. It is recorded separately from reproduction output.
+	ExternalEvidence []EvidenceItem
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -257,6 +260,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		Command:         cfg.Command,
 		CreatedAt:       time.Now().UTC(),
 	}
+	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
 
 	// Create the investigation so the gateway can stream this run.
@@ -338,6 +342,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	d.emit(EventLocalizationCompleted, domain.StatusFormingHypotheses, locStatus(localization))
 
 	report.Claims = buildClaims(report.Classification, localization, report.Evidence)
+	if err := ValidateContract(report); err != nil {
+		report.Uncertainty = append(report.Uncertainty, "diagnosis contract validation failed: "+err.Error())
+		report.Refused = true
+		report.RefusalReason = "generated diagnosis contained unsupported evidence references"
+		report.Claims = nil
+	}
 	report.Confidence = confidence(report.Classification, localization, report.Uncertainty)
 	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, localization)...)
 
