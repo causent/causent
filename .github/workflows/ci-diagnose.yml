@@ -92,7 +92,7 @@ on:
 permissions:
   actions: read
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   diagnose:
@@ -101,26 +101,43 @@ jobs:
     outputs:
       classification: ${{ steps.diagnose.outputs.classification }}
       refused: ${{ steps.diagnose.outputs.refused }}
+      pr: ${{ steps.revisions.outputs.pr }}
     steps:
       - name: Checkout failing commit
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.head_sha || github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve revisions
         id: revisions
+        env:
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_BASE_SHA: ${{ inputs.base_sha }}
+          INPUT_BASE_REF: ${{ inputs.base_ref }}
+          EVENT_PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          EVENT_PR_BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
         run: |
           set -euo pipefail
-          head="${{ inputs.head_sha }}"
+          head="$INPUT_HEAD_SHA"
           if [ -z "$head" ]; then
             head="$(git rev-parse HEAD)"
           fi
           git checkout --force --detach "$head"
 
-          base="${{ inputs.base_sha }}"
+          base="$INPUT_BASE_SHA"
           if [ -z "$base" ]; then
-            ref="${{ inputs.base_ref }}"
+            if [ -n "$EVENT_PR_NUMBER" ]; then
+              base="$EVENT_PR_BASE_SHA"
+              if [ -z "$base" ]; then
+                echo "pull request base SHA is missing" >&2
+                exit 1
+              fi
+            fi
+          fi
+          if [ -z "$base" ]; then
+            ref="$INPUT_BASE_REF"
             if [ -z "$ref" ]; then
               ref="origin/${{ github.event.repository.default_branch || 'main' }}"
             fi
@@ -129,7 +146,7 @@ jobs:
             base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
           fi
 
-          pr="${{ github.event.workflow_run.pull_requests[0].number }}"
+          pr="$EVENT_PR_NUMBER"
           if [ -z "$pr" ] || [ "$pr" = "null" ]; then
             pr="${{ github.event.pull_request.number }}"
           fi
@@ -145,11 +162,18 @@ jobs:
         if: inputs.run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
-          gh run view "${{ inputs.run_id }}" --repo "${{ github.repository }}" \
-            --log-failed > "$RUNNER_TEMP/causent-failed.log" 2>&1 || true
-          gh run view "${{ inputs.run_id }}" --repo "${{ github.repository }}" \
+          raw_log="$RUNNER_TEMP/causent-failed.raw.log"
+          gh run view "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
+            --log-failed > "$raw_log" 2>&1 || true
+          # Keep original CI evidence bounded and remove common credential-shaped
+          # values before it reaches an artifact or the diagnosis process.
+          sed -E 's/((token|password|secret|authorization)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' "$raw_log" \
+            | head -c 262144 > "$RUNNER_TEMP/causent-failed.log" || true
+          gh run view "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
             --json jobs \
             --jq '.jobs[] | select(.conclusion == "failure") | "\(.name) (\(.databaseId))"' \
             > "$RUNNER_TEMP/causent-failed-jobs.txt" 2>&1 || true
@@ -178,13 +202,11 @@ jobs:
       - name: Diagnose
         id: diagnose
         env:
-          CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
-          CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
           INPUT_COMMAND: ${{ inputs.command }}
           INPUT_ATTEMPTS: ${{ inputs.attempts }}
           INPUT_DOCKER_IMAGE: ${{ inputs.docker_image }}
-          INPUT_AGENT: ${{ inputs.agent }}
           INPUT_BASE: ${{ steps.revisions.outputs.base }}
+          INPUT_CI_LOG: ${{ runner.temp }}/causent-failed.log
         run: |
           set -euo pipefail
           args=(diagnose --repo . --json --bundle "$RUNNER_TEMP/causent-bundle")
@@ -195,15 +217,17 @@ jobs:
           if [ -n "$INPUT_BASE" ]; then
             args+=(--base "$INPUT_BASE")
           fi
+          if [ -s "$INPUT_CI_LOG" ]; then
+            args+=(--ci-log "$INPUT_CI_LOG")
+          fi
           if [ -n "$INPUT_ATTEMPTS" ]; then
             args+=(--attempts "$INPUT_ATTEMPTS")
           fi
           if [ -n "$INPUT_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$INPUT_DOCKER_IMAGE")
           fi
-          if [ "$INPUT_AGENT" = "true" ]; then
-            args+=(--agent)
-          fi
+          # Do not send provider secrets into code checked out from the event.
+          # LLM analysis is intentionally disabled in this unprivileged job.
 
           status=0
           cypher "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
@@ -266,7 +290,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: causent-diagnosis-${{ steps.revisions.outputs.head || github.run_id }}
+          name: causent-diagnosis-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/causent-report.json
             ${{ runner.temp }}/causent-summary.md
@@ -276,11 +300,45 @@ jobs:
             ${{ runner.temp }}/causent-bundle
           if-no-files-found: ignore
 
-      - name: Comment on pull request
-        if: inputs.comment && steps.revisions.outputs.pr != ''
+  publish:
+    name: Publish diagnosis
+    needs: diagnose
+    if: needs.diagnose.result == 'success' && inputs.comment && needs.diagnose.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download diagnosis result
+        uses: actions/download-artifact@v4
+        with:
+          name: causent-diagnosis-${{ github.run_id }}
+          path: "$RUNNER_TEMP/causent-result"
+
+      - name: Publish bounded diagnosis comment
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.diagnose.outputs.pr }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          gh pr comment "${{ steps.revisions.outputs.pr }}" \
-            --repo "${{ github.repository }}" \
-            --body-file "$RUNNER_TEMP/causent-summary.md" || true
+          set -euo pipefail
+          report="$RUNNER_TEMP/causent-result/causent-report.json"
+          test -s "$report"
+          classification="$(jq -r '.classification // "unknown"' "$report")"
+          refused="$(jq -r '.refused // false' "$report")"
+          failures="$(jq -r '.baseline.failures // 0' "$report")"
+          attempts="$(jq -r '.baseline.attempts // 0' "$report")"
+          bundle="$(jq -r '.bundle_path // "not written"' "$report")"
+          body=$(cat <<EOF
+          ## Causent diagnosis
+
+          **Classification:** `$classification`
+          **Reproduced:** $failures/$attempts attempts failed
+          **Refused:** $refused
+
+          The full bounded result is available in the workflow artifact.
+          Bundle path recorded by the runner: `$bundle`
+          EOF
+          )
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"

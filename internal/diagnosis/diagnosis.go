@@ -210,6 +210,9 @@ type Config struct {
 	Agent      *agent.Client
 	MaxCommits int
 	Probes     [][]string
+	// ExternalEvidence is bounded evidence collected by an integration such as
+	// GitHub Actions. It is recorded separately from reproduction output.
+	ExternalEvidence []EvidenceItem
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -257,6 +260,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		Command:         cfg.Command,
 		CreatedAt:       time.Now().UTC(),
 	}
+	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
 
 	// Create the investigation so the gateway can stream this run.
