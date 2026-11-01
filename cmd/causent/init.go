@@ -28,7 +28,17 @@ type detector struct{}
 func (detector) Detect(root string) (RepositoryDetection, error) {
 	var d RepositoryDetection
 	d.Root = root
-	add := func(dst *[]Finding, name, evidence string) { *dst = append(*dst, Finding{name, evidence}) }
+	add := func(dst *[]Finding, name, evidence string) {
+		for i := range *dst {
+			if (*dst)[i].Name == name {
+				if evidence != "" && !strings.Contains((*dst)[i].Evidence, evidence) {
+					(*dst)[i].Evidence += ", " + evidence
+				}
+				return
+			}
+		}
+		*dst = append(*dst, Finding{name, evidence})
+	}
 	exists := func(name string) bool { _, err := os.Stat(filepath.Join(root, name)); return err == nil }
 	if exists("go.mod") {
 		add(&d.Languages, "Go", "go.mod")
@@ -148,7 +158,7 @@ func packageScript(root, key string) string {
 	re := regexp.MustCompile(`"` + key + `"\s*:\s*"([^"]+)"`)
 	m := re.FindSubmatch(b)
 	if len(m) == 2 {
-		return "npm run " + key
+		return "npm " + key
 	}
 	return ""
 }
@@ -191,14 +201,31 @@ func runInit(args []string) {
 	if err != nil {
 		fatalInit(err)
 	}
-	fmt.Println("Detected environment:")
+	fmt.Println("Causent repository setup")
+	fmt.Printf("Repository: %s\n\n", root)
+	fmt.Println("Detected")
 	printFindings("Languages", d.Languages)
 	printFindings("Build systems", d.BuildSystems)
 	printFindings("Package managers", d.PackageManagers)
-	printFindings("CI", d.CIProviders)
-	printFindings("Test commands", d.TestCommands)
+	printFindings("CI providers", d.CIProviders)
+	printFindings("Workflows", d.Workflows)
+	printFindings("Runtime versions", d.RuntimeVersions)
+	if len(d.TestCommands) > 0 {
+		printFindings("Test commands", d.TestCommands)
+	} else {
+		fmt.Println("Test commands: none confirmed")
+		fmt.Println("  Evidence checked: package scripts and GitHub Actions run steps")
+		fmt.Println("  Action required: set the exact failing CI command in .causent.yml")
+	}
+	fmt.Println()
+	fmt.Println("Proposed files")
+	fmt.Println("  .causent.yml")
+	fmt.Println("  .github/workflows/causent.yml")
+	if len(d.TestCommands) > 1 {
+		fmt.Println("\nMore than one test command was detected. The first one will be proposed; review it before committing.")
+	}
 	if len(d.TestCommands) == 0 {
-		fmt.Println("Test commands: none found; .causent.yml will require review")
+		fmt.Println("\nThe configuration will contain an empty command because no safe test command was confirmed.")
 	}
 	files := map[string]string{".causent.yml": renderInitConfig(d), filepath.Join(".github", "workflows", "causent.yml"): renderInitWorkflow(d)}
 	for name := range files {
@@ -207,7 +234,7 @@ func runInit(args []string) {
 			fmt.Printf("%s exists; overwrite? [y/N] ", name)
 			answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			if strings.ToLower(strings.TrimSpace(answer)) != "y" {
-				fmt.Println("skipping " + name)
+				fmt.Println("  skipped " + name)
 				delete(files, name)
 			}
 		}
@@ -220,21 +247,25 @@ func runInit(args []string) {
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			fatalInit(err)
 		}
-		fmt.Println("wrote " + name)
+		fmt.Println("  wrote " + name)
 	}
-	fmt.Println("Review .causent.yml, commit both files, and run causent diagnose locally to verify the command.")
+	fmt.Println("\nNext steps")
+	fmt.Println("  1. Review .causent.yml and confirm command matches CI.")
+	fmt.Println("  2. Review .github/workflows/causent.yml and the workflow name it watches.")
+	fmt.Println("  3. Commit both files and push a test change.")
+	fmt.Println("  4. Run causent diagnose locally before relying on CI comments.")
 }
 func printFindings(label string, fs []Finding) {
 	if len(fs) == 0 {
 		return
 	}
-	fmt.Printf("%s: ", label)
-	for i, f := range fs {
-		if i > 0 {
-			fmt.Print(", ")
+	fmt.Printf("  %s:\n", label)
+	for _, f := range fs {
+		if f.Evidence == "" {
+			fmt.Printf("    - %s\n", f.Name)
+		} else {
+			fmt.Printf("    - %s\n      evidence: %s\n", f.Name, f.Evidence)
 		}
-		fmt.Printf("%s (%s)", f.Name, f.Evidence)
 	}
-	fmt.Println()
 }
 func fatalInit(err error) { fmt.Fprintln(os.Stderr, "causent init: "+err.Error()); os.Exit(1) }
