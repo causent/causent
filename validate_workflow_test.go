@@ -42,25 +42,32 @@ func TestCIIntegrationTriggerIsValid(t *testing.T) {
 	if job == nil || mapKey(job, "if") == nil {
 		t.Fatal("ci-integration.yml must filter failures with a job-level if")
 	}
+	if !strings.Contains(string(data), "pull_requests[0].base.sha") {
+		t.Fatal("ci-integration.yml must pass the pull request base SHA")
+	}
 }
 
 func TestReusableWorkflowContract(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/ci-diagnose.yml")
 	checks := map[string]bool{
-		"workflow_call trigger":     strings.Contains(content, "workflow_call"),
-		"head_sha input":            strings.Contains(content, "head_sha:"),
-		"base_sha input":            strings.Contains(content, "base_sha:"),
-		"base_ref input":            strings.Contains(content, "base_ref:"),
-		"run_id input":              strings.Contains(content, "run_id:"),
-		"checks out failing commit": strings.Contains(content, "github.event.workflow_run.head_sha"),
-		"fetches failed logs":       strings.Contains(content, "--log-failed"),
-		"installs released binary":  strings.Contains(content, "releases/latest/download/cypher_linux_amd64"),
-		"passes base revision":      strings.Contains(content, "--base"),
-		"passes docker executor":    strings.Contains(content, "--executor docker"),
-		"passes attempts":           strings.Contains(content, "--attempts"),
-		"uploads bundle":            strings.Contains(content, "actions/upload-artifact"),
-		"writes job summary":        strings.Contains(content, "GITHUB_STEP_SUMMARY"),
-		"comments on PR":            strings.Contains(content, "gh pr comment"),
+		"workflow_call trigger":                       strings.Contains(content, "workflow_call"),
+		"head_sha input":                              strings.Contains(content, "head_sha:"),
+		"base_sha input":                              strings.Contains(content, "base_sha:"),
+		"base_ref input":                              strings.Contains(content, "base_ref:"),
+		"run_id input":                                strings.Contains(content, "run_id:"),
+		"checks out failing commit":                   strings.Contains(content, "github.event.workflow_run.head_sha"),
+		"fetches failed logs":                         strings.Contains(content, "--log-failed"),
+		"installs released binary":                    strings.Contains(content, "releases/latest/download/cypher_linux_amd64"),
+		"passes base revision":                        strings.Contains(content, "--base"),
+		"passes docker executor":                      strings.Contains(content, "--executor docker"),
+		"passes attempts":                             strings.Contains(content, "--attempts"),
+		"uploads bundle":                              strings.Contains(content, "actions/upload-artifact"),
+		"writes job summary":                          strings.Contains(content, "GITHUB_STEP_SUMMARY"),
+		"comments on PR":                              strings.Contains(content, "gh pr comment"),
+		"does not persist checkout credentials":       strings.Contains(content, "persist-credentials: false"),
+		"passes original CI log":                      strings.Contains(content, "--ci-log"),
+		"separate publication job":                    strings.Contains(content, "publish:"),
+		"does not expose gateway secret to diagnosis": !strings.Contains(content, "CAUSENT_GATEWAY_ENDPOINT: ${{ secrets"),
 	}
 	for check, passed := range checks {
 		if !passed {
