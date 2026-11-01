@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// ValidateContract checks that every claim is explicitly grounded in collected
+// evidence. It is intentionally separate from classification so callers can
+// validate persisted or imported reports too.
+func ValidateContract(report Report) error {
+	known := map[string]bool{}
+	for _, e := range report.Evidence {
+		if e.ID == "" || known[e.ID] {
+			return fmt.Errorf("invalid or duplicate evidence ID %q", e.ID)
+		}
+		known[e.ID] = true
+	}
+	for _, c := range report.Claims {
+		if strings.TrimSpace(c.Statement) == "" {
+			return fmt.Errorf("claim %q has empty statement", c.ID)
+		}
+		if c.Confidence < 0 || c.Confidence > 1 {
+			return fmt.Errorf("claim %q confidence outside [0,1]", c.ID)
+		}
+		for _, id := range append(append([]string{}, c.Supporting...), c.Contradicting...) {
+			if !known[id] {
+				return fmt.Errorf("claim %q references unknown evidence %q", c.ID, id)
+			}
+		}
+	}
+	return nil
+}
+
 // Signals are matched against failing output. They are observations about text,
 // not proof of cause, so the matched strings are recorded as evidence.
 var infrastructureSignals = []string{
