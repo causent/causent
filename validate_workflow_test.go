@@ -67,6 +67,7 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"does not persist checkout credentials":       strings.Contains(content, "persist-credentials: false"),
 		"passes original CI log":                      strings.Contains(content, "--ci-log"),
 		"separate publication job":                    strings.Contains(content, "publish:"),
+		"publication can write issue comments":        strings.Contains(content, "issues: write"),
 		"does not expose gateway secret to diagnosis": !strings.Contains(content, "CAUSENT_GATEWAY_ENDPOINT: ${{ secrets"),
 		"validates release version":                   strings.Contains(content, "invalid causent_version"),
 		"validates release repository":                strings.Contains(content, "invalid causent_repository"),
