@@ -4,7 +4,7 @@ This document explains how the repository is structured and how a request moves 
 
 ## What Causent is
 
-Causent is a language-agnostic CI diagnosis system. It runs a repository command, repeats it in an isolated workspace, compares revisions, classifies the observed behavior, localizes likely Git history, and writes replayable evidence.
+Causent is a language-agnostic CI failure-analysis and diagnosis system. It runs a repository command, repeats it in an isolated workspace, compares revisions, classifies the failure (PR regression, pre-existing failure, flaky test, dependency drift, or infrastructure problem), localizes likely Git history, and writes replayable evidence.
 
 The system has two related paths:
 
