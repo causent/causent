@@ -344,16 +344,32 @@ jobs:
           refused="$(jq -r '.refused // false' "$report")"
           failures="$(jq -r '.baseline.failures // 0' "$report")"
           attempts="$(jq -r '.baseline.attempts // 0' "$report")"
-          bundle="$(jq -r '.bundle_path // "not written"' "$report")"
+          command="$(jq -r 'if (.command | type) == "array" then (.command | join(" ")) else (.command // "not configured") end' "$report")"
+          base_passes="$(jq -r '.comparison.base.passes // 0' "$report")"
+          base_attempts="$(jq -r '.comparison.base.attempts // 0' "$report")"
+          files="$(jq -r '(.localization.likely_files // []) | if length == 0 then "not localized" else join(", ") end' "$report")"
+          candidate="$(jq -r '(.localization.candidate_commits[0] // {}) | if .sha then ((.sha[0:7]) + " — " + (.subject // "")) else "not identified" end' "$report")"
+          confidence="$(jq -r '((.confidence // 0) * 100 | floor | tostring) + "%"' "$report")"
+          failure="$(jq -r '.baseline.results[0].stderr_excerpt // ""' "$report" | grep -E -- '--- FAIL:|^FAIL' | head -3 | tr '\n' ' ' || true)"
+          artifact_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           body=$(cat <<EOF
           ## Causent diagnosis
 
-          **Classification:** ${classification}
-          **Reproduced:** $failures/$attempts attempts failed
-          **Refused:** $refused
+          **Classification:** ${classification}<br>
+          **Confidence:** ${confidence}<br>
+          **Command:** ${command}
 
-          The full bounded result is available in the workflow artifact.
-          Bundle path recorded by the runner: ${bundle}
+          **Reproduction:** ${failures}/${attempts} head attempts failed; ${base_passes}/${base_attempts} base attempts passed.
+          **Refused:** ${refused}
+
+          **Likely changed files:** ${files}<br>
+          **Candidate commit:** ${candidate}
+
+          **Observed failure:** ${failure:-No failure line extracted}
+
+          **Uncertainty:** Review the full evidence before treating the localization as a confirmed root cause.
+
+          [View workflow run and diagnosis artifact](${artifact_url})
           EOF
           )
           printf '%s\n' "$body" > "$RUNNER_TEMP/causent-comment.md"
