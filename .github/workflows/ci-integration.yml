@@ -22,4 +22,4 @@ jobs:
     with:
       run_id: ${{ github.event.workflow_run.id }}
       head_sha: ${{ github.event.workflow_run.head_sha }}
-      base_ref: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.base_sha || 'HEAD~1' }}
+      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}

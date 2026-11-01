@@ -12,9 +12,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +91,7 @@ func runDiagnose(args []string) {
 	fs.Var(&probes, "probe", "optional diagnostic command; repeatable; never a fix")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	useAgent := fs.Bool("agent", false, "ask the configured gateway model to analyze collected evidence")
+	ciLog := fs.String("ci-log", "", "bounded original CI log to include as evidence")
 	fs.Parse(args)
 
 	set := map[string]bool{}
@@ -177,6 +181,21 @@ func runDiagnose(args []string) {
 		GoodRef:       *good,
 		BaseRef:       *base,
 		MaxCommits:    *maxCommits,
+	}
+	if strings.TrimSpace(*ciLog) != "" {
+		f, readErr := os.Open(*ciLog)
+		if readErr != nil {
+			fmt.Fprintln(os.Stderr, "ci log: "+readErr.Error())
+			os.Exit(2)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, 256<<10))
+		_ = f.Close()
+		if readErr != nil {
+			fmt.Fprintln(os.Stderr, "ci log: "+readErr.Error())
+			os.Exit(2)
+		}
+		digest := sha256.Sum256(data)
+		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
 	}
 	if *useAgent {
 		endpoint := envOr("CYPHER_GATEWAY_ENDPOINT", "http://127.0.0.1:8787")

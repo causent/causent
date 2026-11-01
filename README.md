@@ -1,16 +1,8 @@
 # Causent
 
-Causent is an LLM-driven repair engine with a sandbox verifier. Given a
-repository and a command that fails, it reproduces the failure, collects
-evidence, asks a model for competing hypotheses, runs a discriminating
-experiment to decide between them, asks for a patch, applies that patch in a
-disposable copy of the repository, and runs the original and regression
-commands before calling the patch anything.
-
-The rule that shapes the whole design: **a patch is only reported as successful
-because commands passed in a throwaway workspace**, never because a model said
-so. A passing verification still records `root_cause_verified: false` and notes
-that passing tests prove behavior, not cause.
+Causent reproduces CI failures, collects evidence, and reports a deterministic
+diagnosis. An optional model can suggest hypotheses from that evidence. Repair
+is separate and verifies proposed changes in a disposable workspace.
 
 Two entry points share one engine:
 
@@ -19,14 +11,12 @@ Two entry points share one engine:
 | `repair` | optional, heuristic by default | hypotheses, experiments, candidate patches, verification reports |
 | `diagnose` | none | deterministic classification, localization, replayable bundle |
 
-`repair` is the full loop. `diagnose` is the same reproduction and evidence
-machinery with the model removed, for when you want trustworthy triage without
-wiring up a provider — which is why it is the default for CI.
+`repair` runs the experimental patch workflow. `diagnose` performs reproduction,
+classification, localization, and bundle creation without requiring a model.
 
-With no `HADES_MODEL_PROVIDER` set, `repair` falls back to `HeuristicProvider`:
-three fixed hypotheses at fixed confidences, and a patch located by parsing a
-Python traceback. That path is deterministic and needs no network, but it is
-not reasoning — set a provider to get real hypotheses.
+Without `HADES_MODEL_PROVIDER`, `repair` uses the built-in heuristic provider.
+It is deterministic and limited; use a configured provider for model-backed
+hypotheses.
 
 ## The repair loop
 
@@ -344,16 +334,17 @@ The `workflow_run` design is deliberate: the diagnosing job needs
 `actions: read` to fetch the failed run's logs, which is a permission the
 failing job should not have to hold.
 
-The intended pipeline is: identify the run that triggered this workflow by its
-`id`, list its failed jobs, download that run's logs as an artifact, extract the
-failing command from those logs, then diagnose the head SHA against the pull
-request's base SHA. When the command cannot be extracted unambiguously, the
-comment says **inconclusive** and the logs are uploaded anyway. When there is no
-associated pull request, the bundle is uploaded and the workflow exits without
-commenting. It never guesses a command and never opens a patch.
+The reusable workflow reads the triggering run ID from the `workflow_run` event,
+downloads failed job logs with the Actions CLI, checks out the recorded head
+SHA, and runs the command from `.causent.yml` or the reusable-workflow input.
+The command is never inferred from log text. If it is not configured, the run
+fails with an explicit error rather than guessing. The workflow uploads the
+diagnosis bundle and comments only when the run is associated with a pull
+request. Fork runs are rejected by the repository ownership guard.
 
-**These workflows are not yet validated.** See the note below before enabling
-them on a real repository.
+The workflow files are structurally tested in `validate_workflow_test.go`. A
+live external-repository run still requires a published release and a test
+repository with the required permissions.
 
 ## Environment variables
 
@@ -389,42 +380,14 @@ them on a real repository.
 | `internal/evaluation` | Benchmark runner |
 | `benchmarks` | Fixture corpus and recorded results |
 
-## Status and known gaps
+## Current scope
 
-Causent is under active renaming. The product is Causent, but these identifiers
-still use older names and are not yet migrated:
+The default diagnosis path is deterministic and does not require a model. The
+repair path is experimental. Supported environments and known limitations are
+listed in `docs/supported-environments.md` and `docs/installation.md`.
 
-- Go module path `github.com/Yashbhu/Hades`
-- CLI binary `cmd/cypher` and the `cypher ...` usage strings
-- Bundle directory `.cypher/bundles/` and the `cypher.diagnosis.bundle/v1`
-  schema version
-- `HADES_*` environment variables alongside `CAUSENT_*` and `CYPHER_*`
+Run the test suite with model-provider variables unset:
 
-`.github/workflows/ci-integration.yml` and `.github/workflows/diagnosis.yml` are
-**untested against this tree**. Known problems:
-
-- `ci-integration.yml` references `./cmd/causent`, which does not exist (the
-  directory is `cmd/cypher`)
-- `ci-integration.yml` places `if:` under `on.workflow_run`, where GitHub ignores
-  it, and references `inputs.*` values that do not exist for a `workflow_run`
-  event
-- `ci-integration.yml` never calls the Actions API, so it cannot identify the
-  triggering run, download its logs, or find an associated pull request; the
-  `has_pr` output it checks is never set
-- `ci-integration.yml` uploads `/tmp` scratch files instead of the replay
-  bundle, and its PR comment step can never fire
-- `diagnosis.yml` invokes a bare `cypher` binary that is never installed on the
-  runner, and sets `working-directory: /workspace` while `actions/checkout`
-  writes to `$GITHUB_WORKSPACE`
-
-Until those are fixed, treat the workflows as design sketches. The CLI is the
-supported interface.
-
-The seed benchmark corpus is deterministic Python fixtures. Go, Rust, and
-JavaScript/TypeScript support is exercised through the executor and the
-`--command` flag, not yet through curated benchmark cases.
-
-`go test ./...` is sensitive to `HADES_MODEL_PROVIDER`. With it set to `gateway`,
-`internal/engine` tests make a real call to `HADES_GATEWAY_ENDPOINT` and fail if
-no gateway is listening. Run tests with those variables unset, or start the
-gateway first.
+```sh
+go test ./...
+```
