@@ -358,9 +358,6 @@ jobs:
           Bundle path recorded by the runner: `$bundle`
           EOF
           )
-          response="$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-            --method POST \
-            -f body="$body" 2>&1)" || {
-              echo "$response" >&2
-              exit 1
-            }
+          gh pr comment "$PR_NUMBER" \
+            --repo "$REPOSITORY" \
+            --body "$body"
