@@ -1,5 +1,20 @@
 # CI integration
 
+## Onboard a repository with `causent init`
+
+From the root of a project, run:
+
+```sh
+causent init
+```
+
+The command reports manifest, language, package-manager, GitHub Actions, runtime,
+and test-command evidence, then proposes `.causent.yml` and
+`.github/workflows/causent.yml`. It never overwrites an existing file without
+confirmation. Use `causent init --yes` for scripted onboarding, and review the
+generated `command` whenever no test command could be proven from an existing
+workflow or package script.
+
 Causent diagnoses a failed CI run in **your** repository. Your repository keeps
 its source, its CI workflow, and a small `.causent.yml`. Causent supplies the
 diagnosis engine as a released binary, invoked through a reusable workflow.
