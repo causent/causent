@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/causent/causent/internal/domain"
 )
 
 // Policy defines the security constraints for a command execution.
@@ -455,7 +455,7 @@ func containerName(instanceID string) string {
 	}
 	buf := make([]byte, 3)
 	_, _ = rand.Read(buf)
-	return "hades-exec-" + b.String() + "-" + hex.EncodeToString(buf)
+	return "causent-exec-" + b.String() + "-" + hex.EncodeToString(buf)
 }
 
 // containerArgs builds the `docker run` argument list (everything before the

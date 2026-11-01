@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/engine"
-	"github.com/Yashbhu/Hades/internal/execution"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/engine"
+	"github.com/causent/causent/internal/execution"
+	"github.com/causent/causent/internal/persistence"
 )
 
 type Config struct {
@@ -236,7 +236,7 @@ func prepareTrialRepository(source string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("benchmark repository is not a directory: %s", source)
 	}
-	destination, err := os.MkdirTemp("", "hades-eval-repo-*")
+	destination, err := os.MkdirTemp("", "causent-eval-repo-*")
 	if err != nil {
 		return "", fmt.Errorf("create trial repository: %w", err)
 	}
@@ -286,7 +286,7 @@ func prepareTrialRepository(source string) (string, error) {
 		os.RemoveAll(destination)
 		return "", err
 	}
-	if err := runGit("-c", "user.email=hades-evaluation@example.invalid", "-c", "user.name=Hades Evaluation", "commit", "-qm", "benchmark fixture"); err != nil {
+	if err := runGit("-c", "user.email=causent-evaluation@example.invalid", "-c", "user.name=Causent Evaluation", "commit", "-qm", "benchmark fixture"); err != nil {
 		os.RemoveAll(destination)
 		return "", err
 	}

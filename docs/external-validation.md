@@ -2,7 +2,7 @@
 
 ## Verified in this checkout
 
-- Clean release-style build with `go build -trimpath ./cmd/cypher`.
+- Clean release-style build with `go build -trimpath ./cmd/causent`.
 - Version reporting from the built binary.
 - Non-interactive onboarding in a temporary Go repository.
 - Generated reusable-workflow reference and workflow inputs.

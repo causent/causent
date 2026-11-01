@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/persistence"
 )
 
 type Config struct {
@@ -33,8 +33,8 @@ type Config struct {
 
 func ConfigFromEnvironment() Config {
 	timeout := 120 * time.Second
-	provider := strings.ToLower(envOr("CYPHER_GATEWAY_PROVIDER", "ollama"))
-	endpoint := os.Getenv("CYPHER_GATEWAY_ENDPOINT")
+	provider := strings.ToLower(envOr("CAUSENT_GATEWAY_PROVIDER", "ollama"))
+	endpoint := os.Getenv("CAUSENT_GATEWAY_ENDPOINT")
 	if endpoint == "" {
 		switch provider {
 		case "gemini":
@@ -45,7 +45,7 @@ func ConfigFromEnvironment() Config {
 			endpoint = "http://127.0.0.1:11434"
 		}
 	}
-	apiKey := os.Getenv("CYPHER_GATEWAY_API_KEY")
+	apiKey := os.Getenv("CAUSENT_GATEWAY_API_KEY")
 	if apiKey == "" {
 		switch provider {
 		case "gemini":
@@ -55,13 +55,13 @@ func ConfigFromEnvironment() Config {
 		}
 	}
 	return Config{
-		ListenAddr:      envOr("CYPHER_GATEWAY_ADDR", "127.0.0.1:8787"),
+		ListenAddr:      envOr("CAUSENT_GATEWAY_ADDR", "127.0.0.1:8787"),
 		Provider:        provider,
-		Model:           envOr("CYPHER_GATEWAY_MODEL", "qwen2.5:7b"),
+		Model:           envOr("CAUSENT_GATEWAY_MODEL", "qwen2.5:7b"),
 		Endpoint:        endpoint,
 		APIKey:          apiKey,
 		Timeout:         timeout,
-		ThinkingLevel:   envOr("CYPHER_GATEWAY_THINKING_LEVEL", "low"),
+		ThinkingLevel:   envOr("CAUSENT_GATEWAY_THINKING_LEVEL", "low"),
 		MaxOutputTokens: 4096,
 	}
 }
@@ -177,7 +177,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	response := chatResponse{ID: fmt.Sprintf("cypher-%d", time.Now().UnixNano()), Object: "chat.completion", Created: time.Now().Unix(), Model: request.Model, Usage: usage}
+	response := chatResponse{ID: fmt.Sprintf("causent-%d", time.Now().UnixNano()), Object: "chat.completion", Created: time.Now().Unix(), Model: request.Model, Usage: usage}
 	response.Choices = append(response.Choices, struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`

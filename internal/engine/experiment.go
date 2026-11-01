@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/execution"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/execution"
 )
 
 var ErrInsufficientEvidence = fmt.Errorf("insufficient evidence for a discriminating experiment")

@@ -1,4 +1,4 @@
-// Package mcp provides a bounded stdio JSON-RPC adapter for the Hades engine.
+// Package mcp provides a bounded stdio JSON-RPC adapter for the Causent engine.
 // It intentionally keeps MCP transport and validation separate from diagnosis.
 package mcp
 
@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/engine"
-	"github.com/Yashbhu/Hades/internal/execution"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/engine"
+	"github.com/causent/causent/internal/execution"
+	"github.com/causent/causent/internal/persistence"
 )
 
 const (
@@ -149,7 +149,7 @@ func (s *Server) Handle(ctx context.Context, raw []byte) []byte {
 func (s *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (interface{}, error) {
 	switch method {
 	case "initialize":
-		return map[string]interface{}{"protocolVersion": "2024-11-05", "capabilities": map[string]interface{}{"tools": map[string]interface{}{}}, "serverInfo": map[string]string{"name": "hades", "version": "0.8.0"}}, nil
+		return map[string]interface{}{"protocolVersion": "2024-11-05", "capabilities": map[string]interface{}{"tools": map[string]interface{}{}}, "serverInfo": map[string]string{"name": "causent", "version": "0.8.0"}}, nil
 	case "tools/list":
 		return map[string]interface{}{"tools": toolDefinitions()}, nil
 	case "tools/call":
@@ -513,7 +513,7 @@ func toolDefinitions() []map[string]interface{} {
 		} else if name != "list_investigations" {
 			schema["properties"] = map[string]interface{}{"id": map[string]string{"type": "string"}, "investigation_id": map[string]string{"type": "string"}}
 		}
-		out = append(out, map[string]interface{}{"name": name, "description": "Hades engine operation; inputs are bounded and policy-validated.", "inputSchema": schema})
+		out = append(out, map[string]interface{}{"name": name, "description": "Causent engine operation; inputs are bounded and policy-validated.", "inputSchema": schema})
 	}
 	return out
 }

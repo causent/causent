@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// repoConfig is the subset of .causent.yml that `cypher diagnose` understands.
+// repoConfig is the subset of .causent.yml that `causent diagnose` understands.
 // Command-line flags always win over these values.
 type repoConfig struct {
 	Command  string   `yaml:"command"`

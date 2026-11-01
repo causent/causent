@@ -1,4 +1,4 @@
-module github.com/Yashbhu/Hades
+module github.com/causent/causent
 
 go 1.26
 

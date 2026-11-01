@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/execution"
+	"github.com/causent/causent/internal/execution"
 )
 
 // testExecutor runs only sh and only inside the OS temp tree, which is where
@@ -33,7 +33,7 @@ func newRepo(t *testing.T) string {
 	dir := t.TempDir()
 	git(t, dir, "init", "-q")
 	git(t, dir, "config", "user.email", "test@example.com")
-	git(t, dir, "config", "user.name", "cypher test")
+	git(t, dir, "config", "user.name", "causent test")
 	git(t, dir, "config", "commit.gpgsign", "false")
 	return dir
 }

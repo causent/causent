@@ -1,4 +1,4 @@
-// Package diagnosis implements Cypher's default, evidence-first workflow: it
+// Package diagnosis implements Causent's default, evidence-first workflow: it
 // reproduces a failure, classifies it, localizes the change that introduced it,
 // and emits a replayable bundle. It deliberately does not generate or apply
 // patches; that remains the explicit opt-in repair workflow.
@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/agent"
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/execution"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/agent"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/execution"
+	"github.com/causent/causent/internal/persistence"
 )
 
 // Classification is the deterministic category assigned to an observed failure.
@@ -424,7 +424,7 @@ func finish(report *Report, d *Diagnoser, workspace string) {
 			d.emit(EventBundleCreated, statusFor(*report), "bundle failed: "+err.Error())
 		} else {
 			report.BundlePath = path
-			report.ReplayCommand = fmt.Sprintf("cypher replay %s", path)
+			report.ReplayCommand = fmt.Sprintf("causent replay %s", path)
 			d.emit(EventBundleCreated, statusFor(*report), path)
 		}
 	}

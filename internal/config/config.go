@@ -1,4 +1,4 @@
-// Package config contains the small, environment-friendly Hades configuration
+// Package config contains the small, environment-friendly Causent configuration
 // surface shared by command-line and MCP entry points.
 package config
 
@@ -25,7 +25,7 @@ type Config struct {
 
 func Defaults() Config {
 	home, _ := os.UserHomeDir()
-	db := filepath.Join(home, ".hades", "investigations.db")
+	db := filepath.Join(home, ".causent", "investigations.db")
 	return Config{
 		DatabasePath: db, ArtifactPath: filepath.Join(filepath.Dir(db), "artifacts"),
 		Timeout: 10 * time.Minute, Budget: 20, MaxOutput: 64 << 10,
@@ -74,24 +74,24 @@ func Validate(cfg Config) error {
 }
 
 func applyEnv(cfg *Config) {
-	if value := os.Getenv("HADES_DB"); value != "" {
+	if value := os.Getenv("CAUSENT_DB"); value != "" {
 		cfg.DatabasePath = value
 	}
-	if value := os.Getenv("HADES_ARTIFACTS"); value != "" {
+	if value := os.Getenv("CAUSENT_ARTIFACTS"); value != "" {
 		cfg.ArtifactPath = value
 	}
-	if value := os.Getenv("HADES_ROOTS"); value != "" {
+	if value := os.Getenv("CAUSENT_ROOTS"); value != "" {
 		cfg.AuthorizedRoots = filepath.SplitList(value)
 	}
-	if value := os.Getenv("HADES_COMMANDS"); value != "" {
+	if value := os.Getenv("CAUSENT_COMMANDS"); value != "" {
 		cfg.AllowedCommands = filepath.SplitList(value)
 	}
-	if value := os.Getenv("HADES_TIMEOUT"); value != "" {
+	if value := os.Getenv("CAUSENT_TIMEOUT"); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
 			cfg.Timeout = parsed
 		}
 	}
-	if value := os.Getenv("HADES_BUDGET"); value != "" {
+	if value := os.Getenv("CAUSENT_BUDGET"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			cfg.Budget = parsed
 		}

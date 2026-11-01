@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/execution"
+	"github.com/causent/causent/internal/execution"
 )
 
 // ReplayConfig controls one replay of a recorded diagnosis bundle.

@@ -1,4 +1,4 @@
-package hades_test
+package causent_test
 
 import (
 	"os"
@@ -57,7 +57,7 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"run_id input":                                strings.Contains(content, "run_id:"),
 		"checks out failing commit":                   strings.Contains(content, "github.event.workflow_run.head_sha"),
 		"fetches failed logs":                         strings.Contains(content, "--log-failed"),
-		"installs released binary":                    strings.Contains(content, "releases/latest/download/cypher_linux_amd64"),
+		"installs released binary":                    strings.Contains(content, "releases/latest/download/causent_linux_amd64"),
 		"passes base revision":                        strings.Contains(content, "--base"),
 		"passes docker executor":                      strings.Contains(content, "--executor docker"),
 		"passes attempts":                             strings.Contains(content, "--attempts"),
@@ -100,7 +100,7 @@ func TestReleaseWorkflowPublishesBinary(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/release.yml")
 	checks := map[string]bool{
 		"tag trigger":         strings.Contains(content, "tags:"),
-		"builds cypher":       strings.Contains(content, "./cmd/cypher"),
+		"builds causent":       strings.Contains(content, "./cmd/causent"),
 		"stamps version":      strings.Contains(content, "-X main.version="),
 		"publishes release":   strings.Contains(content, "action-gh-release"),
 		"publishes checksums": strings.Contains(content, "SHA256SUMS"),

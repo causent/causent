@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    name: Publish cypher binary
+    name: Publish causent binary
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,8 +29,8 @@ jobs:
           # the same linux/amd64 platform that GitHub runners use.
           CGO_ENABLED=1 go build -trimpath \
             -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-            -o dist/cypher_linux_amd64 ./cmd/cypher
-          (cd dist && sha256sum cypher_linux_amd64 > SHA256SUMS)
+            -o dist/causent_linux_amd64 ./cmd/causent
+          (cd dist && sha256sum causent_linux_amd64 > SHA256SUMS)
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

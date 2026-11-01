@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/causent/causent/internal/domain"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -314,10 +314,10 @@ func (s *Store) migrate() error {
 	}
 
 	//Set artifacts root
-	artifactsRoot := os.Getenv("HADES_ARTIFACTS_ROOT")
+	artifactsRoot := os.Getenv("CAUSENT_ARTIFACTS_ROOT")
 	if artifactsRoot == "" {
 		home, _ := os.UserHomeDir()
-		artifactsRoot = filepath.Join(home, ".hades", "artifacts")
+		artifactsRoot = filepath.Join(home, ".causent", "artifacts")
 	}
 	s.artifactsRoot = artifactsRoot
 	s.setConfig("artifacts_root", artifactsRoot)
