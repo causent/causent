@@ -334,16 +334,17 @@ The `workflow_run` design is deliberate: the diagnosing job needs
 `actions: read` to fetch the failed run's logs, which is a permission the
 failing job should not have to hold.
 
-The intended pipeline is: identify the run that triggered this workflow by its
-`id`, list its failed jobs, download that run's logs as an artifact, extract the
-failing command from those logs, then diagnose the head SHA against the pull
-request's base SHA. When the command cannot be extracted unambiguously, the
-comment says **inconclusive** and the logs are uploaded anyway. When there is no
-associated pull request, the bundle is uploaded and the workflow exits without
-commenting. It never guesses a command and never opens a patch.
+The reusable workflow reads the triggering run ID from the `workflow_run` event,
+downloads failed job logs with the Actions CLI, checks out the recorded head
+SHA, and runs the command from `.causent.yml` or the reusable-workflow input.
+The command is never inferred from log text. If it is not configured, the run
+fails with an explicit error rather than guessing. The workflow uploads the
+diagnosis bundle and comments only when the run is associated with a pull
+request. Fork runs are rejected by the repository ownership guard.
 
-**These workflows are not yet validated.** See the note below before enabling
-them on a real repository.
+The workflow files are structurally tested in `validate_workflow_test.go`. A
+live external-repository run still requires a published release and a test
+repository with the required permissions.
 
 ## Environment variables
 
