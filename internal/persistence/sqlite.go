@@ -291,6 +291,27 @@ func (s *Store) migrate() error {
 		}
 		slog.Info("applied schema migration", "version", m.version)
 	}
+	// Older databases created before budget accounting did not have these
+	// columns. CREATE TABLE IF NOT EXISTS does not alter an existing table, so
+	// upgrade them explicitly and keep existing investigation data intact.
+	for _, column := range []struct {
+		name string
+		def  string
+	}{
+		{name: "budget_steps", def: "INTEGER DEFAULT 0"},
+		{name: "budget_used", def: "INTEGER DEFAULT 0"},
+	} {
+		var present int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('investigations') WHERE name=?`, column.name).Scan(&present)
+		if err != nil {
+			return fmt.Errorf("inspect investigations schema: %w", err)
+		}
+		if present == 0 {
+			if _, err := s.db.Exec(`ALTER TABLE investigations ADD COLUMN ` + column.name + ` ` + column.def); err != nil {
+				return fmt.Errorf("add investigations.%s: %w", column.name, err)
+			}
+		}
+	}
 
 	//Set artifacts root
 	artifactsRoot := os.Getenv("HADES_ARTIFACTS_ROOT")
