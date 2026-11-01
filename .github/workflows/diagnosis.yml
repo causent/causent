@@ -1,0 +1,121 @@
+name: Diagnosis
+
+on:
+  workflow_dispatch:
+    name: Diagnose CI Failure
+    inputs:
+      base_ref:
+        description: 'Base revision to compare against (e.g. main)'
+        required: false
+        default: ''
+      head_ref:
+        description: 'Head revision to diagnose (e.g. PR head or a specific tag)'
+        required: false
+        default: ''
+      failing_command:
+        description: 'The command that fails (e.g. "go test ./...", "pytest -q", "cargo test")'
+        required: true
+      attempts:
+        description: 'Number of reproduction attempts per revision'
+        required: false
+        default: '3'
+      docker_image:
+        description: 'Docker image containing the repository runtime and test tools'
+        required: false
+        default: ''
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: '/workspace'
+    steps:
+      - name: Cancel in-progress workflow runs
+        uses: stychn/cancel-workflow-action@master
+
+      - name: Checkout head revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.head_ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout base revision
+        if: ${{ inputs.base_ref != '' }}
+        run: |
+          git fetch origin '${{ inputs.base_ref }}'
+          git worktree add /workspace/base '${{ inputs.base_ref }}'
+
+      - name: Set up Docker Buildx
+        if: ${{ inputs.docker_image != '' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run cypher diagnose
+        id: diagnose
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --repo /workspace
+            --command "${{ inputs.failing_command }}"
+            --attempts ${{ inputs.attempts }}
+          )
+          if [ -n "${{ inputs.docker_image }}" ]; then
+            ARGS+=(--executor docker --image "${{ inputs.docker_image }}")
+          fi
+          if [ -n "${{ inputs.base_ref }}" ]; then
+            ARGS+=(--base "${{ inputs.base_ref }}")
+          fi
+          ARGS+=(--agent)
+
+          cypher diagnose "${ARGS[@]}" > /tmp/diagnose-output.txt 2>&1 || true
+
+          # Extract classification
+          if grep -q 'classification:' /tmp/diagnose-output.txt; then
+            CLASSIFICATION=$(grep 'classification:' /tmp/diagnose-output.txt | sed 's/.*classification: //')
+          else
+            CLASSIFICATION="unknown"
+          fi
+          echo "classification=$CLASSIFICATION" >> $GITHUB_OUTPUT
+
+          # Extract confidence
+          if grep -q 'confidence:' /tmp/diagnose-output.txt; then
+            CONFIDENCE=$(grep 'confidence:' /tmp/diagnose-output.txt | sed 's/.*confidence: //')
+          else
+            CONFIDENCE="0.00"
+          fi
+          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+
+          # Extract base fail count
+          if grep -q 'base.*failed' /tmp/diagnose-output.txt; then
+            BASE_FAIL=$(grep 'base.*failed' /tmp/diagnose-output.txt | grep -oP '\d+' | head -1 || echo "0")
+          else
+            BASE_FAIL="0"
+          fi
+          echo "base_fail=$BASE_FAIL" >> $GITHUB_OUTPUT
+
+          # Extract head fail count
+          if grep -q 'head.*failed' /tmp/diagnose-output.txt; then
+            HEAD_FAIL=$(grep 'head.*failed' /tmp/diagnose-output.txt | grep -oP '\d+' | head -1 || echo "0")
+          else
+            HEAD_FAIL="0"
+          fi
+          echo "head_fail=$HEAD_FAIL" >> $GITHUB_OUTPUT
+
+      - name: Upload replay bundle as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypher-diagnosis-bundle
+          path: /workspace/.cypher/bundles/*
+
+      - name: Job summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Diagnosis Summary
+
+          **Classification**: ${{ steps.diagnose.outputs.classification }}
+          **Base/Head Pass-Fail**: base ${{ steps.diagnose.outputs.base_fail }}/${{ inputs.attempts }} head ${{ steps.diagnose.outputs.head_fail }}
+          **Confidence**: ${{ steps.diagnose.outputs.confidence }}
+          **Bundle Location**: /workspace/.cypher/bundles/
+          EOF
