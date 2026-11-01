@@ -1,0 +1,126 @@
+name: CI Integration
+
+on:
+  workflow_run:
+    types: [completed]
+    branches:
+      - main
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event != 'pull_request'
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+  checks: read
+
+jobs:
+  analyze-failure:
+    name: Analyze Failure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: '${{ github.workspace }}'
+
+    steps:
+      - name: Cancel in-progress workflow runs
+        uses: stychn/cancel-workflow-action@master
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Diagnose failure
+        id: diagnose
+        run: |
+          set -euo pipefail
+          
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          BASE_SHA="${{ github.event.workflow_run.base_sha || github.event.workflow_run.head_branch }}"
+          
+          if [ -z "$BASE_SHA" ]; then
+            BASE_SHA="$(git rev-parse "${{ github.event.workflow_run.head_branch }}~1")"
+          fi
+          
+          FAILING_COMMAND=""
+          if [ -f /tmp/failed-logs.txt ] && [ -s /tmp/failed-logs.txt ]; then
+            FAILING_COMMAND=$(grep -oP '(run|test|pytest|go test|cargo test|npm test) .{0,100}' /tmp/failed-logs.txt | head -1 | sed 's/^ *//')
+          fi
+          
+          if [ -z "$FAILING_COMMAND" ]; then
+            echo "command_extracted=false" >> $GITHUB_OUTPUT
+            echo "FAILING_COMMAND=" >> $GITHUB_OUTPUT
+          else
+            echo "command_extracted=true" >> $GITHUB_OUTPUT
+            echo "FAILING_COMMAND=$FAILING_COMMAND" >> $GITHUB_OUTPUT
+          fi
+          
+          DOCKER_IMAGE="${{ github.event.inputs.docker_image || 'golang:1.26' }}"
+          
+          ARGS=(
+            diagnose
+            --repo "$GITHUB_WORKSPACE"
+            --base "$BASE_SHA"
+            --command "$FAILING_COMMAND"
+            --attempts 3
+            --executor docker
+            --image "$DOCKER_IMAGE"
+          )
+          
+          if [ -n "${CYPHER_GATEWAY_ENDPOINT:-}" ] || [ -n "${HADES_MODEL:-}" ]; then
+            ARGS+=(--agent)
+          fi
+          
+          go run ./cmd/causent "${ARGS[@]}" > /tmp/diagnose-output.txt 2>&1 || true
+          
+          CLASSIFICATION=$(grep -oP 'classification: \K.*' /tmp/diagnose-output.txt || echo "unknown")
+          CONFIDENCE=$(grep -oP 'confidence: \K[0-9.]+' /tmp/diagnose-output.txt || echo "0.00")
+          BASE_FAIL=$(grep -oP 'base .* failed \K[0-9]+' /tmp/diagnose-output.txt || echo "0")
+          HEAD_FAIL=$(grep -oP 'head .* failed \K[0-9]+' /tmp/diagnose-output.txt || echo "0")
+          
+          echo "classification=$CLASSIFICATION" >> $GITHUB_OUTPUT
+          echo "confidence=$CONFIDENCE" >> $GITHUB_OUTPUT
+          echo "base_fail=$BASE_FAIL" >> $GITHUB_OUTPUT
+          echo "head_fail=$HEAD_FAIL" >> $GITHUB_OUTPUT
+
+      - name: Upload diagnosis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnosis-bundle
+          path: |
+            /tmp/failed-logs.txt
+            /tmp/diagnose-output.txt
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && steps.identify.outputs.has_pr == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMENT="## Causent CI Failure Analysis
+
+          **Classification**: ${{ steps.diagnose.outputs.classification }}
+          **Base/Head Pass-Fail**: base ${{ steps.diagnose.outputs.base_fail }}/${{ inputs.attempts }} head ${{ steps.diagnose.outputs.head_fail }}
+          **Confidence**: ${{ steps.diagnose.outputs.confidence }}
+          **Bundle Location**: .cypher/bundles/
+          "
+          
+          if [ "${{ steps.diagnose.outputs.command_extracted }}" == "false" ]; then
+            COMMENT+="\`\`\`inconclusive\`\`\`"
+          else
+            COMMENT+="\`\`\`mathematician\`\`\`"
+          fi
+          
+          if [ -n "${GITHUB_EVENT_NUMBER:-}" ] && [ "${GITHUB_EVENT_NUMBER}" != "null" ]; then
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/${GITHUB_EVENT_NUMBER}/comments \
+              -d "{"body": "${COMMENT}"}"
