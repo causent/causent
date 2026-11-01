@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
-	"log/slog"
 	"time"
 
 	"github.com/Yashbhu/Hades/internal/domain"
@@ -197,16 +197,15 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 // Supports Last-Event-ID header for reconnection and cursor-based pagination.
 // Sends heartbeat comments every 15 seconds to keep connections alive.
 func (s *Server) sseInvestigationEvents(w http.ResponseWriter, r *http.Request) {
-	// Guard: ensure Store is configured
+	// Guard: a gateway without a store can still serve inference, but it cannot
+	// stream investigation state. Fail with a clear status instead of panicking.
 	if s.config.Store == nil {
-		writeError(w, http.StatusInternalServerError, "SSE store not configured")
+		writeError(w, http.StatusServiceUnavailable, "SSE store not configured")
 		return
 	}
 
-	path := r.URL.Path
-	parts := strings.Split(path, "/")
 	investigationID := ""
-	if len(parts) >= 3 {
+	if parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/"); len(parts) >= 3 {
 		investigationID = parts[len(parts)-1]
 	}
 	if investigationID == "" {
@@ -214,7 +213,6 @@ func (s *Server) sseInvestigationEvents(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -226,67 +224,56 @@ func (s *Server) sseInvestigationEvents(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	// Support Last-Event-ID header for reconnection
-	lastEventID := r.Header.Get("Last-Event-ID")
-	var cursor domain.ID
-	if lastEventID != "" {
-		cursor = domain.ID(lastEventID)
-		if cursor == "" {
-			writeError(w, http.StatusBadRequest, "invalid Last-Event-ID format")
-			return
-		}
-	}
+	// Last-Event-ID lets a native EventSource resume after the last event it
+	// received. IDs are time-prefixed and ordered lexicographically.
+	cursor := domain.ID(strings.TrimSpace(r.Header.Get("Last-Event-ID")))
 
-	// Fetch events newer than the cursor (if provided)
-	// Event IDs are unique snowflakes; comparing as strings gives deterministic order.
-	var initialEvents []domain.InvestigationEvent
-	var err error
-	if cursor == "" {
-		initialEvents, err = s.config.Store.ListEvents(domain.ID(investigationID))
-	} else {
-		initialEvents, err = s.config.Store.ListEventsAfterCursor(domain.ID(investigationID), cursor)
-	}
+	initialEvents, err := s.config.Store.ListEventsAfterCursor(domain.ID(investigationID), cursor)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to list events: %v", err))
 		return
 	}
 
-	// Determine the starting index: skip events up to and including the cursor
-	startIdx := 0
-	if cursor != "" {
-		cursorStr := string(cursor)
-		for i, ev := range initialEvents {
-			if string(ev.ID) == cursorStr {
-				startIdx = i + 1
-				break
-			}
+	// A single loop owns the response writer. Heartbeats and events are written
+	// from this goroutine only, so frames can never interleave.
+	pollTicker := time.NewTicker(1 * time.Second)
+	defer pollTicker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	writeEvent := func(ev domain.InvestigationEvent) bool {
+		data, err := json.Marshal(map[string]any{
+			"id":              string(ev.ID),
+			"event":           ev.Trigger,
+			"timestamp":       ev.Timestamp.UTC().Format(time.RFC3339),
+			"trigger":         ev.Trigger,
+			"previous_status": string(ev.PreviousStatus),
+			"next_status":     string(ev.NextStatus),
+			"experiment_id":   string(ev.ExperimentID),
+			"evidence_id":     string(ev.EvidenceID),
+			"error":           ev.Error,
+		})
+		if err != nil {
+			return false
 		}
+		if _, err := fmt.Fprintf(w, "event: investigation_event\nid: %s\ndata: %s\n\n", ev.ID, data); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
 	}
 
-	// Track the last event ID sent, for cursor tracking in the polling loop
-	lastSentID := domain.ID("")
-
-	// Single select loop handles both heartbeats and polling events,
-	// preventing SSE frame interleaving from multiple goroutines.
-	pollTicker := time.NewTicker(1 * time.Second)
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-
-	// Send initial events (those after the cursor)
-	for i := startIdx; i < len(initialEvents); i++ {
-		ev := initialEvents[i]
+	// The cursor is the resume point, so the poll loop must start strictly after
+	// it. Without this, a reconnect with no new events would replay history.
+	lastSentID := cursor
+	for _, ev := range initialEvents {
+		if string(ev.ID) <= string(lastSentID) {
+			continue
+		}
+		if !writeEvent(ev) {
+			return
+		}
 		lastSentID = ev.ID
-		data, _ := json.Marshal(map[string]any{
-			"id":           ev.ID,
-			"timestamp":    ev.Timestamp.UTC().Format(time.RFC3339),
-			"trigger":      ev.Trigger,
-			"previous_status": string(ev.PreviousStatus),
-			"next_status":      string(ev.NextStatus),
-			"experiment_id":  string(ev.ExperimentID),
-			"evidence_id":    string(ev.EvidenceID),
-			"error":          ev.Error,
-		})
-		fmt.Fprintf(w, "event: investigation_event\nid: %s\ndata: %s\n\n", string(ev.ID), string(data))
-		flusher.Flush()
 	}
 
 	for {
@@ -294,40 +281,24 @@ func (s *Server) sseInvestigationEvents(w http.ResponseWriter, r *http.Request) 
 		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
-			// Send a blank comment line as a heartbeat to keep connections
-			// alive through proxies and load balancers that might otherwise
-			// time out the idle connection.
-			fmt.Fprintf(w, ": keepalive\n\n")
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		case <-pollTicker.C:
-			// Fetch events after the last sent cursor
 			events, err := s.config.Store.ListEventsAfterCursor(domain.ID(investigationID), lastSentID)
 			if err != nil {
 				slog.Warn("failed to list events for SSE", "investigation_id", investigationID, "error", err)
-				// Continue polling; don't break the connection
-				continue
-			}
-			if len(events) == 0 {
-				// No new events; the heartbeat ticker will keep the connection alive.
 				continue
 			}
 			for _, ev := range events {
 				if string(ev.ID) <= string(lastSentID) {
 					continue
 				}
+				if !writeEvent(ev) {
+					return
+				}
 				lastSentID = ev.ID
-				data, _ := json.Marshal(map[string]any{
-					"id":           ev.ID,
-					"timestamp":    ev.Timestamp.UTC().Format(time.RFC3339),
-					"trigger":      ev.Trigger,
-					"previous_status": string(ev.PreviousStatus),
-					"next_status":      string(ev.NextStatus),
-					"experiment_id":  string(ev.ExperimentID),
-					"evidence_id":    string(ev.EvidenceID),
-					"error":          ev.Error,
-				})
-				fmt.Fprintf(w, "event: investigation_event\nid: %s\ndata: %s\n\n", string(ev.ID), string(data))
-				flusher.Flush()
 			}
 		}
 	}
