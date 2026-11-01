@@ -48,12 +48,14 @@ jobs:
 Change `CI` to the name of the existing test workflow.
 
 ```mermaid
-flowchart LR
-    C[Existing CI] --> F[Failed run]
-    F --> W[Causent workflow]
-    W --> R[Reproduce head and base]
-    R --> E[Evidence bundle]
-    E --> P[PR comment]
+flowchart TD
+    I[causent init] --> C[.causent.yml]
+    I --> W[.github/workflows/causent.yml]
+    T[Existing CI workflow] --> F[Failed workflow_run]
+    F --> W
+    W --> R[Reproduce PR head and exact base]
+    R --> B[Upload diagnosis bundle]
+    R --> P[Publish bounded PR comment]
 ```
 
 The diagnosis job has read-only repository permissions and no model secrets. Publication is separate. Fork pull requests are skipped because their code is untrusted.
@@ -79,20 +81,13 @@ causent init
 
 `causent init` detects manifests, package managers, workflows, runtime versions, and test commands. It asks before replacing existing files. Use `causent init --yes` in automation, then review the result.
 
-## Version tags
+The workflow uses the stable major reference `@v1`. Users do not need to
+choose a binary version or tag. Causent maintains the release behind that
+workflow reference.
 
-| Tag | Purpose |
-| --- | --- |
-| `v0.3.0` | One fixed Causent release and binary version |
-| `v1` | Moving major-version tag for the reusable workflow |
-
-Use `@v1` when you want compatible version 1 workflow updates. Pin to a release tag when you need a fixed workflow:
-
-```yaml
-uses: causent/causent/.github/workflows/ci-diagnose.yml@v0.3.0
-```
-
-The reusable workflow downloads the matching `causent_linux_amd64` binary. A release must exist before another repository can use it.
+Repositories that require reproducible dependency updates can replace `@v1`
+with a specific Causent release tag after checking the release notes. The
+reusable workflow downloads the matching `causent_linux_amd64` binary.
 
 ## Local diagnosis
 
