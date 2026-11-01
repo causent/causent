@@ -66,7 +66,7 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"passes attempts":                             strings.Contains(content, "--attempts"),
 		"uploads bundle":                              strings.Contains(content, "actions/upload-artifact"),
 		"writes job summary":                          strings.Contains(content, "GITHUB_STEP_SUMMARY"),
-		"comments on PR":                              strings.Contains(content, "gh pr comment"),
+		"comments on PR":                              strings.Contains(content, "actions/github-script@v7") && strings.Contains(content, "issues.createComment"),
 		"does not persist checkout credentials":       strings.Contains(content, "persist-credentials: false"),
 		"passes original CI log":                      strings.Contains(content, "--ci-log"),
 		"separate publication job":                    strings.Contains(content, "publish:"),
