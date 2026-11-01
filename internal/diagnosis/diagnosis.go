@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Yashbhu/Hades/internal/agent"
 	"github.com/Yashbhu/Hades/internal/domain"
 	"github.com/Yashbhu/Hades/internal/execution"
 	"github.com/Yashbhu/Hades/internal/persistence"
@@ -171,6 +172,7 @@ type Report struct {
 	Environment     Environment    `json:"environment"`
 	Baseline        Baseline       `json:"baseline"`
 	Comparison      *Comparison    `json:"comparison,omitempty"`
+	Agent           *agent.Report  `json:"agent,omitempty"`
 	Localization    Localization   `json:"localization"`
 	Evidence        []EvidenceItem `json:"evidence"`
 	Claims          []Claim        `json:"claims"`
@@ -205,6 +207,7 @@ type Config struct {
 	// git bisect instead of walking back from HEAD.
 	GoodRef    string
 	BaseRef    string
+	Agent      *agent.Client
 	MaxCommits int
 	Probes     [][]string
 }
@@ -302,6 +305,17 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	report.Evidence = append(report.Evidence, attemptEvidence(baseline)...)
 	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
+	if cfg.Agent != nil {
+		input := agent.Input{Classification: string(report.Classification), Command: report.Command}
+		for _, e := range report.Evidence {
+			input.Evidence = append(input.Evidence, agent.Evidence{ID: e.ID, Kind: e.Kind, Detail: e.Detail})
+		}
+		if result, agentErr := cfg.Agent.Analyze(ctx, input); agentErr != nil {
+			report.Uncertainty = append(report.Uncertainty, "agent analysis unavailable: "+agentErr.Error())
+		} else {
+			report.Agent = &result
+		}
+	}
 
 	// Refuse before localization when the failure itself is not established.
 	if reason, ok := refusalReason(report.Classification, baseline); ok {

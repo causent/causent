@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Yashbhu/Hades/internal/agent"
 	"github.com/Yashbhu/Hades/internal/diagnosis"
 	"github.com/Yashbhu/Hades/internal/engine"
 	"github.com/Yashbhu/Hades/internal/execution"
@@ -80,6 +81,7 @@ func runDiagnose(args []string) {
 	var probes stringList
 	fs.Var(&probes, "probe", "optional diagnostic command; repeatable; never a fix")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
+	useAgent := fs.Bool("agent", false, "ask the configured gateway model to analyze collected evidence")
 	fs.Parse(args)
 
 	if *command == "" {
@@ -131,6 +133,11 @@ func runDiagnose(args []string) {
 		GoodRef:       *good,
 		BaseRef:       *base,
 		MaxCommits:    *maxCommits,
+	}
+	if *useAgent {
+		endpoint := envOr("CYPHER_GATEWAY_ENDPOINT", "http://127.0.0.1:8787")
+		model := envOr("CYPHER_GATEWAY_MODEL", envOr("HADES_MODEL", "default"))
+		cfg.Agent = &agent.Client{Endpoint: endpoint, Model: model}
 	}
 	for _, probe := range probes {
 		cfg.Probes = append(cfg.Probes, splitCommand(probe))
@@ -325,6 +332,12 @@ func diagnosisText(report diagnosis.Report) string {
 	for _, item := range report.Evidence {
 		detail := strings.SplitN(item.Detail, "\n", 2)[0]
 		fmt.Fprintf(&b, "  %s [%s] %s\n", item.ID, item.Kind, detail)
+	}
+	if report.Agent != nil {
+		fmt.Fprintf(&b, "\nagent analysis (%s/%s):\n", report.Agent.Provider, report.Agent.Model)
+		for _, h := range report.Agent.Hypotheses {
+			fmt.Fprintf(&b, "  (confidence %.2f) %s [%s] evidence: %s\n", h.Confidence, h.Statement, h.Component, strings.Join(h.EvidenceIDs, ", "))
+		}
 	}
 
 	b.WriteString("\nuncertainty:\n")
