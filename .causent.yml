@@ -1,0 +1,24 @@
+# Reproducing the failure
+command: go test ./...
+
+# Baseline for the head-vs-base comparison. The CI workflow overrides this with
+# the failed run's base commit when it has one.
+# base: origin/main
+
+# Reproduction attempts per revision.
+attempts: 3
+
+# Per-attempt timeout (Go duration).
+timeout: 10m
+
+# Execution backend: local or docker. Use docker when the runner does not have
+# the project's toolchain.
+executor: local
+# image: golang:1.26
+
+# Ask the configured gateway model to analyze collected evidence.
+agent: false
+
+# Optional extra diagnostic commands. These never modify the repository.
+# probes:
+#   - go version

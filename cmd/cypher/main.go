@@ -27,7 +27,10 @@ import (
 	"github.com/Yashbhu/Hades/internal/persistence"
 )
 
-const version = "0.2.0-diagnosis"
+const defaultVersion = "0.2.0-diagnosis"
+
+// version is overridden at build time with -X main.version=<tag>.
+var version = defaultVersion
 
 func main() {
 	if len(os.Args) < 2 {
@@ -84,15 +87,9 @@ func runDiagnose(args []string) {
 	useAgent := fs.Bool("agent", false, "ask the configured gateway model to analyze collected evidence")
 	fs.Parse(args)
 
-	if *command == "" {
-		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is required")
-		os.Exit(2)
-	}
-	cmd := splitCommand(*command)
-	if len(cmd) == 0 {
-		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is empty")
-		os.Exit(2)
-	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
 	if *repo == "" {
 		fmt.Fprintln(os.Stderr, "cypher diagnose: --repo is required")
 		os.Exit(2)
@@ -101,6 +98,50 @@ func runDiagnose(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	repoCfg, err := loadRepoConfig(repoPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: "+err.Error())
+		os.Exit(2)
+	}
+	if !set["command"] {
+		*command = repoCfg.Command
+	}
+	if !set["base"] {
+		*base = repoCfg.Base
+	}
+	if !set["good"] {
+		*good = repoCfg.Good
+	}
+	if !set["attempts"] && repoCfg.Attempts > 0 {
+		*attempts = repoCfg.Attempts
+	}
+	if !set["timeout"] && repoCfg.Timeout != "" {
+		*timeout, err = time.ParseDuration(repoCfg.Timeout)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config: timeout: "+err.Error())
+			os.Exit(2)
+		}
+	}
+	if !set["executor"] && os.Getenv("CAUSENT_EXECUTOR") == "" && repoCfg.Executor != "" {
+		*executorMode = repoCfg.Executor
+	}
+	if !set["image"] && os.Getenv("CAUSENT_EXECUTOR_IMAGE") == "" && repoCfg.Image != "" {
+		*image = repoCfg.Image
+	}
+	if !set["agent"] {
+		*useAgent = repoCfg.Agent
+	}
+	probes = append(probes, repoCfg.Probes...)
+
+	if *command == "" {
+		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is required (or set command in .causent.yml)")
+		os.Exit(2)
+	}
+	cmd := splitCommand(*command)
+	if len(cmd) == 0 {
+		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is empty")
+		os.Exit(2)
 	}
 
 	bundleDir := *bundle
@@ -153,9 +194,9 @@ func runDiagnose(args []string) {
 		writeJSON(report)
 	} else {
 		fmt.Print(diagnosisText(report))
-	}
-	if !report.Refused && report.BundlePath != "" {
-		fmt.Printf("\nbundle: %s\nreplay: %s\n", report.BundlePath, report.ReplayCommand)
+		if !report.Refused && report.BundlePath != "" {
+			fmt.Printf("\nbundle: %s\nreplay: %s\n", report.BundlePath, report.ReplayCommand)
+		}
 	}
 }
 
