@@ -24,6 +24,7 @@ type Investigator struct {
 	Executor            execution.Executor
 	Provider            ModelProvider
 	Model               domain.ModelMetadata
+	PatchAttempts       int
 	OnStarted           func(domain.Investigation)
 	DisallowTestChanges bool
 }

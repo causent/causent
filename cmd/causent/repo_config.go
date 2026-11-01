@@ -14,15 +14,20 @@ import (
 // repoConfig is the subset of .causent.yml that `causent diagnose` understands.
 // Command-line flags always win over these values.
 type repoConfig struct {
-	Command  string   `yaml:"command"`
-	Base     string   `yaml:"base"`
-	Good     string   `yaml:"good"`
-	Attempts int      `yaml:"attempts"`
-	Timeout  string   `yaml:"timeout"`
-	Executor string   `yaml:"executor"`
-	Image    string   `yaml:"image"`
-	Agent    bool     `yaml:"agent"`
-	Probes   []string `yaml:"probes"`
+	Command  string       `yaml:"command"`
+	Base     string       `yaml:"base"`
+	Good     string       `yaml:"good"`
+	Attempts int          `yaml:"attempts"`
+	Timeout  string       `yaml:"timeout"`
+	Executor string       `yaml:"executor"`
+	Image    string       `yaml:"image"`
+	Agent    bool         `yaml:"agent"`
+	Probes   []string     `yaml:"probes"`
+	Repair   repairConfig `yaml:"repair"`
+}
+
+type repairConfig struct {
+	MaxAttempts int `yaml:"max_attempts"`
 }
 
 var repoConfigNames = []string{".causent.yml", ".causent.yaml"}
@@ -47,6 +52,9 @@ func loadRepoConfig(repoPath string) (repoConfig, error) {
 		}
 		if cfg.Attempts < 0 {
 			return repoConfig{}, fmt.Errorf("parse %s: attempts must be positive", name)
+		}
+		if cfg.Repair.MaxAttempts < 0 {
+			return repoConfig{}, fmt.Errorf("parse %s: repair.max_attempts must be positive", name)
 		}
 		if cfg.Timeout != "" {
 			if _, err := time.ParseDuration(cfg.Timeout); err != nil {
