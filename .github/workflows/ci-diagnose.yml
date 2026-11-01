@@ -331,7 +331,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: causent-diagnosis-${{ github.run_id }}
-          path: "$RUNNER_TEMP/causent-result"
+          path: ${{ runner.temp }}/causent-result
 
       - name: Prepare bounded diagnosis comment
         env:
