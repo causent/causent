@@ -348,12 +348,12 @@ jobs:
           body=$(cat <<EOF
           ## Causent diagnosis
 
-          **Classification:** `$classification`
+          **Classification:** ${classification}
           **Reproduced:** $failures/$attempts attempts failed
           **Refused:** $refused
 
           The full bounded result is available in the workflow artifact.
-          Bundle path recorded by the runner: `$bundle`
+          Bundle path recorded by the runner: ${bundle}
           EOF
           )
           printf '%s\n' "$body" > "$RUNNER_TEMP/causent-comment.md"
