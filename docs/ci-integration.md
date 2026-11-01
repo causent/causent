@@ -1,5 +1,20 @@
 # CI integration
 
+## Onboard a repository with `causent init`
+
+From the root of a project, run:
+
+```sh
+causent init
+```
+
+The command reports manifest, language, package-manager, GitHub Actions, runtime,
+and test-command evidence, then proposes `.causent.yml` and
+`.github/workflows/causent.yml`. It never overwrites an existing file without
+confirmation. Use `causent init --yes` for scripted onboarding, and review the
+generated `command` whenever no test command could be proven from an existing
+workflow or package script.
+
 Causent diagnoses a failed CI run in **your** repository. Your repository keeps
 its source, its CI workflow, and a small `.causent.yml`. Causent supplies the
 diagnosis engine as a released binary, invoked through a reusable workflow.
@@ -70,9 +85,10 @@ That is the whole integration. On the next failing run Causent will:
 
 1. check out the exact failing commit (`head_sha`, not the default branch);
 2. download the failed jobs' logs with `gh run view --log-failed`;
-3. run the configured command against the failing commit and the base;
-4. write a replayable bundle and a job summary;
-5. comment on the pull request when the run belongs to one.
+3. include a bounded copy of the original log as separate evidence;
+4. run the configured command against the failing commit and the exact PR base;
+5. write a replayable bundle and a job summary;
+6. publish a bounded PR comment from a separate job when the run belongs to one.
 
 ## Inputs
 
@@ -113,9 +129,13 @@ only used when `agent: true`.
   set, the workflow installs Go from `go-version-file`. Other languages should
   use `executor: docker` or install their toolchain in a step before calling
   the reusable workflow.
-- **Fork pull requests are skipped by the `head_repository` guard.** Diagnosing
-  a fork would execute untrusted code with a write token. Remove the guard only
-  if you accept that risk.
+- **Execution and publication are separate jobs.** The diagnosis job has no PR
+  write permission, no gateway secrets, and disables checkout credential
+  persistence. A trusted publication job validates the result artifact before
+  commenting.
+- **Fork pull requests are skipped by the `head_repository` guard.** Same-repo
+  pull requests are also treated as untrusted during diagnosis; only the
+  bounded result is exposed to the publication job.
 - **The PR comment step is best-effort.** Without `pull-requests: write` the job
   summary and artifact still work.
 
