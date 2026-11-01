@@ -357,4 +357,6 @@ jobs:
           Bundle path recorded by the runner: `$bundle`
           EOF
           )
-          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "$body"
+          gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+            --method POST \
+            -f body="$body" >/dev/null
