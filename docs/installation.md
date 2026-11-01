@@ -12,16 +12,15 @@ chmod +x "$HOME/.local/bin/causent"
 causent version
 ```
 
-The binary is built for Linux amd64 and requires the runtime libraries needed
-by its SQLite build. Other platforms should build from source until release
-artifacts are published for them.
+The binary is built for Linux amd64. `v0.3.0` is an example release tag for a
+fixed binary version. `v1` is the major-version tag used for the reusable
+workflow; it is not the name of a different installer.
 
 ## Onboard a repository
 
-Run `causent init` as documented in [CI integration](ci-integration.md). The
-released executable is still named `causent` for compatibility, so the same
-command is currently invoked as `causent init`. Review an empty `command` before
-committing: Causent will not infer a test command from a manifest alone.
+Run `causent init` as documented in [CI integration](ci-integration.md). Review
+an empty `command` before committing: Causent will not infer a test command from
+a manifest alone.
 
 ## Troubleshooting
 
