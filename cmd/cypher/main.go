@@ -385,9 +385,15 @@ func buildExecutor(mode, image, repoPath string, timeout time.Duration, command 
 		AllowedCommands:    allowed,
 		AllowedDirs:        map[string]bool{repoPath: true},
 		AllowedDirPrefixes: []string{os.TempDir()},
-		AllowedEnviron:     map[string]bool{},
-		MaxOutput:          64 << 10,
-		Timeout:            timeout,
+		// Keep credentials out while preserving the standard toolchain
+		// environment needed by Go, Python, Node, and similar commands.
+		AllowedEnviron: map[string]bool{
+			"HOME": true, "PATH": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+			"GOPATH": true, "GOMODCACHE": true, "GOROOT": true, "GOTOOLCHAIN": true,
+			"GOENV": true, "LANG": true, "LC_ALL": true,
+		},
+		MaxOutput: 64 << 10,
+		Timeout:   timeout,
 	}
 	artifacts := execution.NewArtifactFactory(filepath.Join(filepath.Dir(dbPath()), "artifacts"))
 	switch strings.ToLower(strings.TrimSpace(mode)) {
