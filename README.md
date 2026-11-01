@@ -1,15 +1,57 @@
 # Causent
 
-Causent tells you **why a CI run failed**. Given a repository and the command
-that failed, it reproduces the failure, classifies it, compares it against a
-base revision, localizes the change that introduced it, and writes a replayable
-bundle you can audit.
+Causent is an LLM-driven repair engine with a sandbox verifier. Given a
+repository and a command that fails, it reproduces the failure, collects
+evidence, asks a model for competing hypotheses, runs a discriminating
+experiment to decide between them, asks for a patch, applies that patch in a
+disposable copy of the repository, and runs the original and regression
+commands before calling the patch anything.
 
-It does not write patches. Diagnosis is the default workflow; the older
-patch-generating path still exists behind an explicit `repair` subcommand and is
-experimental.
+The rule that shapes the whole design: **a patch is only reported as successful
+because commands passed in a throwaway workspace**, never because a model said
+so. A passing verification still records `root_cause_verified: false` and notes
+that passing tests prove behavior, not cause.
 
-## What a diagnosis actually observes
+Two entry points share one engine:
+
+| | Provider | What it produces |
+| --- | --- | --- |
+| `repair` | optional, heuristic by default | hypotheses, experiments, candidate patches, verification reports |
+| `diagnose` | none | deterministic classification, localization, replayable bundle |
+
+`repair` is the full loop. `diagnose` is the same reproduction and evidence
+machinery with the model removed, for when you want trustworthy triage without
+wiring up a provider — which is why it is the default for CI.
+
+With no `HADES_MODEL_PROVIDER` set, `repair` falls back to `HeuristicProvider`:
+three fixed hypotheses at fixed confidences, and a patch located by parsing a
+Python traceback. That path is deterministic and needs no network, but it is
+not reasoning — set a provider to get real hypotheses.
+
+## The repair loop
+
+```
+reproduce ──► evidence ──► hypotheses ──► experiment ──► patch ──► verify
+ (command)     (bounded)    (model, >1)    (picks one)   (model)   (sandbox)
+```
+
+1. **Reproduce** — run the failing command; a failure that does not reproduce
+   is not repaired.
+2. **Collect evidence** — bounded excerpts of test output, source context, and
+   `git diff`, each with a digest and provenance.
+3. **Form hypotheses** — the model must return at least two competing
+   hypotheses, each citing evidence IDs that actually exist. Anything else is
+   rejected.
+4. **Plan and run an experiment** — one command chosen to distinguish the
+   hypotheses; its output updates which hypothesis survives.
+5. **Generate a patch** — structured edits only, never a free-form diff blob.
+   Unknown files and unanchored edits are rejected, and test files cannot be
+   modified.
+6. **Verify in a copy** — the diff is applied to a fresh copy of the repository,
+   the original command runs, then up to three regression commands run. Only
+   then is `verification_status` written.
+
+## What a diagnosis observes
 
 Every claim in the report is backed by an executed command, not by a model:
 
@@ -32,16 +74,27 @@ rather than inventing a result.
 ```sh
 git clone https://github.com/causent/causent.git
 cd causent
-
 go test ./...
+```
 
+**Repair a failure** (heuristic by default; set a provider for real hypotheses):
+
+```sh
+CYPHER_GATEWAY_PROVIDER=ollama CYPHER_GATEWAY_MODEL=qwen2.5:7b go run ./cmd/gateway &
+HADES_MODEL_PROVIDER=gateway HADES_MODEL=qwen2.5:7b \
+go run ./cmd/cypher repair --repo . --command "python -m pytest -q test_bug.py" --budget 20
+```
+
+**Diagnose without a model** (deterministic, no network):
+
+```sh
 go run ./cmd/cypher diagnose \
   --repo . \
   --command "go test ./..." \
   --attempts 3
 ```
 
-Output:
+Diagnosis output:
 
 ```
 investigation: 20261101T120001Z-ab12cd34
@@ -61,6 +114,70 @@ likely_files:
 bundle: /path/to/repo/.cypher/bundles/20261101T120001Z
 replay: cypher replay /path/to/repo/.cypher/bundles/20261101T120001Z
 ```
+
+## `repair`
+
+```sh
+HADES_MODEL_PROVIDER=gateway \
+HADES_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
+HADES_MODEL=qwen2.5:7b \
+go run ./cmd/cypher repair --repo . --command "pytest -q test_bug.py" --budget 20
+```
+
+`repair` needs a provider, which it takes from `HADES_MODEL_PROVIDER`:
+`ollama`, `gateway` (aliases `hosted`, `byok`, `self_hosted`), or unset for the
+built-in heuristic provider. It calls `Generate` for hypotheses and
+`GeneratePatches` for candidates. `--budget` caps total investigation steps; the
+run stops with `budget_exhausted` rather than looping.
+
+It writes patches, but not to your checkout. Every candidate is applied to a
+copy (`copyWorkspace`) that is deleted afterwards, and the patch records the
+base revision it was generated against, refusing to verify if the repository
+moved in the meantime.
+
+### Verification is the only thing that counts
+
+| `verification_status` | Meaning |
+| --- | --- |
+| `passed` | Original command exits 0 **and** every regression command passes |
+| `failed` | Patch applied but the original failure still reproduces, or a regression broke |
+| `inconclusive` | No baseline result to compare against |
+| `error` | Execution failed — not a verdict about the patch |
+| `cancelled` | Verification was cancelled before a result existed |
+
+Patch status is separate and narrower: `does_not_apply`, `fails_original`,
+`validated`. A patch reaches `validated` only through a `passed` verification.
+
+The original and regression outputs are stored as artifacts and attached to the
+verification report, so a maintainer can check the claim instead of trusting it.
+
+### Known limits
+
+- Regression command selection is **Python-only** right now: it walks the repo
+  for `test_*.py` / `*_test.py`, skips the file already used as the failing
+  command, and caps at three. For Go, Rust, or JavaScript there are no
+  regression commands selected, so `passed` means "the original command exits 0"
+  and nothing more.
+- Experiments are model-proposed commands, not model-authored code.
+- `root_cause_verified` is always false by design.
+
+## Benchmarking the loop
+
+`cmd/debug` runs the loop over a fixture corpus and records what happened:
+
+```sh
+go run ./cmd/debug evaluation run \
+  --corpus benchmarks/corpus-v1.json \
+  --repo "$PWD" \
+  --db /tmp/causent-evaluation.db \
+  --strategy direct_repair,evidence_guided \
+  --timeout 5m --budget 20
+```
+
+The two strategies are the comparison this project is built to measure:
+`direct_repair` goes straight from failure to patch, `evidence_guided` inserts
+hypotheses and a discriminating experiment. Recorded trials live in
+`benchmarks/results/`.
 
 ## `diagnose`
 
@@ -175,11 +292,10 @@ reproduced run nor a bundle. Output is capped at 64 KiB per attempt.
 
 Containers are force-removed on timeout and cancellation.
 
-## Optional model analysis
+## The inference gateway
 
-`--agent` is opt-in. Without it, Causent is fully deterministic and needs no
-network. With it, the collected evidence is sent to an OpenAI-compatible
-gateway that runs locally:
+Both the repair provider and the diagnose-side agent talk to the same local
+OpenAI-compatible gateway, so provider formats stay out of the engine:
 
 ```sh
 CYPHER_GATEWAY_PROVIDER=ollama \
@@ -187,7 +303,8 @@ CYPHER_GATEWAY_MODEL=qwen2.5:7b \
 go run ./cmd/gateway
 ```
 
-Then:
+Point `repair` at it with `HADES_MODEL_PROVIDER=gateway`. Point `diagnose` at it
+with `--agent`:
 
 ```sh
 CYPHER_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
@@ -195,14 +312,18 @@ CYPHER_GATEWAY_MODEL=qwen2.5:7b \
 go run ./cmd/cypher diagnose --repo . --command "go test ./..." --agent
 ```
 
-The gateway normalizes Ollama, Gemini, and OpenAI-compatible endpoints behind
-`/v1/chat/completions`, plus `/health`, `/v1/models`, and an SSE stream at
-`/v1/investigations/{id}/events`. Model output is attached as a separate
-`agent` section; it never replaces the deterministic classification. If the
-gateway is unreachable the diagnosis still completes.
+`--agent` is separate from `repair`'s provider: it only asks a model to read
+evidence the deterministic pass already collected. Without it, `diagnose` needs
+no network at all. Model output is attached as a separate `agent` section and
+never replaces the deterministic classification, and if the gateway is
+unreachable the diagnosis still completes.
 
 A model answer is a hypothesis. It cites evidence IDs, and it does not run
 commands, edit files, or change the verdict.
+
+The gateway normalizes Ollama, Gemini, and OpenAI-compatible endpoints behind
+`/v1/chat/completions`, plus `/health`, `/v1/models`, and an SSE stream at
+`/v1/investigations/{id}/events`.
 
 The gateway has **no authentication or tenant authorization** and is a local
 development component. It binds `127.0.0.1:8787` by default. Nothing prevents
@@ -234,17 +355,6 @@ commenting. It never guesses a command and never opens a patch.
 **These workflows are not yet validated.** See the note below before enabling
 them on a real repository.
 
-## `repair` (experimental, opt-in)
-
-```sh
-go run ./cmd/cypher repair --repo . --command "go test ./..."
-```
-
-The legacy path: it generates structured patch candidates, applies them in
-disposable workspaces, and runs the original and regression commands before
-accepting anything. Test files are not modifiable. Off by default because a
-confident diagnosis is more useful than a plausible-looking patch.
-
 ## Environment variables
 
 | Variable | Used by | Purpose |
@@ -252,6 +362,10 @@ confident diagnosis is more useful than a plausible-looking patch.
 | `CAUSENT_EXECUTOR` | `diagnose`, `replay`, `repair` | Default executor (`local`/`docker`) |
 | `CAUSENT_EXECUTOR_IMAGE` | `diagnose`, `replay`, `repair` | Default Docker image |
 | `HADES_DB` | `diagnose`, `repair` | SQLite event store path |
+| `HADES_MODEL_PROVIDER` | `repair` | `ollama`, `gateway`, or unset for heuristic |
+| `HADES_GATEWAY_ENDPOINT` | `repair` | Gateway URL for the `gateway` provider |
+| `HADES_OLLAMA_ENDPOINT` | `repair` | Ollama URL for the `ollama` provider |
+| `HADES_OLLAMA_MODEL` | `repair` | Ollama model name |
 | `CYPHER_GATEWAY_ENDPOINT` | `diagnose --agent` | Gateway base URL |
 | `CYPHER_GATEWAY_MODEL` | `diagnose --agent` | Model name |
 | `HADES_MODEL` | `diagnose --agent` | Fallback model name |
@@ -269,7 +383,7 @@ confident diagnosis is more useful than a plausible-looking patch.
 | `cmd/mcp-server` | MCP server exposing engine operations as tools |
 | `internal/diagnosis` | Reproduction, classification, comparison, bundles |
 | `internal/execution` | Local and Docker executors with policy limits |
-| `internal/engine` | Opt-in repair: evidence, hypotheses, patch verification |
+| `internal/engine` | The repair loop: evidence, hypotheses, experiments, patch generation, sandbox verification |
 | `internal/persistence` | SQLite investigations, events, patches |
 | `internal/agent` | Gateway client for optional model analysis |
 | `internal/evaluation` | Benchmark runner |
@@ -309,3 +423,8 @@ supported interface.
 The seed benchmark corpus is deterministic Python fixtures. Go, Rust, and
 JavaScript/TypeScript support is exercised through the executor and the
 `--command` flag, not yet through curated benchmark cases.
+
+`go test ./...` is sensitive to `HADES_MODEL_PROVIDER`. With it set to `gateway`,
+`internal/engine` tests make a real call to `HADES_GATEWAY_ENDPOINT` and fail if
+no gateway is listening. Run tests with those variables unset, or start the
+gateway first.
