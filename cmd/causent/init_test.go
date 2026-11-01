@@ -14,7 +14,7 @@ func TestDetectorFixtures(t *testing.T) {
 		want  []string
 	}{
 		{"go", map[string]string{"go.mod": "module example\ngo 1.26\n"}, []string{"Go", "Go 1.26"}},
-		{"node", map[string]string{"package.json": "{\"scripts\":{\"test\":\"vitest\"}}\n", "package-lock.json": "{}\n"}, []string{"Node.js", "npm run test"}},
+		{"node", map[string]string{"package.json": "{\"scripts\":{\"test\":\"vitest\"}}\n", "package-lock.json": "{}\n"}, []string{"Node.js", "npm test"}},
 		{"python", map[string]string{"pyproject.toml": "[project]\nname='x'\n", "requirements.txt": "pytest\n"}, []string{"Python", "pip"}},
 		{"rust", map[string]string{"Cargo.toml": "[package]\nname='x'\n"}, []string{"Rust", "Cargo"}},
 		{"bazel", map[string]string{"MODULE.bazel": "module(name='x')\n"}, []string{"Bazel"}},
