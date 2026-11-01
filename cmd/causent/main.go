@@ -1,8 +1,8 @@
-// Command cypher is the diagnosis-first entry point.
+// Command causent is the diagnosis-first entry point.
 //
-//	cypher diagnose --repo <path> --command "<failing command>"
-//	cypher replay ./bundle
-//	cypher repair --repo <path> --command "<command>"   # explicit opt-in
+//	causent diagnose --repo <path> --command "<failing command>"
+//	causent replay ./bundle
+//	causent repair --repo <path> --command "<command>"   # explicit opt-in
 //
 // diagnose is the default workflow: reproduce, classify, localize, and produce
 // a replayable bundle. It never edits the repository and never claims a fix.
@@ -23,11 +23,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/agent"
-	"github.com/Yashbhu/Hades/internal/diagnosis"
-	"github.com/Yashbhu/Hades/internal/engine"
-	"github.com/Yashbhu/Hades/internal/execution"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/agent"
+	"github.com/causent/causent/internal/diagnosis"
+	"github.com/causent/causent/internal/engine"
+	"github.com/causent/causent/internal/execution"
+	"github.com/causent/causent/internal/persistence"
 )
 
 const defaultVersion = "0.2.0-diagnosis"
@@ -50,7 +50,7 @@ func main() {
 	case "repair":
 		runRepair(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("cypher " + version)
+		fmt.Println("causent " + version)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -61,7 +61,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`usage: cypher <command> [flags]
+	fmt.Print(`usage: causent <command> [flags]
 
 commands:
   init       detect the repository and generate Causent integration files
@@ -70,7 +70,7 @@ commands:
   repair     run the legacy patch-generating workflow (explicit opt-in)
   version    print the version
 
-run "cypher <command> -h" for command flags.
+run "causent <command> -h" for command flags.
 `)
 }
 
@@ -80,8 +80,8 @@ func runDiagnose(args []string) {
 	command := fs.String("command", "", "failing command to reproduce")
 	attempts := fs.Int("attempts", diagnosis.DefaultAttempts, "reproduction attempts")
 	timeout := fs.Duration("timeout", diagnosis.DefaultTimeout, "timeout per attempt")
-	db := fs.String("db", envOr("HADES_DB", dbPath()), "sqlite db path for persisted events")
-	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.cypher/bundles/<timestamp>)")
+	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path for persisted events")
+	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.causent/bundles/<timestamp>)")
 	good := fs.String("good", "", "known-good revision; enables git bisect")
 	base := fs.String("base", "", "known base revision; compare its outcome with HEAD")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
@@ -98,7 +98,7 @@ func runDiagnose(args []string) {
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	if *repo == "" {
-		fmt.Fprintln(os.Stderr, "cypher diagnose: --repo is required")
+		fmt.Fprintln(os.Stderr, "causent diagnose: --repo is required")
 		os.Exit(2)
 	}
 	repoPath, err := filepath.Abs(*repo)
@@ -142,18 +142,18 @@ func runDiagnose(args []string) {
 	probes = append(probes, repoCfg.Probes...)
 
 	if *command == "" {
-		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is required (or set command in .causent.yml)")
+		fmt.Fprintln(os.Stderr, "causent diagnose: --command is required (or set command in .causent.yml)")
 		os.Exit(2)
 	}
 	cmd := splitCommand(*command)
 	if len(cmd) == 0 {
-		fmt.Fprintln(os.Stderr, "cypher diagnose: --command is empty")
+		fmt.Fprintln(os.Stderr, "causent diagnose: --command is empty")
 		os.Exit(2)
 	}
 
 	bundleDir := *bundle
 	if bundleDir == "" {
-		bundleDir = filepath.Join(repoPath, ".cypher", "bundles", time.Now().UTC().Format("20060102T150405Z"))
+		bundleDir = filepath.Join(repoPath, ".causent", "bundles", time.Now().UTC().Format("20060102T150405Z"))
 	}
 
 	store, err := openStore(*db)
@@ -198,8 +198,8 @@ func runDiagnose(args []string) {
 		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
 	}
 	if *useAgent {
-		endpoint := envOr("CYPHER_GATEWAY_ENDPOINT", "http://127.0.0.1:8787")
-		model := envOr("CYPHER_GATEWAY_MODEL", envOr("HADES_MODEL", "default"))
+		endpoint := envOr("CAUSENT_GATEWAY_ENDPOINT", "http://127.0.0.1:8787")
+		model := envOr("CAUSENT_GATEWAY_MODEL", envOr("CAUSENT_MODEL", "default"))
 		cfg.Agent = &agent.Client{Endpoint: endpoint, Model: model}
 	}
 	for _, probe := range probes {
@@ -232,7 +232,7 @@ func runReplay(args []string) {
 	fs.Parse(args)
 
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: cypher replay <bundle-dir>")
+		fmt.Fprintln(os.Stderr, "usage: causent replay <bundle-dir>")
 		os.Exit(2)
 	}
 	bundleDir := fs.Arg(0)
@@ -290,12 +290,12 @@ func runRepair(args []string) {
 	budget := fs.Int("budget", 20, "maximum investigation steps")
 	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
-	db := fs.String("db", envOr("HADES_DB", dbPath()), "sqlite db path")
+	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
 
 	if *command == "" || *repo == "" {
-		fmt.Fprintln(os.Stderr, "cypher repair: --repo and --command are required")
+		fmt.Fprintln(os.Stderr, "causent repair: --repo and --command are required")
 		os.Exit(2)
 	}
 	repoPath, err := filepath.Abs(*repo)
@@ -528,7 +528,7 @@ func envOr(key, fallback string) string {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".hades", "investigations.db")
+	return filepath.Join(home, ".causent", "investigations.db")
 }
 
 func valueOr(value, fallback string) string {

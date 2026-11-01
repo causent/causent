@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/causent/causent/internal/domain"
 )
 
 func testPolicy(dir string, timeout time.Duration) Policy {
@@ -71,12 +71,12 @@ func TestLocalExecutorRejectsEnvironmentLeakage(t *testing.T) {
 }
 
 func TestLocalExecutorDoesNotInheritUnexpectedHostEnv(t *testing.T) {
-	t.Setenv("HADES_TEST_SECRET", "super-secret-value")
+	t.Setenv("CAUSENT_TEST_SECRET", "super-secret-value")
 	dir := t.TempDir()
 	ex := NewLocalExecutor(testPolicy(dir, 5*time.Second), NewArtifactFactory(filepath.Join(dir, "artifacts")))
 
 	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
-		Command:   []string{"sh", "-c", "printf '%s' \"$HADES_TEST_SECRET\""},
+		Command:   []string{"sh", "-c", "printf '%s' \"$CAUSENT_TEST_SECRET\""},
 		Dir:       dir,
 		Timeout:   2 * time.Second,
 		MaxOutput: 1024,
@@ -245,7 +245,7 @@ func TestDockerExecutorContainerArgs(t *testing.T) {
 	ex := NewDockerExecutor(testPolicy(dir, time.Minute), nil, cp)
 
 	name := containerName("inst/with spaces:1")
-	if !strings.HasPrefix(name, "hades-exec-inst-with-spaces-1-") {
+	if !strings.HasPrefix(name, "causent-exec-inst-with-spaces-1-") {
 		t.Fatalf("unexpected container name %q", name)
 	}
 	if strings.ContainsAny(name, " /:") {

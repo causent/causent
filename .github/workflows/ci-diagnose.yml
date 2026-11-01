@@ -199,14 +199,14 @@ jobs:
             exit 2
           fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/$repository/releases/latest/download/cypher_linux_amd64"
+            url="https://github.com/$repository/releases/latest/download/causent_linux_amd64"
           else
-            url="https://github.com/$repository/releases/download/$version/cypher_linux_amd64"
+            url="https://github.com/$repository/releases/download/$version/causent_linux_amd64"
           fi
-          curl -fsSL "$url" -o "$RUNNER_TEMP/cypher"
-          chmod +x "$RUNNER_TEMP/cypher"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/causent"
+          chmod +x "$RUNNER_TEMP/causent"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/cypher" version
+          "$RUNNER_TEMP/causent" version
 
       - name: Set up Go
         if: inputs.docker_image == '' && hashFiles('go.mod') != ''
@@ -246,7 +246,7 @@ jobs:
           # LLM analysis is intentionally disabled in this unprivileged job.
 
           status=0
-          cypher "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
+          causent "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
             2> "$RUNNER_TEMP/causent-stderr.log" || status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
 

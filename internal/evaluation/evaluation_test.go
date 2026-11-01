@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/engine"
-	"github.com/Yashbhu/Hades/internal/execution"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/engine"
+	"github.com/causent/causent/internal/execution"
+	"github.com/causent/causent/internal/persistence"
 )
 
 type fakeProvider struct{ diff string }

@@ -14,7 +14,7 @@ Two entry points share one engine:
 `repair` runs the experimental patch workflow. `diagnose` performs reproduction,
 classification, localization, and bundle creation without requiring a model.
 
-Without `HADES_MODEL_PROVIDER`, `repair` uses the built-in heuristic provider.
+Without `CAUSENT_MODEL_PROVIDER`, `repair` uses the built-in heuristic provider.
 It is deterministic and limited; use a configured provider for model-backed
 hypotheses.
 
@@ -70,15 +70,15 @@ go test ./...
 **Repair a failure** (heuristic by default; set a provider for real hypotheses):
 
 ```sh
-CYPHER_GATEWAY_PROVIDER=ollama CYPHER_GATEWAY_MODEL=qwen2.5:7b go run ./cmd/gateway &
-HADES_MODEL_PROVIDER=gateway HADES_MODEL=qwen2.5:7b \
-go run ./cmd/cypher repair --repo . --command "python -m pytest -q test_bug.py" --budget 20
+CAUSENT_GATEWAY_PROVIDER=ollama CAUSENT_GATEWAY_MODEL=qwen2.5:7b go run ./cmd/gateway &
+CAUSENT_MODEL_PROVIDER=gateway CAUSENT_MODEL=qwen2.5:7b \
+go run ./cmd/causent repair --repo . --command "python -m pytest -q test_bug.py" --budget 20
 ```
 
 **Diagnose without a model** (deterministic, no network):
 
 ```sh
-go run ./cmd/cypher diagnose \
+go run ./cmd/causent diagnose \
   --repo . \
   --command "go test ./..." \
   --attempts 3
@@ -101,20 +101,20 @@ changed_range: cf312ff..HEAD
 likely_files:
   internal/diagnosis/replay.go
 ...
-bundle: /path/to/repo/.cypher/bundles/20261101T120001Z
-replay: cypher replay /path/to/repo/.cypher/bundles/20261101T120001Z
+bundle: /path/to/repo/.causent/bundles/20261101T120001Z
+replay: causent replay /path/to/repo/.causent/bundles/20261101T120001Z
 ```
 
 ## `repair`
 
 ```sh
-HADES_MODEL_PROVIDER=gateway \
-HADES_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
-HADES_MODEL=qwen2.5:7b \
-go run ./cmd/cypher repair --repo . --command "pytest -q test_bug.py" --budget 20
+CAUSENT_MODEL_PROVIDER=gateway \
+CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
+CAUSENT_MODEL=qwen2.5:7b \
+go run ./cmd/causent repair --repo . --command "pytest -q test_bug.py" --budget 20
 ```
 
-`repair` needs a provider, which it takes from `HADES_MODEL_PROVIDER`:
+`repair` needs a provider, which it takes from `CAUSENT_MODEL_PROVIDER`:
 `ollama`, `gateway` (aliases `hosted`, `byok`, `self_hosted`), or unset for the
 built-in heuristic provider. It calls `Generate` for hypotheses and
 `GeneratePatches` for candidates. `--budget` caps total investigation steps; the
@@ -182,9 +182,9 @@ hypotheses and a discriminating experiment. Recorded trials live in
 | `--max-commits` | `20` | Bound on the history walk when `--good` is absent |
 | `--executor` | `local` | `local` or `docker` |
 | `--image` | — | Required with `--executor docker` |
-| `--bundle` | `<repo>/.cypher/bundles/<timestamp>` | Bundle output directory |
+| `--bundle` | `<repo>/.causent/bundles/<timestamp>` | Bundle output directory |
 | `--probe` | — | Extra diagnostic command, repeatable. Never treated as a fix |
-| `--db` | `~/.hades/investigations.db` | SQLite events store |
+| `--db` | `~/.causent/investigations.db` | SQLite events store |
 | `--agent` | `false` | Ask the configured gateway model to read the collected evidence |
 | `--json` | `false` | Machine-readable report |
 
@@ -215,7 +215,7 @@ That is the difference between "this PR broke it" and "this was already broken."
 ### Bundle layout
 
 ```
-.cypher/bundles/<timestamp>/
+.causent/bundles/<timestamp>/
   manifest.json          schema version, bundle ID, embedded diagnosis
   report.json            full structured report
   environment.json       OS, arch, toolchain versions, HEAD commit, dirty flag
@@ -233,7 +233,7 @@ silently edited before being trusted.
 ## `replay`
 
 ```sh
-go run ./cmd/cypher replay .cypher/bundles/20261101T120001Z
+go run ./cmd/causent replay .causent/bundles/20261101T120001Z
 ```
 
 Re-executes the recorded command and compares the observed classification
@@ -247,7 +247,7 @@ replay in a container.
 Local execution is the default. Docker is available for isolation:
 
 ```sh
-go run ./cmd/cypher diagnose \
+go run ./cmd/causent diagnose \
   --repo . \
   --command "python -m pytest -q" \
   --executor docker \
@@ -288,18 +288,18 @@ Both the repair provider and the diagnose-side agent talk to the same local
 OpenAI-compatible gateway, so provider formats stay out of the engine:
 
 ```sh
-CYPHER_GATEWAY_PROVIDER=ollama \
-CYPHER_GATEWAY_MODEL=qwen2.5:7b \
+CAUSENT_GATEWAY_PROVIDER=ollama \
+CAUSENT_GATEWAY_MODEL=qwen2.5:7b \
 go run ./cmd/gateway
 ```
 
-Point `repair` at it with `HADES_MODEL_PROVIDER=gateway`. Point `diagnose` at it
+Point `repair` at it with `CAUSENT_MODEL_PROVIDER=gateway`. Point `diagnose` at it
 with `--agent`:
 
 ```sh
-CYPHER_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
-CYPHER_GATEWAY_MODEL=qwen2.5:7b \
-go run ./cmd/cypher diagnose --repo . --command "go test ./..." --agent
+CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
+CAUSENT_GATEWAY_MODEL=qwen2.5:7b \
+go run ./cmd/causent diagnose --repo . --command "go test ./..." --agent
 ```
 
 `--agent` is separate from `repair`'s provider: it only asks a model to read
@@ -352,23 +352,23 @@ repository with the required permissions.
 | --- | --- | --- |
 | `CAUSENT_EXECUTOR` | `diagnose`, `replay`, `repair` | Default executor (`local`/`docker`) |
 | `CAUSENT_EXECUTOR_IMAGE` | `diagnose`, `replay`, `repair` | Default Docker image |
-| `HADES_DB` | `diagnose`, `repair` | SQLite event store path |
-| `HADES_MODEL_PROVIDER` | `repair` | `ollama`, `gateway`, or unset for heuristic |
-| `HADES_GATEWAY_ENDPOINT` | `repair` | Gateway URL for the `gateway` provider |
-| `HADES_OLLAMA_ENDPOINT` | `repair` | Ollama URL for the `ollama` provider |
-| `HADES_OLLAMA_MODEL` | `repair` | Ollama model name |
-| `CYPHER_GATEWAY_ENDPOINT` | `diagnose --agent` | Gateway base URL |
-| `CYPHER_GATEWAY_MODEL` | `diagnose --agent` | Model name |
-| `HADES_MODEL` | `diagnose --agent` | Fallback model name |
-| `CYPHER_GATEWAY_PROVIDER` | `cmd/gateway` | `ollama`, `gemini`, or `openai` |
-| `CYPHER_GATEWAY_ADDR` | `cmd/gateway` | Bind address, default `127.0.0.1:8787` |
-| `CYPHER_GATEWAY_API_KEY` | `cmd/gateway` | Upstream provider key |
+| `CAUSENT_DB` | `diagnose`, `repair` | SQLite event store path |
+| `CAUSENT_MODEL_PROVIDER` | `repair` | `ollama`, `gateway`, or unset for heuristic |
+| `CAUSENT_GATEWAY_ENDPOINT` | `repair` | Gateway URL for the `gateway` provider |
+| `CAUSENT_OLLAMA_ENDPOINT` | `repair` | Ollama URL for the `ollama` provider |
+| `CAUSENT_OLLAMA_MODEL` | `repair` | Ollama model name |
+| `CAUSENT_GATEWAY_ENDPOINT` | `diagnose --agent` | Gateway base URL |
+| `CAUSENT_GATEWAY_MODEL` | `diagnose --agent` | Model name |
+| `CAUSENT_MODEL` | `diagnose --agent` | Fallback model name |
+| `CAUSENT_GATEWAY_PROVIDER` | `cmd/gateway` | `ollama`, `gemini`, or `openai` |
+| `CAUSENT_GATEWAY_ADDR` | `cmd/gateway` | Bind address, default `127.0.0.1:8787` |
+| `CAUSENT_GATEWAY_API_KEY` | `cmd/gateway` | Upstream provider key |
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
-| `cmd/cypher` | `diagnose`, `replay`, `repair` entry point |
+| `cmd/causent` | `diagnose`, `replay`, `repair` entry point |
 | `cmd/gateway` | OpenAI-compatible inference gateway and SSE stream |
 | `cmd/debug` | Development CLI: investigations, experiments, evaluation |
 | `cmd/mcp-server` | MCP server exposing engine operations as tools |

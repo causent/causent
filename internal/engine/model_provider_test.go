@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/causent/causent/internal/domain"
 )
 
 func TestOllamaGenerateUsesHypothesisSchema(t *testing.T) {
@@ -52,7 +52,7 @@ func TestOllamaGeneratePatchesListsExactHypothesisIDs(t *testing.T) {
 			!strings.Contains(request.Prompt, "only these exact hypothesis IDs: h1") ||
 			!strings.Contains(request.Prompt, "Each edit must contain a non-empty file, non-empty old_text") ||
 			!strings.Contains(request.Prompt, "non-empty old_text") ||
-			!strings.Contains(request.Prompt, "Hades will construct the unified diff") {
+			!strings.Contains(request.Prompt, "Causent will construct the unified diff") {
 			t.Fatalf("schema or IDs missing from request: %#v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")

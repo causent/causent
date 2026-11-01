@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
+	"github.com/causent/causent/internal/domain"
 )
 
 const maxPatchBytes = 256 << 10
@@ -304,7 +304,7 @@ func materializeStructuredEdits(inv domain.Investigation, proposal *domain.Patch
 		return fmt.Errorf("edit old_text must match exactly once in %q", edit.File)
 	}
 	updated := strings.Replace(string(source), edit.OldText, edit.NewText, 1)
-	tmp, err := os.MkdirTemp("", "hades-edit-*")
+	tmp, err := os.MkdirTemp("", "causent-edit-*")
 	if err != nil {
 		return err
 	}
@@ -409,7 +409,7 @@ func gitRevision(repo string) string {
 }
 
 func copyWorkspace(repo string) (string, error) {
-	dst, err := os.MkdirTemp("", "hades-candidate-*")
+	dst, err := os.MkdirTemp("", "causent-candidate-*")
 	if err != nil {
 		return "", err
 	}
@@ -443,7 +443,7 @@ func copyWorkspace(repo string) (string, error) {
 }
 
 func applyPatch(workspace, diff string) error {
-	file, err := os.CreateTemp("", "hades-patch-*.diff")
+	file, err := os.CreateTemp("", "causent-patch-*.diff")
 	if err != nil {
 		return err
 	}

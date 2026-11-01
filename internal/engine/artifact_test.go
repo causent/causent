@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yashbhu/Hades/internal/domain"
-	"github.com/Yashbhu/Hades/internal/persistence"
+	"github.com/causent/causent/internal/domain"
+	"github.com/causent/causent/internal/persistence"
 )
 
 func TestLargeEvidenceIsStoredAsVerifiedArtifact(t *testing.T) {

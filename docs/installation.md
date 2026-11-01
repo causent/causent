@@ -3,13 +3,13 @@
 ## Install a released binary
 
 Causent releases currently publish a Linux amd64 binary named
-`cypher_linux_amd64`. Download it from the GitHub release, make it executable,
+`causent_linux_amd64`. Download it from the GitHub release, make it executable,
 and place it on `PATH`:
 
 ```sh
-curl -fL https://github.com/causent/causent/releases/latest/download/cypher_linux_amd64 -o "$HOME/.local/bin/cypher"
-chmod +x "$HOME/.local/bin/cypher"
-cypher version
+curl -fL https://github.com/causent/causent/releases/latest/download/causent_linux_amd64 -o "$HOME/.local/bin/causent"
+chmod +x "$HOME/.local/bin/causent"
+causent version
 ```
 
 The binary is built for Linux amd64 and requires the runtime libraries needed
@@ -19,8 +19,8 @@ artifacts are published for them.
 ## Onboard a repository
 
 Run `causent init` as documented in [CI integration](ci-integration.md). The
-released executable is still named `cypher` for compatibility, so the same
-command is currently invoked as `cypher init`. Review an empty `command` before
+released executable is still named `causent` for compatibility, so the same
+command is currently invoked as `causent init`. Review an empty `command` before
 committing: Causent will not infer a test command from a manifest alone.
 
 ## Troubleshooting

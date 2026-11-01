@@ -222,7 +222,7 @@ func runInit(args []string) {
 		}
 		fmt.Println("wrote " + name)
 	}
-	fmt.Println("Review .causent.yml, commit both files, and run cypher diagnose locally to verify the command.")
+	fmt.Println("Review .causent.yml, commit both files, and run causent diagnose locally to verify the command.")
 }
 func printFindings(label string, fs []Finding) {
 	if len(fs) == 0 {

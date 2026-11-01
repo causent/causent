@@ -118,7 +118,7 @@ only used when `agent: true`.
 ## Requirements and limits
 
 - **A Causent release must exist.** The workflow installs
-  `cypher_linux_amd64` from the Causent GitHub releases. Publish a tag
+  `causent_linux_amd64` from the Causent GitHub releases. Publish a tag
   (`git tag v0.2.0 && git push origin v0.2.0`) before pointing a repository at
   a versioned ref. The caller's `uses:` ref (`@v0.2.0`, or a moving `@v1` tag
   you maintain) and `causent_version` are independent: the first selects the
@@ -142,8 +142,8 @@ only used when `agent: true`.
 ## Local reproduction
 
 ```sh
-cypher diagnose --repo . --base origin/main
+causent diagnose --repo . --base origin/main
 ```
 
-`cypher diagnose` reads `.causent.yml` when flags are not supplied, and prints
+`causent diagnose` reads `.causent.yml` when flags are not supplied, and prints
 the replay command for the bundle it writes.
