@@ -171,21 +171,37 @@ jobs:
             --log-failed > "$raw_log" 2>&1 || true
           # Keep original CI evidence bounded and remove common credential-shaped
           # values before it reaches an artifact or the diagnosis process.
-          sed -E 's/((token|password|secret|authorization)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' "$raw_log" \
-            | head -c 262144 > "$RUNNER_TEMP/causent-failed.log" || true
+          sed -E \
+            -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
+            -e 's/(authorization:[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+            -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+            -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
+            "$raw_log" | head -c 262144 > "$RUNNER_TEMP/causent-failed.log" || true
           gh run view "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
             --json jobs \
             --jq '.jobs[] | select(.conclusion == "failure") | "\(.name) (\(.databaseId))"' \
             > "$RUNNER_TEMP/causent-failed-jobs.txt" 2>&1 || true
 
       - name: Install causent
+        env:
+          INPUT_VERSION: ${{ inputs.causent_version }}
+          INPUT_REPOSITORY: ${{ inputs.causent_repository }}
         run: |
           set -euo pipefail
-          version="${{ inputs.causent_version }}"
+          version="$INPUT_VERSION"
+          repository="$INPUT_REPOSITORY"
+          if [[ ! "$version" =~ ^(latest|v[0-9A-Za-z._-]+)$ ]]; then
+            echo "invalid causent_version" >&2
+            exit 2
+          fi
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "invalid causent_repository" >&2
+            exit 2
+          fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/${{ inputs.causent_repository }}/releases/latest/download/cypher_linux_amd64"
+            url="https://github.com/$repository/releases/latest/download/cypher_linux_amd64"
           else
-            url="https://github.com/${{ inputs.causent_repository }}/releases/download/${version}/cypher_linux_amd64"
+            url="https://github.com/$repository/releases/download/$version/cypher_linux_amd64"
           fi
           curl -fsSL "$url" -o "$RUNNER_TEMP/cypher"
           chmod +x "$RUNNER_TEMP/cypher"

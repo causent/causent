@@ -68,6 +68,10 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"passes original CI log":                      strings.Contains(content, "--ci-log"),
 		"separate publication job":                    strings.Contains(content, "publish:"),
 		"does not expose gateway secret to diagnosis": !strings.Contains(content, "CAUSENT_GATEWAY_ENDPOINT: ${{ secrets"),
+		"validates release version":                   strings.Contains(content, "invalid causent_version"),
+		"validates release repository":                strings.Contains(content, "invalid causent_repository"),
+		"redacts bearer tokens":                       strings.Contains(content, "bearer"),
+		"redacts GitHub tokens":                       strings.Contains(content, "gh[pousr]_") && strings.Contains(content, "github_pat_"),
 	}
 	for check, passed := range checks {
 		if !passed {
