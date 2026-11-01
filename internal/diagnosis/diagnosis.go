@@ -338,6 +338,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	d.emit(EventLocalizationCompleted, domain.StatusFormingHypotheses, locStatus(localization))
 
 	report.Claims = buildClaims(report.Classification, localization, report.Evidence)
+	if err := ValidateContract(report); err != nil {
+		report.Uncertainty = append(report.Uncertainty, "diagnosis contract validation failed: "+err.Error())
+		report.Refused = true
+		report.RefusalReason = "generated diagnosis contained unsupported evidence references"
+		report.Claims = nil
+	}
 	report.Confidence = confidence(report.Classification, localization, report.Uncertainty)
 	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, localization)...)
 
