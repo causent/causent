@@ -173,9 +173,9 @@ func renderInitWorkflow(d RepositoryDetection) string {
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return "name: Causent\n\non:\n  workflow_dispatch:\n\npermissions:\n  actions: read\n  contents: read\n  pull-requests: write\n\njobs:\n  diagnose:\n    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1\n"
+		return "name: Causent\n\non:\n  workflow_dispatch:\n\npermissions:\n  actions: read\n  contents: read\n  issues: write\n  pull-requests: write\n\njobs:\n  diagnose:\n    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1\n"
 	}
-	return fmt.Sprintf("name: Causent\n\non:\n  workflow_run:\n    workflows: [%s]\n    types: [completed]\n\npermissions:\n  actions: read\n  contents: read\n  pull-requests: write\n\njobs:\n  diagnose:\n    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_repository.full_name == github.repository\n    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1\n    with:\n      run_id: ${{ github.event.workflow_run.id }}\n      head_sha: ${{ github.event.workflow_run.head_sha }}\n      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}\n", strings.Join(names, ", "))
+	return fmt.Sprintf("name: Causent\n\non:\n  workflow_run:\n    workflows: [%s]\n    types: [completed]\n\npermissions:\n  actions: read\n  contents: read\n  issues: write\n  pull-requests: write\n\njobs:\n  diagnose:\n    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_repository.full_name == github.repository\n    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1\n    with:\n      run_id: ${{ github.event.workflow_run.id }}\n      head_sha: ${{ github.event.workflow_run.head_sha }}\n      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}\n", strings.Join(names, ", "))
 }
 
 func runInit(args []string) {

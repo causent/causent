@@ -45,6 +45,9 @@ func TestCIIntegrationTriggerIsValid(t *testing.T) {
 	if !strings.Contains(string(data), "pull_requests[0].base.sha") {
 		t.Fatal("ci-integration.yml must pass the pull request base SHA")
 	}
+	if !strings.Contains(string(data), "issues: write") {
+		t.Fatal("ci-integration.yml must grant comment publication permission")
+	}
 }
 
 func TestReusableWorkflowContract(t *testing.T) {
@@ -101,7 +104,7 @@ func TestReleaseWorkflowPublishesBinary(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/release.yml")
 	checks := map[string]bool{
 		"tag trigger":         strings.Contains(content, "tags:"),
-		"builds causent":       strings.Contains(content, "./cmd/causent"),
+		"builds causent":      strings.Contains(content, "./cmd/causent"),
 		"stamps version":      strings.Contains(content, "-X main.version="),
 		"publishes release":   strings.Contains(content, "action-gh-release"),
 		"publishes checksums": strings.Contains(content, "SHA256SUMS"),
