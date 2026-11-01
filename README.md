@@ -171,14 +171,14 @@ If the command does not fail or never executes, Causent refuses to claim a diagn
 
 The model does not control classification, execute commands, or edit the repository.
 
-## Deterministic simulation and replay testing
+## Deterministic Simulation Testing (DST)
 
-Causent's normal diagnosis path is deterministic simulation testing: it runs the
-same configured command repeatedly in a controlled workspace, records exit
+Causent's normal diagnosis path is Deterministic Simulation Testing (DST). DST
+runs the same configured command repeatedly in a controlled workspace, records exit
 codes, timeouts, output digests, and bounded excerpts, and compares the head
 with a known-good base when one is available.
 
-The current implementation provides these DST-style capabilities:
+The current implementation provides these DST capabilities:
 
 - repeated reproduction attempts to separate stable failures from flaky ones;
 - head-versus-base comparison;
@@ -188,9 +188,10 @@ The current implementation provides these DST-style capabilities:
 - replay verification that reruns the recorded command and checks whether the
   original classification still holds.
 
-Replay does not rerun localization or claim that the original root cause was
-proven. It answers a narrower question: whether the recorded failure and
-classification can be reproduced again.
+DST is the reproducibility and evidence layer; it does not automatically prove
+causality. Replay does not rerun localization or claim that the original root
+cause was proven. It answers a narrower question: whether the recorded failure
+and classification can be reproduced again.
 
 ```sh
 causent replay .causent/bundles/<timestamp>
