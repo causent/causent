@@ -333,11 +333,9 @@ jobs:
           name: causent-diagnosis-${{ github.run_id }}
           path: "$RUNNER_TEMP/causent-result"
 
-      - name: Publish bounded diagnosis comment
+      - name: Prepare bounded diagnosis comment
         env:
-          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.diagnose.outputs.pr }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/causent-result/causent-report.json"
@@ -358,6 +356,30 @@ jobs:
           Bundle path recorded by the runner: `$bundle`
           EOF
           )
-          gh pr comment "$PR_NUMBER" \
-            --repo "$REPOSITORY" \
-            --body "$body"
+          printf '%s\n' "$body" > "$RUNNER_TEMP/causent-comment.md"
+
+      - name: Publish bounded diagnosis comment
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.diagnose.outputs.pr }}
+          COMMENT_PATH: ${{ runner.temp }}/causent-comment.md
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
+            const issueNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+              throw new Error(`Invalid pull request number: ${process.env.PR_NUMBER}`);
+            }
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body,
+              });
+            } catch (error) {
+              core.setFailed(`Unable to publish diagnosis comment: ${error.status ?? 'unknown'} ${error.message}`);
+            }
