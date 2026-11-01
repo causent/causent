@@ -40,7 +40,23 @@ func (c *Client) Analyze(ctx context.Context, in Input) (Report, error) {
 	for _, e := range in.Evidence {
 		fmt.Fprintf(&b, "EVIDENCE %s [%s]\n%s\n", e.ID, e.Kind, e.Detail)
 	}
-	body, _ := json.Marshal(map[string]any{"model": c.Model, "messages": []map[string]string{{"role": "user", "content": b.String()}}, "temperature": 0, "max_tokens": 2048})
+	// Supplying a JSON schema makes the gateway apply provider-specific output
+	// limits and low-thinking settings for Gemini, while keeping the result
+	// machine-validated across all providers.
+	var body []byte
+	body, _ = json.Marshal(map[string]any{
+		"model": c.Model, "messages": []map[string]string{{"role": "user", "content": b.String()}},
+		"temperature": 0, "max_tokens": 512,
+		"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{
+			"name": "agent_report", "strict": true, "schema": map[string]any{
+				"type": "object", "properties": map[string]any{"hypotheses": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+					"statement": map[string]any{"type": "string"}, "affected_component": map[string]any{"type": "string"},
+					"supporting_evidence_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "confidence": map[string]any{"type": "number"},
+				}, "required": []string{"statement", "affected_component", "supporting_evidence_ids", "confidence"}}}},
+				"required": []string{"hypotheses"},
+			},
+		}},
+	})
 	endpoint := strings.TrimRight(c.Endpoint, "/") + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
