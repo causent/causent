@@ -1,16 +1,8 @@
 # Causent
 
-Causent is an LLM-driven repair engine with a sandbox verifier. Given a
-repository and a command that fails, it reproduces the failure, collects
-evidence, asks a model for competing hypotheses, runs a discriminating
-experiment to decide between them, asks for a patch, applies that patch in a
-disposable copy of the repository, and runs the original and regression
-commands before calling the patch anything.
-
-The rule that shapes the whole design: **a patch is only reported as successful
-because commands passed in a throwaway workspace**, never because a model said
-so. A passing verification still records `root_cause_verified: false` and notes
-that passing tests prove behavior, not cause.
+Causent reproduces CI failures, collects evidence, and reports a deterministic
+diagnosis. An optional model can suggest hypotheses from that evidence. Repair
+is separate and verifies proposed changes in a disposable workspace.
 
 Two entry points share one engine:
 
@@ -19,14 +11,12 @@ Two entry points share one engine:
 | `repair` | optional, heuristic by default | hypotheses, experiments, candidate patches, verification reports |
 | `diagnose` | none | deterministic classification, localization, replayable bundle |
 
-`repair` is the full loop. `diagnose` is the same reproduction and evidence
-machinery with the model removed, for when you want trustworthy triage without
-wiring up a provider — which is why it is the default for CI.
+`repair` runs the experimental patch workflow. `diagnose` performs reproduction,
+classification, localization, and bundle creation without requiring a model.
 
-With no `HADES_MODEL_PROVIDER` set, `repair` falls back to `HeuristicProvider`:
-three fixed hypotheses at fixed confidences, and a patch located by parsing a
-Python traceback. That path is deterministic and needs no network, but it is
-not reasoning — set a provider to get real hypotheses.
+Without `HADES_MODEL_PROVIDER`, `repair` uses the built-in heuristic provider.
+It is deterministic and limited; use a configured provider for model-backed
+hypotheses.
 
 ## The repair loop
 
