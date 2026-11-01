@@ -38,6 +38,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "init":
+		runInit(os.Args[2:])
 	case "diagnose", "diagnosis":
 		runDiagnose(os.Args[2:])
 	case "replay":
@@ -59,6 +61,7 @@ func usage() {
 	fmt.Print(`usage: cypher <command> [flags]
 
 commands:
+  init       detect the repository and generate Causent integration files
   diagnose   reproduce, classify, localize, and record a replayable bundle (default)
   replay     re-run the checks recorded in a diagnosis bundle
   repair     run the legacy patch-generating workflow (explicit opt-in)
