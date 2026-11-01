@@ -59,7 +59,69 @@ Every claim in the report is backed by an executed command, not by a model:
 If the command does not fail, or never executes, the diagnosis **refuses**
 rather than inventing a result.
 
-## Quick start
+## Install and onboard
+
+Users do not need to clone the Causent repository. A release contains the
+Linux amd64 executable. Install it with:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+curl -fL https://github.com/causent/causent/releases/latest/download/causent_linux_amd64 \
+  -o "$HOME/.local/bin/causent"
+chmod +x "$HOME/.local/bin/causent"
+export PATH="$HOME/.local/bin:$PATH"
+causent version
+```
+
+Run this inside the repository that should use Causent:
+
+```sh
+cd /path/to/your/repository
+causent init
+```
+
+The command detects the repository, shows its findings, and writes:
+
+```text
+.causent.yml
+.github/workflows/causent.yml
+```
+
+Review `.causent.yml` and make sure `command` is the exact command used by the
+repository's CI. Causent does not invent a command from a manifest alone.
+
+```mermaid
+flowchart LR
+    A[Install causent] --> B[Run causent init]
+    B --> C[Review .causent.yml]
+    C --> D[Commit configuration and workflow]
+    D --> E[CI failure]
+    E --> F[Causent diagnosis comment and bundle]
+```
+
+### Version names
+
+`v0.3.0` is a release tag. It identifies one published binary and is useful
+when a user wants a fixed version.
+
+`v1` is the major-version tag for the reusable GitHub Actions workflow. It
+points to the current version 1 workflow so repositories can use:
+
+```yaml
+uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+```
+
+The release tag selects the binary installed by that workflow. The workflow
+tag selects the workflow file. They are related, but they are not the same
+thing.
+
+To use a fixed workflow revision, replace `@v1` with a release tag such as
+`@v0.3.0`.
+
+### Build from source
+
+Cloning the repository is only needed for Causent contributors or for users
+who need to build it themselves:
 
 ```sh
 git clone https://github.com/causent/causent.git
