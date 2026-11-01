@@ -171,6 +171,89 @@ If the command does not fail or never executes, Causent refuses to claim a diagn
 
 The model does not control classification, execute commands, or edit the repository.
 
+## Deterministic simulation and replay testing
+
+Causent's normal diagnosis path is deterministic simulation testing: it runs the
+same configured command repeatedly in a controlled workspace, records exit
+codes, timeouts, output digests, and bounded excerpts, and compares the head
+with a known-good base when one is available.
+
+The current implementation provides these DST-style capabilities:
+
+- repeated reproduction attempts to separate stable failures from flaky ones;
+- head-versus-base comparison;
+- bounded history walking or an explicitly supplied known-good revision;
+- controlled diagnostic experiments with persisted outcomes;
+- checksummed evidence and replayable bundles;
+- replay verification that reruns the recorded command and checks whether the
+  original classification still holds.
+
+Replay does not rerun localization or claim that the original root cause was
+proven. It answers a narrower question: whether the recorded failure and
+classification can be reproduced again.
+
+```sh
+causent replay .causent/bundles/<timestamp>
+```
+
+## Persistence, events, and SSE
+
+Investigations can persist their lifecycle, evidence, experiments, patches,
+and verification reports in SQLite. The HTTP gateway exposes an
+OpenAI-compatible model endpoint and an investigation event stream.
+
+Start the gateway with a configured provider:
+
+```sh
+CAUSENT_GATEWAY_PROVIDER=ollama \
+CAUSENT_GATEWAY_MODEL=qwen2.5:7b \
+go run ./cmd/gateway
+```
+
+Available gateway endpoints include:
+
+- `GET /health` — gateway and provider status;
+- `GET /v1/models` — configured model metadata;
+- `POST /v1/chat/completions` — bounded non-streaming model requests;
+- `GET /v1/investigations/<id>/events` — Server-Sent Events for investigation
+  lifecycle updates.
+
+The SSE stream sends persisted investigation events, supports the
+`Last-Event-ID` header for reconnecting from a cursor, and sends keepalive
+heartbeats. A gateway started without a SQLite store can serve model requests
+but cannot provide investigation SSE events.
+
+## MCP integration
+
+Causent also includes a bounded stdio MCP server for local agent clients. It
+requires an explicitly authorized repository root and restricts executable
+commands, paths, timeouts, request sizes, response sizes, and environment
+variables.
+
+Build and start it for a repository:
+
+```sh
+go build -o causent-mcp ./cmd/mcp-server
+./causent-mcp --root "$PWD" --db "$PWD/.causent/mcp.db"
+```
+
+The MCP tools cover investigation start and cancellation, investigation and
+evidence lookup, hypotheses, experiments, patches, verification reports, and
+final reports. MCP access is local and authorized-root based; it is not a
+replacement for the GitHub Actions integration.
+
+## Evaluation harness
+
+The repository contains a fixture-backed evaluation harness for comparing
+deterministic and model-assisted strategies against pinned benchmark cases.
+Each case records its repository, buggy and known-good revisions, reproduction
+command, expected failure, and root-cause ground truth.
+
+The harness reports completion, reproduction, classification, patch
+verification, root-cause, execution-time, and model-call metrics. It is an
+evaluation tool, not runtime behavior and should not be used to claim general
+accuracy from a small fixture set.
+
 ## Supported environments
 
 | Environment | Detection | Runner setup |
