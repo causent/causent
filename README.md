@@ -107,6 +107,53 @@ The same settings can be supplied through `CAUSENT_EXECUTOR=docker` and
 `/workspace`, a temporary `/tmp`, disabled networking, dropped capabilities,
 and bounded memory, CPU, process, output, and timeout limits.
 
+## Repository-specific examples
+
+Diagnose CI failures in language-specific repositories:
+
+### Go
+
+```
+go run ./cmd/cypher diagnose \
+  --repo . \
+  --command "go test ./..." \
+  --executor docker \
+  --image golang:1.26 \
+  --attempts 3
+```
+
+### Python
+
+```
+go run ./cmd/cypher diagnose \
+  --repo . \
+  --command "pytest -q" \
+  --executor docker \
+  --image ghcr.io/causent/python:3.12 \
+  --attempts 3
+```
+
+### Rust
+
+```
+go run ./cmd/cypher diagnose \
+  --repo . \
+  --command "cargo test" \
+  --executor docker \
+  --image ghcr.io/causent/rust:1.77 \
+  --attempts 3
+```
+
+### JavaScript/TypeScript
+
+```
+go run ./cmd/cypher diagnose \
+  --repo . \
+  --command "npm test" \
+  --executor docker \
+  --image node:20 \
+  --attempts 3
+```
 ## Safety properties
 
 - patches are represented as exact structured edits;
