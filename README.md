@@ -5,8 +5,9 @@ evidence-first diagnosis reports.
 
 It reproduces a failure, compares revisions when possible, localizes relevant
 changes, records evidence, and classifies the result deterministically.
-Optional model-assisted repair can propose a narrowly scoped patch, but the
-model never becomes the source of truth for diagnosis or verification.
+Optional model-assisted analysis and repair can assist after deterministic
+diagnosis, but the model never becomes the source of truth for diagnosis or
+verification.
 
 ## Project status
 
@@ -89,22 +90,23 @@ flowchart LR
     B --> C[Deterministic reproduction]
     C --> D[Classification and localization]
     D --> E[Validated evidence bundle]
-    E --> F[Optional separate model proposal]
-    F --> G[Deterministic patch validation]
-    G --> H[Fresh patched workspace]
-    H --> I[Baseline and control verification]
-    I --> J[Auditable result]
+    E --> F{Optional capability}
+    F -->|analysis| G[Separate trusted model analysis]
+    F -->|repair| H[Patch proposal validation]
+    H --> I[Fresh patched workspace]
+    I --> J[Baseline and control verification]
+    G --> K[Auditable diagnosis]
+    J --> K
 ```
 
 The model boundary is deliberately separate:
 
 ```text
 deterministic diagnosis
-    -> bounded validated diagnosis input
-    -> separate proposal provider call
-    -> parsed patch validation
-    -> isolated execution
-    -> deterministic verification
+    -> validated evidence bundle
+    -> optional analysis or repair provider
+    -> deterministic validation
+    -> isolated execution only for repair
 ```
 
 The model may propose a patch and hypotheses about that proposal. It cannot
@@ -130,6 +132,63 @@ classification are reported with their uncertainty and limitations.
 Supported environment adapters currently include Go, Node.js, Python, Rust,
 and Bazel. Repository-specific commands should still be reviewed explicitly.
 
+## Optional model-assisted analysis
+
+Causent has three independent capabilities:
+
+1. Deterministic diagnosis — enabled by default.
+2. Model-assisted analysis — optional evidence review after diagnosis.
+3. Model-generated patch proposal and verification — separately optional.
+
+The normal GitHub Actions workflow runs deterministic diagnosis only. It does
+not call a model, require gateway credentials, or expose secrets to repository
+code.
+
+For the reusable workflow, model analysis is intended to be selected
+explicitly:
+
+```yaml
+jobs:
+  diagnose:
+    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+    with:
+      agent: true
+    secrets:
+      CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
+      CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
+```
+
+The provider endpoint and model must both be configured when `agent: true`.
+Missing configuration is an explicit error; Causent does not silently use a
+local fallback or pretend that model analysis succeeded.
+
+The intended Actions flow is:
+
+```text
+CI failure
+  -> deterministic diagnosis job
+  -> bounded diagnosis artifact
+  -> optional trusted analysis job
+  -> final report and publication
+```
+
+The analysis stage receives the validated report/evidence artifact and does not
+check out or execute the target repository. Fork pull requests and other
+untrusted code must not receive gateway credentials. Logs, source excerpts,
+commit messages, and other repository content remain untrusted data.
+
+Model output is stored separately as model-generated hypotheses and confidence.
+It cannot overwrite deterministic classification, reproduction status,
+refusal status, or verification results.
+
+When analysis is disabled, the deterministic report is produced normally and
+records that no model analysis was enabled.
+
+The current GitHub workflow declares the `agent` input but still runs the
+diagnosis step in deterministic-only mode; the trusted analysis-job connection
+described here is the next integration step and is not claimed as active until
+that workflow change is deployed.
+
 ## Optional model-assisted repair
 
 Repair has two provider paths:
@@ -140,7 +199,7 @@ Repair has two provider paths:
 The proposal path receives only a compact, validated input containing the
 diagnosis, relevant evidence, failing command, focused context, and prior
 validation feedback. Logs, diffs, commit messages, and source excerpts are
-treated as untrusted data.
+treated as untrusted data. Enabling analysis does not enable this path.
 
 The proposal output is strict structured data containing:
 
@@ -153,8 +212,9 @@ The proposal output is strict structured data containing:
 Evidence IDs are checked for reference integrity. A valid citation does not
 prove that the claim is semantically correct.
 
-The feature is disabled unless `--model-proposals` is supplied. Automated tests
-use deterministic fake providers and do not call external model services.
+The repair feature is disabled unless `--model-proposals` is supplied to the
+repair command. Automated tests use deterministic fake providers and do not
+call external model services.
 
 ## Patch safety
 
@@ -235,6 +295,40 @@ Repair and verification reports distinguish:
 
 Reports are persisted in SQLite together with investigation events, evidence,
 artifacts, patches, and verification details.
+
+## GitHub Actions integration
+
+The reusable workflow is available at
+`.github/workflows/ci-diagnose.yml`. A caller supplies the failing run and
+revision:
+
+```yaml
+jobs:
+  diagnose:
+    if: github.event.workflow_run.conclusion == 'failure'
+    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+    with:
+      run_id: ${{ github.event.workflow_run.id }}
+      head_sha: ${{ github.event.workflow_run.head_sha }}
+      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+      agent: false
+```
+
+With the default `agent: false`, the workflow checks out the exact failing
+commit, collects bounded failed-run logs, runs deterministic reproduction and
+comparison, uploads the evidence bundle, and publishes the diagnosis when a
+pull request is available. No model provider or gateway secret is required.
+
+After the workflow connection is deployed, enable analysis by setting
+`agent: true` and pass only the two dedicated gateway secrets shown above. The
+analysis stage is separate from repository execution;
+credentials are not passed to the failing command, Docker container, or
+checked-out code. Analysis is not available for untrusted fork execution unless
+the caller deliberately provides a trusted, isolated workflow boundary.
+
+`causent init` generates the same integration with model assistance disabled by
+default. Review the generated command, revision inputs, permissions, and
+secrets before committing it.
 
 ## Configuration
 
