@@ -173,6 +173,8 @@ type Report struct {
 	Baseline        Baseline       `json:"baseline"`
 	Comparison      *Comparison    `json:"comparison,omitempty"`
 	Agent           *agent.Report  `json:"agent,omitempty"`
+	AgentStatus     string         `json:"agent_status"`
+	AgentError      string         `json:"agent_error,omitempty"`
 	Localization    Localization   `json:"localization"`
 	Evidence        []EvidenceItem `json:"evidence"`
 	Claims          []Claim        `json:"claims"`
@@ -259,6 +261,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		RepoPath:        cfg.RepoPath,
 		Command:         cfg.Command,
 		CreatedAt:       time.Now().UTC(),
+		AgentStatus:     "disabled",
 	}
 	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
@@ -320,18 +323,6 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		finish(&report, d, workspace)
 		return report, nil
 	}
-	if cfg.Agent != nil {
-		input := agent.Input{Classification: string(report.Classification), Command: report.Command}
-		for _, e := range report.Evidence {
-			input.Evidence = append(input.Evidence, agent.Evidence{ID: e.ID, Kind: e.Kind, Detail: e.Detail})
-		}
-		if result, agentErr := cfg.Agent.Analyze(ctx, input); agentErr != nil {
-			report.Uncertainty = append(report.Uncertainty, "agent analysis unavailable: "+agentErr.Error())
-		} else {
-			report.Agent = &result
-		}
-	}
-
 	d.emit(EventLocalizationStarted, domain.StatusFormingHypotheses, "localizing likely cause")
 	localization, locEvidence, locErr := d.localize(ctx, workspace, baseline)
 	report.Localization = localization
@@ -347,6 +338,25 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Refused = true
 		report.RefusalReason = "generated diagnosis contained unsupported evidence references"
 		report.Claims = nil
+	}
+	if cfg.Agent != nil {
+		report.AgentStatus = "enabled"
+		input := agent.Input{
+			Classification: string(report.Classification),
+			Command:        report.Command,
+			Context: fmt.Sprintf("first_known_bad=%s\nlikely_files=%s\nclaims=%v",
+				report.Localization.FirstKnownBad, strings.Join(report.Localization.LikelyFiles, ", "), report.Claims),
+		}
+		for _, e := range report.Evidence {
+			input.Evidence = append(input.Evidence, agent.Evidence{ID: e.ID, Kind: e.Kind, Detail: e.Detail})
+		}
+		if result, agentErr := cfg.Agent.Analyze(ctx, input); agentErr != nil {
+			report.AgentStatus = "failed"
+			report.AgentError = agentErr.Error()
+		} else {
+			report.AgentStatus = "completed"
+			report.Agent = &result
+		}
 	}
 	report.Confidence = confidence(report.Classification, localization, report.Uncertainty)
 	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, localization)...)

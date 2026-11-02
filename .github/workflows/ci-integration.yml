@@ -24,3 +24,4 @@ jobs:
       run_id: ${{ github.event.workflow_run.id }}
       head_sha: ${{ github.event.workflow_run.head_sha }}
       base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+      agent: false

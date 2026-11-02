@@ -108,7 +108,16 @@ All inputs are optional; `.causent.yml` supplies the defaults.
 | `comment` | `true` | Post the diagnosis as a PR comment |
 
 Secrets `CAUSENT_GATEWAY_ENDPOINT` and `CAUSENT_GATEWAY_MODEL` are optional and
-only used when `agent: true`.
+only used when `agent: true`. They are passed only to the separate trusted
+analysis job, which consumes the deterministic report artifact and does not
+check out or execute the target repository. Missing either secret is a clear
+configuration failure when `agent: true`; no provider is contacted when it is
+false.
+
+Model analysis is not repair. It adds separately labeled model hypotheses to
+the deterministic report. It does not change classification, reproduction,
+refusal, or verification results. Patch generation remains a separate,
+explicit `repair --model-proposals` capability.
 
 ## Manual runs
 
@@ -129,10 +138,11 @@ only used when `agent: true`.
   set, the workflow installs Go from `go-version-file`. Other languages should
   use `executor: docker` or install their toolchain in a step before calling
   the reusable workflow.
-- **Execution and publication are separate jobs.** The diagnosis job has no PR
-  write permission, no gateway secrets, and disables checkout credential
-  persistence. A trusted publication job validates the result artifact before
-  commenting.
+- **Execution, analysis, and publication are separate jobs.** The diagnosis job
+  has no gateway secrets and disables checkout credential persistence. When
+  enabled, a trusted analysis job receives only the bounded diagnosis artifact
+  and gateway secrets; it does not check out or execute repository code. A
+  separate publication job consumes the final report before commenting.
 - **Fork pull requests are skipped by the `head_repository` guard.** Same-repo
   pull requests are also treated as untrusted during diagnosis; only the
   bounded result is exposed to the publication job.

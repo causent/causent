@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+func TestConfiguredAgentRequiresExplicitGatewaySettings(t *testing.T) {
+	t.Setenv("CAUSENT_GATEWAY_ENDPOINT", "")
+	t.Setenv("CAUSENT_GATEWAY_MODEL", "")
+	if _, err := configuredAgent(); err == nil {
+		t.Fatal("expected missing gateway endpoint error")
+	}
+	t.Setenv("CAUSENT_GATEWAY_ENDPOINT", "http://gateway.test")
+	if _, err := configuredAgent(); err == nil {
+		t.Fatal("expected missing gateway model error")
+	}
+	t.Setenv("CAUSENT_GATEWAY_MODEL", "test-model")
+	client, err := configuredAgent()
+	if err != nil || client.Endpoint != "http://gateway.test" || client.Model != "test-model" {
+		t.Fatalf("unexpected configured agent: %#v, %v", client, err)
+	}
+}
+
 func TestLoadRepoConfig(t *testing.T) {
 	dir := t.TempDir()
 	body := `command: go test ./...
