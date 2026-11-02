@@ -429,6 +429,22 @@ Causent currently does not provide:
 - a full human approval UI;
 - guaranteed host enforcement for platform-dependent Docker controls.
 
+## Documentation
+
+- [CI integration](docs/ci-integration.md) — reusable workflows, inputs,
+  secrets, publication, and GitHub Actions security boundaries.
+- [Runtime architecture](docs/runtime-architecture.md) — persistence, gateway,
+  MCP, and event streaming architecture.
+- [Diagnosis evaluation](docs/diagnosis-evaluation.md) — corpus structure,
+  reproducibility, scoring, and evaluation limits.
+- [Environment adapters](docs/environment-adapters.md) — supported repository
+  environments and command discovery.
+- [Supported environments](docs/supported-environments.md) — environment
+  detection and runtime limitations.
+- [External validation](docs/external-validation.md) — validation status and
+  required third-party testing.
+- [Installation](docs/installation.md) — installation and troubleshooting.
+
 ## License
 
 Causent is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
