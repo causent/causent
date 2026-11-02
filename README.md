@@ -144,8 +144,7 @@ The normal GitHub Actions workflow runs deterministic diagnosis only. It does
 not call a model, require gateway credentials, or expose secrets to repository
 code.
 
-For the reusable workflow, model analysis is intended to be selected
-explicitly:
+For the reusable workflow, model analysis is selected explicitly:
 
 ```yaml
 jobs:
@@ -162,7 +161,7 @@ The provider endpoint and model must both be configured when `agent: true`.
 Missing configuration is an explicit error; Causent does not silently use a
 local fallback or pretend that model analysis succeeded.
 
-The intended Actions flow is:
+The Actions flow is:
 
 ```text
 CI failure
@@ -184,10 +183,9 @@ refusal status, or verification results.
 When analysis is disabled, the deterministic report is produced normally and
 records that no model analysis was enabled.
 
-The current GitHub workflow declares the `agent` input but still runs the
-diagnosis step in deterministic-only mode; the trusted analysis-job connection
-described here is the next integration step and is not claimed as active until
-that workflow change is deployed.
+The diagnosis job never receives gateway credentials. When enabled, only the
+separate analysis job receives them and it processes the bounded diagnosis
+artifact without checking out or executing the target repository.
 
 ## Optional model-assisted repair
 

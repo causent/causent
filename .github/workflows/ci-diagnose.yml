@@ -242,9 +242,6 @@ jobs:
           if [ -n "$INPUT_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$INPUT_DOCKER_IMAGE")
           fi
-          # Do not send provider secrets into code checked out from the event.
-          # LLM analysis is intentionally disabled in this unprivileged job.
-
           status=0
           causent "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
             2> "$RUNNER_TEMP/causent-stderr.log" || status=$?
@@ -306,7 +303,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: causent-diagnosis-${{ github.run_id }}
+          name: causent-diagnosis-raw-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/causent-report.json
             ${{ runner.temp }}/causent-summary.md
@@ -316,10 +313,90 @@ jobs:
             ${{ runner.temp }}/causent-bundle
           if-no-files-found: ignore
 
+  analyze:
+    name: Optional model analysis
+    needs: diagnose
+    if: needs.diagnose.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download deterministic diagnosis
+        uses: actions/download-artifact@v4
+        with:
+          name: causent-diagnosis-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/causent-raw
+
+      - name: Install causent
+        env:
+          INPUT_VERSION: ${{ inputs.causent_version }}
+          INPUT_REPOSITORY: ${{ inputs.causent_repository }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          repository="$INPUT_REPOSITORY"
+          if [[ ! "$version" =~ ^(latest|v[0-9A-Za-z._-]+)$ ]]; then
+            echo "invalid causent_version" >&2
+            exit 2
+          fi
+          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "invalid causent_repository" >&2
+            exit 2
+          fi
+          if [ "$version" = "latest" ]; then
+            url="https://github.com/$repository/releases/latest/download/causent_linux_amd64"
+          else
+            url="https://github.com/$repository/releases/download/$version/causent_linux_amd64"
+          fi
+          curl -fsSL "$url" -o "$RUNNER_TEMP/causent"
+          chmod +x "$RUNNER_TEMP/causent"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/causent" version
+
+      - name: Preserve deterministic report
+        if: inputs.agent == false
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/causent-final"
+          cp "$RUNNER_TEMP/causent-raw/causent-report.json" "$RUNNER_TEMP/causent-final/causent-report.json"
+
+      - name: Analyze validated diagnosis
+        if: inputs.agent == true
+        env:
+          CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
+          CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CAUSENT_GATEWAY_ENDPOINT" ] || [ -z "$CAUSENT_GATEWAY_MODEL" ]; then
+            echo "agent=true requires CAUSENT_GATEWAY_ENDPOINT and CAUSENT_GATEWAY_MODEL secrets" >&2
+            exit 2
+          fi
+          mkdir -p "$RUNNER_TEMP/causent-final"
+          causent analyze \
+            --report "$RUNNER_TEMP/causent-raw/causent-report.json" \
+            --output "$RUNNER_TEMP/causent-final/causent-report.json"
+
+      - name: Copy evidence artifacts
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/causent-raw/causent-summary.md" "$RUNNER_TEMP/causent-final/causent-summary.md" || true
+          cp "$RUNNER_TEMP/causent-raw/causent-stderr.log" "$RUNNER_TEMP/causent-final/causent-stderr.log" || true
+          cp "$RUNNER_TEMP/causent-raw/causent-failed.log" "$RUNNER_TEMP/causent-final/causent-failed.log" || true
+          cp "$RUNNER_TEMP/causent-raw/causent-failed-jobs.txt" "$RUNNER_TEMP/causent-final/causent-failed-jobs.txt" || true
+          cp -R "$RUNNER_TEMP/causent-raw/causent-bundle" "$RUNNER_TEMP/causent-final/causent-bundle" || true
+
+      - name: Upload final diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: causent-diagnosis-${{ github.run_id }}
+          path: ${{ runner.temp }}/causent-final
+          if-no-files-found: error
+
   publish:
     name: Publish diagnosis
-    needs: diagnose
-    if: needs.diagnose.result == 'success' && inputs.comment && needs.diagnose.outputs.pr != ''
+    needs: [diagnose, analyze]
+    if: needs.analyze.result == 'success' && inputs.comment && needs.diagnose.outputs.pr != ''
     runs-on: ubuntu-latest
     permissions:
       actions: read

@@ -46,6 +46,8 @@ func main() {
 		runInit(os.Args[2:])
 	case "diagnose", "diagnosis":
 		runDiagnose(os.Args[2:])
+	case "analyze":
+		runAnalyze(os.Args[2:])
 	case "replay":
 		runReplay(os.Args[2:])
 	case "repair":
@@ -69,6 +71,7 @@ func usage() {
 commands:
   init       detect the repository and generate Causent integration files
   diagnose   reproduce, classify, localize, and record a replayable bundle (default)
+  analyze    analyze an existing deterministic report with the configured model
   replay     re-run the checks recorded in a diagnosis bundle
   repair     run the legacy patch-generating workflow (explicit opt-in)
   eval       manage the frozen evaluation corpus
@@ -220,9 +223,11 @@ func runDiagnose(args []string) {
 		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
 	}
 	if *useAgent {
-		endpoint := envOr("CAUSENT_GATEWAY_ENDPOINT", "http://127.0.0.1:8787")
-		model := envOr("CAUSENT_GATEWAY_MODEL", envOr("CAUSENT_MODEL", "default"))
-		cfg.Agent = &agent.Client{Endpoint: endpoint, Model: model}
+		cfg.Agent, err = configuredAgent()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "agent configuration: "+err.Error())
+			os.Exit(2)
+		}
 	}
 	for _, probe := range probes {
 		cfg.Probes = append(cfg.Probes, splitCommand(probe))
@@ -241,6 +246,77 @@ func runDiagnose(args []string) {
 		if !report.Refused && report.BundlePath != "" {
 			fmt.Printf("\nbundle: %s\nreplay: %s\n", report.BundlePath, report.ReplayCommand)
 		}
+	}
+}
+
+func configuredAgent() (*agent.Client, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("CAUSENT_GATEWAY_ENDPOINT")), "/")
+	model := strings.TrimSpace(os.Getenv("CAUSENT_GATEWAY_MODEL"))
+	if endpoint == "" {
+		return nil, fmt.Errorf("CAUSENT_GATEWAY_ENDPOINT is required when model analysis is enabled")
+	}
+	if model == "" {
+		return nil, fmt.Errorf("CAUSENT_GATEWAY_MODEL is required when model analysis is enabled")
+	}
+	return &agent.Client{Endpoint: endpoint, Model: model}, nil
+}
+
+// runAnalyze processes only a deterministic report artifact. It never checks
+// out or executes repository code, making it suitable for a trusted workflow
+// job that alone receives model credentials.
+func runAnalyze(args []string) {
+	fs := flag.NewFlagSet("analyze", flag.ExitOnError)
+	reportPath := fs.String("report", "", "deterministic diagnosis report JSON")
+	outputPath := fs.String("output", "", "output path for the combined report JSON")
+	fs.Parse(args)
+	if *reportPath == "" || *outputPath == "" {
+		fmt.Fprintln(os.Stderr, "usage: causent analyze --report report.json --output combined-report.json")
+		os.Exit(2)
+	}
+	data, err := os.ReadFile(*reportPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "analyze: read report: "+err.Error())
+		os.Exit(1)
+	}
+	var report diagnosis.Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		fmt.Fprintln(os.Stderr, "analyze: decode report: "+err.Error())
+		os.Exit(1)
+	}
+	if err := diagnosis.ValidateContract(report); err != nil {
+		fmt.Fprintln(os.Stderr, "analyze: invalid deterministic report: "+err.Error())
+		os.Exit(1)
+	}
+	client, err := configuredAgent()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "agent configuration: "+err.Error())
+		os.Exit(2)
+	}
+	input := agent.Input{
+		Classification: string(report.Classification),
+		Command:        report.Command,
+		Context: fmt.Sprintf("first_known_bad=%s\nlikely_files=%s\nclaims=%v",
+			report.Localization.FirstKnownBad, strings.Join(report.Localization.LikelyFiles, ", "), report.Claims),
+	}
+	for _, e := range report.Evidence {
+		input.Evidence = append(input.Evidence, agent.Evidence{ID: e.ID, Kind: e.Kind, Detail: e.Detail})
+	}
+	report.AgentStatus = "enabled"
+	if result, agentErr := client.Analyze(context.Background(), input); agentErr != nil {
+		report.AgentStatus = "failed"
+		report.AgentError = agentErr.Error()
+	} else {
+		report.AgentStatus = "completed"
+		report.Agent = &result
+	}
+	encoded, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "analyze: encode report: "+err.Error())
+		os.Exit(1)
+	}
+	if err := os.WriteFile(*outputPath, append(encoded, '\n'), 0600); err != nil {
+		fmt.Fprintln(os.Stderr, "analyze: write report: "+err.Error())
+		os.Exit(1)
 	}
 }
 

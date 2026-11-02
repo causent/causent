@@ -46,3 +46,6 @@ jobs:
       docker_image: ${{ inputs.docker_image }}
       agent: ${{ inputs.agent }}
       comment: false
+    secrets:
+      CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
+      CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}

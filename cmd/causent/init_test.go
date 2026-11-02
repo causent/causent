@@ -81,6 +81,9 @@ func TestInitWorkflowAndConfigAreSupported(t *testing.T) {
 			t.Errorf("workflow missing %q", want)
 		}
 	}
+	if !strings.Contains(w, "agent: false") {
+		t.Fatal("generated workflow must keep model analysis disabled by default")
+	}
 	if strings.Contains(w, "workflow_run.base_sha") || !strings.Contains(w, "pull_requests[0].base.sha") {
 		t.Fatalf("workflow must pass the exact pull request base SHA: %s", w)
 	}
