@@ -1,0 +1,7 @@
+primary_failure: "example test failure: expected 2, got 1"
+category: regression
+expected_outcome: answerable
+culprit_file: example.go
+evidence_source: fix commit
+annotator: Causent test fixture
+disagreement_notes: Fake example only; do not use as an accuracy claim.

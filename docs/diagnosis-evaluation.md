@@ -33,5 +33,27 @@ The checked-in benchmark corpus is not presented as a real-CI ground-truth
 dataset. Production evaluation requires adding pinned real repositories and
 reviewed labels before publishing a comparison report.
 
+## Frozen CI-failure corpus
+
+`evaluation/corpus/` is the separate frozen corpus for real CI failures. It is
+deliberately separate from the existing `internal/evaluation` benchmark engine:
+
+- `internal/evaluation` runs the existing pinned benchmark strategies;
+- `internal/evalcorpus` validates case metadata, constructs runner input without
+  ground truth, scores an existing diagnosis result, and enforces corpus
+  freeze state.
+
+The corpus does not run Causent as part of this change. Add reviewed cases by
+hand, commit the corpus, and record its manifest revision:
+
+```sh
+causent eval freeze
+```
+
+An evaluation must refuse to run after files under `evaluation/corpus/` change
+relative to the recorded freeze commit. The scorer reports correct, wrong,
+justified-abstention, and unjustified-abstention counts and rates separately;
+it does not collapse them into one accuracy number.
+
 Repair remains opt-in and experimental: a patch is successful only after
 isolated application, tests, and verification all pass.

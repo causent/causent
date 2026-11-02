@@ -4,3 +4,6 @@
 *.sqlite-wal
 .DS_Store
 
+/evaluation/results/*
+!/evaluation/results/.gitkeep
+

@@ -1,0 +1,5 @@
+version: "0.1.0"
+cases:
+  - id: case-000-example
+    tier: log_only
+    category: regression

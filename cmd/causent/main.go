@@ -26,6 +26,7 @@ import (
 	"github.com/causent/causent/internal/agent"
 	"github.com/causent/causent/internal/diagnosis"
 	"github.com/causent/causent/internal/engine"
+	"github.com/causent/causent/internal/evalcorpus"
 	"github.com/causent/causent/internal/execution"
 	"github.com/causent/causent/internal/persistence"
 )
@@ -49,6 +50,8 @@ func main() {
 		runReplay(os.Args[2:])
 	case "repair":
 		runRepair(os.Args[2:])
+	case "eval":
+		runEval(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("causent " + version)
 	case "help", "--help", "-h":
@@ -68,10 +71,29 @@ commands:
   diagnose   reproduce, classify, localize, and record a replayable bundle (default)
   replay     re-run the checks recorded in a diagnosis bundle
   repair     run the legacy patch-generating workflow (explicit opt-in)
+  eval       manage the frozen evaluation corpus
   version    print the version
 
 run "causent <command> -h" for command flags.
 `)
+}
+
+func runEval(args []string) {
+	if len(args) == 0 || args[0] != "freeze" {
+		fmt.Fprintln(os.Stderr, "usage: causent eval freeze")
+		os.Exit(2)
+	}
+	repo, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	record, err := evalcorpus.Freeze(repo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval freeze: "+err.Error())
+		os.Exit(1)
+	}
+	fmt.Printf("evaluation corpus frozen at manifest commit %s\n", record.ManifestCommit)
 }
 
 func runDiagnose(args []string) {
