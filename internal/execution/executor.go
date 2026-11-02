@@ -44,7 +44,7 @@ func (p Policy) Validate(cmd string, dir string, env []string, maxOut int, timeo
 
 	for _, pair := range env {
 		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) > 0 && !p.AllowedEnviron[parts[0]] {
+		if len(parts) > 0 && (sensitiveEnvName(parts[0]) || !p.AllowedEnviron[parts[0]]) {
 			return fmt.Errorf("environment variable %q not allowed by policy", parts[0])
 		}
 	}
@@ -63,6 +63,16 @@ func (p Policy) Validate(cmd string, dir string, env []string, maxOut int, timeo
 	return nil
 }
 
+func sensitiveEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSWD", "PRIVATE_KEY", "API_KEY", "CREDENTIAL"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func withinAllowedPrefix(dir string, prefixes []string) bool {
 	for _, prefix := range prefixes {
 		rel, err := filepath.Rel(prefix, dir)
@@ -77,6 +87,37 @@ func withinAllowedPrefix(dir string, prefixes []string) bool {
 type Executor interface {
 	Run(ctx context.Context, req domain.ExecutionRequest) (domain.ExecutionResult, error)
 }
+
+// boundedBuffer retains at most max bytes while continuing to drain the
+// child's pipe, preventing noisy processes from blocking on a full pipe.
+type boundedBuffer struct {
+	data      []byte
+	max       int
+	truncated bool
+}
+
+const defaultOutputLimit = 64 << 10
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.max <= 0 {
+		b.data = append(b.data, p...)
+		return len(p), nil
+	}
+	remaining := b.max - len(b.data)
+	inputLen := len(p)
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		b.data = append(b.data, p[:remaining]...)
+	}
+	if inputLen > remaining {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string { return string(b.data) }
 
 // Request is an alias for domain.ExecutionRequest.
 type Request = domain.ExecutionRequest
@@ -197,8 +238,12 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 	if maxOut == 0 {
 		maxOut = e.policy.MaxOutput
 	}
+	if maxOut <= 0 {
+		maxOut = defaultOutputLimit
+	}
 	//Capture stdout and stderr
-	var stdoutBuf, stderrBuf strings.Builder
+	var stdoutBuf, stderrBuf boundedBuffer
+	stdoutBuf.max, stderrBuf.max = maxOut, maxOut
 
 	c.Stdout = &stdoutBuf
 	c.Stderr = &stderrBuf
@@ -222,8 +267,9 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 		stderr := stderrBuf.String()
 		result := domain.ExecutionResult{
 			ExitCode:   c.ProcessState.ExitCode(),
-			Stdout:     boundOutput(stdout, maxOut),
-			Stderr:     boundOutput(stderr, maxOut),
+			Stdout:     stdout,
+			Stderr:     stderr,
+			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
 			TimedOut:   false,
 			Duration:   time.Since(started),
 			StartedAt:  started,
@@ -250,8 +296,9 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 		slog.Warn("execution cancelled", "command", req.Command[0], "dir", req.Dir, "after", time.Since(started).String())
 		return domain.ExecutionResult{
 			ExitCode:  -1,
-			Stdout:    boundOutput(stdoutBuf.String(), maxOut),
-			Stderr:    boundOutput(stderrBuf.String(), maxOut),
+			Stdout:    stdoutBuf.String(),
+			Stderr:    stderrBuf.String(),
+			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
 			TimedOut:  true,
 			Duration:  time.Since(started),
 			StartedAt: started,
@@ -382,13 +429,29 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 
 	//Execute container
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	var stdoutBuf, stderrBuf strings.Builder
+	maxOut := req.MaxOutput
+	if maxOut == 0 {
+		maxOut = e.collectPolicy.MaxOutput
+	}
+	if maxOut <= 0 {
+		maxOut = defaultOutputLimit
+	}
+	var stdoutBuf, stderrBuf boundedBuffer
+	stdoutBuf.max, stderrBuf.max = maxOut, maxOut
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
+	containerStarted := false
+	defer func() {
+		if containerStarted {
+			// --rm handles normal completion; this is the panic/error safety net.
+			_ = e.cleanupContainer(context.Background(), name)
+		}
+	}()
 	if err := cmd.Start(); err != nil {
 		return domain.ExecutionResult{}, fmt.Errorf("docker start: %w", err)
 	}
+	containerStarted = true
 	startedAt := time.Now()
 
 	//Wait for result
@@ -403,8 +466,9 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		stderr := stderrBuf.String()
 		result := domain.ExecutionResult{
 			ExitCode:   cmd.ProcessState.ExitCode(),
-			Stdout:     boundOutput(stdout, req.MaxOutput),
-			Stderr:     boundOutput(stderr, req.MaxOutput),
+			Stdout:     stdout,
+			Stderr:     stderr,
+			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
 			TimedOut:   false,
 			Duration:   time.Since(startedAt),
 			StartedAt:  startedAt,
@@ -421,8 +485,9 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	case <-ctx.Done():
 		res := domain.ExecutionResult{
 			ExitCode:  -1,
-			Stdout:    boundOutput(stdoutBuf.String(), req.MaxOutput),
-			Stderr:    boundOutput(stderrBuf.String(), req.MaxOutput),
+			Stdout:    stdoutBuf.String(),
+			Stderr:    stderrBuf.String(),
+			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
 			TimedOut:  true,
 			StartedAt: startedAt,
 		}
@@ -550,7 +615,7 @@ func (p CollectPolicy) Validate(command []string, dir string, env []string, maxO
 	//Validate environment
 	for _, pair := range env {
 		parts := strings.SplitN(pair, "=", 2)
-		if !allowedEnvVar(parts[0]) {
+		if sensitiveEnvName(parts[0]) || !allowedEnvVar(parts[0]) {
 			return fmt.Errorf("environment variable %q not allowed", parts[0])
 		}
 	}

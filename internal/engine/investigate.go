@@ -20,9 +20,13 @@ import (
 )
 
 type Investigator struct {
-	Store               *persistence.Store
-	Executor            execution.Executor
-	Provider            ModelProvider
+	Store    *persistence.Store
+	Executor execution.Executor
+	Provider ModelProvider
+	// ProposalProvider is an independent opt-in patch proposal path. When nil,
+	// the existing PatchProvider repair path remains unchanged.
+	ProposalProvider    ProposalProvider
+	ProposalEnabled     bool
 	Model               domain.ModelMetadata
 	PatchAttempts       int
 	OnStarted           func(domain.Investigation)

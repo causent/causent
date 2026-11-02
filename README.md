@@ -1,248 +1,343 @@
 # Causent
 
-Causent investigates failed CI runs.
+Causent investigates failed CI runs and produces bounded, replayable,
+evidence-first diagnosis reports.
 
-It checks out the failing revision, runs the configured command, compares the
-head with a base revision, records bounded evidence, and produces a replayable
-diagnosis bundle. It does not claim a root cause when the failure cannot be
-reproduced or the evidence is insufficient.
+It reproduces a failure, compares revisions when possible, localizes relevant
+changes, records evidence, and classifies the result deterministically.
+Optional model-assisted repair can propose a narrowly scoped patch, but the
+model never becomes the source of truth for diagnosis or verification.
 
-Repair is experimental and opt-in. Candidate patches are applied and tested
-only in disposable workspaces. Causent does not silently modify a pull request.
+## Project status
 
-## Example diagnosis
+Causent is under active development.
 
-A Causent PR comment should answer more than “this file changed”:
+The deterministic diagnosis workflow is the primary product. Repair is
+experimental and opt-in. Causent does not silently modify a repository, create
+pull requests, merge changes, or deploy anything.
 
-```text
-Causent diagnosis
+## Requirements
 
-Classification: real_regression
-Confidence: 85%
-Command: go test ./...
+Development requires:
 
-Reproduction: head 3/3 attempts failed; base 3/3 attempts passed
-Observed failure: TestSelfDiagnosisIntentionalFailure
-Likely changed file: internal/diagnosis/self_failure_test.go
-Candidate commit: ae39d70 — test: add temporary self-diagnosis failure
+- Go 1.26 or newer;
+- Git;
+- Python 3 for Python fixtures and integration tests;
+- Docker only when using the Docker executor.
 
-The full bounded evidence is available in the workflow artifact.
-```
-
-The classification and localization are evidence-backed. They are not the same
-as experimentally verified causality.
+The default local executor is suitable for trusted local repositories. Use the
+Docker executor for untrusted code when the host supports the required
+container controls.
 
 ## Quick start
 
-Install the Linux amd64 release:
+Run the complete test suite:
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-curl -fL https://github.com/causent/causent/releases/latest/download/causent_linux_amd64 \
-  -o "$HOME/.local/bin/causent"
-chmod +x "$HOME/.local/bin/causent"
-export PATH="$HOME/.local/bin:$PATH"
-causent version
+go test ./...
 ```
 
-Run onboarding in the repository you want to investigate:
+Run a deterministic diagnosis:
 
 ```sh
-causent init
+go run ./cmd/causent diagnose \
+  --repo . \
+  --command "go test ./..."
 ```
 
-Review the detected command and generated files before committing them.
-`causent init` does not silently overwrite existing configuration.
+The diagnosis workflow does not require a model.
 
-## GitHub Actions
+Run the explicit experimental repair workflow:
 
-Create `.causent.yml` with the exact command used by the repository's CI:
+```sh
+go run ./cmd/causent repair \
+  --repo . \
+  --command "go test ./..."
+```
+
+Use Docker for repair execution:
+
+```sh
+go run ./cmd/causent repair \
+  --repo . \
+  --command "go test ./..." \
+  --executor docker \
+  --image golang:1.26
+```
+
+The separate model proposal path is disabled by default. Enable it explicitly:
+
+```sh
+CAUSENT_MODEL_PROVIDER=gateway \
+CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
+CAUSENT_MODEL=your-model \
+go run ./cmd/causent repair \
+  --repo . \
+  --command "go test ./..." \
+  --model-proposals
+```
+
+The model proposal path requires a provider that implements the proposal
+interface. It receives bounded diagnosis/evidence context only; it does not
+receive a raw checkout or host credentials.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Failed CI command] --> B[Fresh workspace]
+    B --> C[Deterministic reproduction]
+    C --> D[Classification and localization]
+    D --> E[Validated evidence bundle]
+    E --> F[Optional separate model proposal]
+    F --> G[Deterministic patch validation]
+    G --> H[Fresh patched workspace]
+    H --> I[Baseline and control verification]
+    I --> J[Auditable result]
+```
+
+The model boundary is deliberately separate:
+
+```text
+deterministic diagnosis
+    -> bounded validated diagnosis input
+    -> separate proposal provider call
+    -> parsed patch validation
+    -> isolated execution
+    -> deterministic verification
+```
+
+The model may propose a patch and hypotheses about that proposal. It cannot
+execute commands, modify the workspace, assign diagnosis fields, or decide
+whether verification succeeded.
+
+## Diagnosis workflow
+
+The normal workflow is:
+
+1. Check out the target revision in an isolated Git worktree.
+2. Run the configured command repeatedly.
+3. Classify the failure as reproducible, flaky, resolved, or unavailable.
+4. Compare the head with a base or known-good revision when configured.
+5. Localize relevant files, stack frames, and commit history.
+6. Build a bounded evidence bundle with stable IDs and digests.
+7. Validate diagnosis claims against evidence references.
+8. Persist the report, events, artifacts, and bundle checksums.
+
+Diagnosis evidence is not the same as proof of root cause. Localization and
+classification are reported with their uncertainty and limitations.
+
+Supported environment adapters currently include Go, Node.js, Python, Rust,
+and Bazel. Repository-specific commands should still be reviewed explicitly.
+
+## Optional model-assisted repair
+
+Repair has two provider paths:
+
+- the existing structured patch-provider path, retained for compatibility;
+- the separate opt-in `ProposalProvider` path.
+
+The proposal path receives only a compact, validated input containing the
+diagnosis, relevant evidence, failing command, focused context, and prior
+validation feedback. Logs, diffs, commit messages, and source excerpts are
+treated as untrusted data.
+
+The proposal output is strict structured data containing:
+
+- a unified patch;
+- declared changed paths;
+- rationale and limitations;
+- model-generated claims with evidence IDs;
+- confidence.
+
+Evidence IDs are checked for reference integrity. A valid citation does not
+prove that the claim is semantically correct.
+
+The feature is disabled unless `--model-proposals` is supplied. Automated tests
+use deterministic fake providers and do not call external model services.
+
+## Patch safety
+
+Before execution, Causent validates the actual parsed patch operations. It does
+not trust the model's declared paths.
+
+Validation includes:
+
+- normalized repository-relative paths;
+- traversal and absolute-path rejection;
+- binary-patch rejection;
+- symlink-operation rejection;
+- changed-file and changed-line limits;
+- declared-path versus parsed-path comparison;
+- sensitive-path restrictions;
+- test-file policy checks;
+- `git apply --check` before application;
+- rejection reasons for every invalid proposal.
+
+Candidate workspaces are disposable. The original repository is not modified
+by patch verification.
+
+## Execution boundary
+
+The existing executor abstraction supports local and Docker backends.
+
+Execution provides:
+
+- allowlisted commands and environment variables;
+- rejection of sensitive environment names;
+- bounded streaming stdout/stderr retention;
+- timeout and cancellation handling;
+- isolated candidate workspaces;
+- Docker read-only root filesystems;
+- writable workspace and temporary filesystem only;
+- dropped Linux capabilities;
+- no-new-privileges;
+- non-root container execution where configured;
+- disabled Docker networking by default;
+- CPU, memory, process, and output limits where supported;
+- container cleanup safety nets.
+
+The local executor is not a strong security boundary. Docker and host support
+for AppArmor, rootless operation, disk quotas, swap enforcement, and precise
+OOM reporting are platform-dependent and must not be assumed without runtime
+verification.
+
+## Verification contract
+
+The hardened opt-in proposal path verifies a candidate in stages:
+
+1. Run the original failing command repeatedly in fresh baseline workspaces.
+2. Require a reproducible baseline failure.
+3. Return `inconclusive` when baseline behavior is inconsistent.
+4. Create a separate fresh workspace from the same revision.
+5. Apply and validate the candidate patch.
+6. Run the original failing command with the same execution policy.
+7. Run a deterministic control-test set.
+8. Persist the commands, outputs, evidence, and outcome.
+
+Verification succeeds only when the baseline failure was reproducible, the
+patched command passes, the control tests pass, and no execution or integrity
+policy was violated.
+
+Passing tests verify the reproduced behavior; they do not establish universal
+correctness or root-cause certainty.
+
+## Explicit outcomes
+
+Repair and verification reports distinguish:
+
+- `verified` / passed;
+- `patch_rejected` / does not apply;
+- `failed`;
+- `timeout`;
+- `inconclusive`;
+- cancelled or infrastructure errors where applicable.
+
+Reports are persisted in SQLite together with investigation events, evidence,
+artifacts, patches, and verification details.
+
+## Configuration
+
+Causent supports repository configuration through `.causent.yml` or
+`.causent.yaml`:
 
 ```yaml
 command: go test ./...
 attempts: 3
 timeout: 10m
-```
-
-The generated workflow calls Causent's reusable workflow. A minimal caller
-looks like this:
-
-```yaml
-name: Causent Diagnosis
-
-on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-
-permissions:
-  actions: read
-  contents: read
-  pull-requests: write
-
-jobs:
-  diagnose:
-    if: |
-      github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
-    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
-    with:
-      run_id: ${{ github.event.workflow_run.id }}
-      head_sha: ${{ github.event.workflow_run.head_sha }}
-      base_sha: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
-```
-
-Change `CI` to the name of the existing test workflow. The diagnosis job has
-read-only repository permissions and no model secrets. Publication is separate.
-Fork pull requests are skipped by this example because their code is untrusted.
-
-```mermaid
-flowchart LR
-    A[Existing CI fails] --> B[Checkout head]
-    B --> C[Run configured command]
-    C --> D[Compare base and head]
-    D --> E[Collect evidence]
-    E --> F[Upload bundle]
-    F --> G[Publish bounded PR comment]
-```
-
-## What Causent actually proves
-
-The diagnosis contract separates:
-
-- observed facts;
-- evidence supporting each claim;
-- inferred cause;
-- confidence;
-- alternative explanations;
-- missing information.
-
-The normal pipeline is:
-
-1. Reproduce the configured command on the head revision.
-2. Repeat it to identify stable, flaky, or non-reproducible failures.
-3. Compare the head with the configured base revision when available.
-4. Localize history changes.
-5. Record evidence and write a checksummed bundle.
-
-If `--good` is supplied, Causent runs `git bisect` with the configured command.
-Without `--good`, it performs a bounded walk through recent history and reports
-the first failing revision found by that walk. The walk is a localization hint,
-not proof of causality.
-
-## Repeated reproduction and replay checks
-
-Causent does not currently implement true Deterministic Simulation Testing
-(DST). It does not control application time, randomness, scheduling, network,
-disk, or external event streams.
-
-Its current capability is repeated reproduction and replay checks:
-
-- run the same command several times;
-- record exit codes, timeouts, digests, and bounded output;
-- compare base and head outcomes;
-- persist controlled experiment outcomes;
-- verify bundle checksums;
-- rerun a recorded command and compare its classification.
-
-Replay checks reproducibility. They do not rerun localization or prove the
-original root cause. A future deterministic-simulation adapter could consume a
-project's seed and replay format, then shrink a failing seed or fault schedule.
-
-```sh
-causent replay .causent/bundles/<timestamp>
-```
-
-## Optional model-assisted repair
-
-Diagnosis is the default and does not require a model. Repair is explicit:
-
-```yaml
+executor: docker
+image: golang:1.26
 repair:
   max_attempts: 2
 ```
 
-Configure a local or hosted Causent gateway, then run:
+Command-line flags take precedence. Model proposal enablement remains an
+explicit command-line choice and is not enabled by repository configuration or
+CI defaults.
 
-```sh
-export CAUSENT_MODEL_PROVIDER=gateway
-export CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787
-export CAUSENT_MODEL=your-model
-
-causent repair --repo . --command "go test ./..." --max-attempts 2
-```
-
-For each attempt, Causent generates a structured candidate, validates its file
-targets, applies it in a disposable workspace, and runs verification. If it
-fails, bounded verification output is sent back for the next candidate. A
-passing test verifies the reproduced behavior; it does not prove a universal
-fix or root-cause certainty.
-
-GitHub Actions currently runs deterministic diagnosis only. Model-enabled
-repair requires a separate trusted workflow because model credentials must not
-be exposed to jobs that execute untrusted pull-request code.
+The gateway and MCP server are separate integrations. They do not grant model
+credentials to jobs that execute untrusted pull-request code.
 
 ## Evaluation
 
-The evaluation harness is the main way to measure whether Causent works beyond
-seeded self-tests. Cases should pin:
+The evaluation corpus is deterministic and remains independent of optional
+model providers. Cases record:
 
-| Field | Purpose |
-| --- | --- |
-| Repository and commit | Reproducible source state |
-| Base revision | Known-good comparison |
-| Failing command and logs | Original failure evidence |
-| Expected classification | Deterministic result check |
-| Root cause and supporting evidence | Diagnosis correctness check |
-| Reproduction result | Whether the failure can be recreated |
+- repository and revision;
+- known-good revision;
+- failing command and logs;
+- expected classification;
+- root-cause and evidence expectations;
+- verification commands.
 
-The harness compares deterministic, model-assisted, and evidence-guided modes
-using the same cases. It measures reproduction, classification, evidence
-correctness, patch verification, execution time, unsupported claims, and model
-cost. A small fixture set is not a general accuracy claim.
+Evaluation should measure separately:
 
-## Supported environments
+- reproduction rate;
+- classification correctness;
+- evidence quality;
+- proposal validity;
+- patch acceptance;
+- verification rate;
+- regression rate;
+- latency;
+- model calls and token cost.
 
-| Environment | Detection evidence | Limitation |
-| --- | --- | --- |
-| Go | `go.mod` | The test command must still be configured |
-| Node.js | `package.json` and lockfiles | Scripts, services, and matrices may need review |
-| Python | `pyproject.toml` or `requirements.txt` | Dependency and test setup is repository-specific |
-| Rust | `Cargo.toml` | Toolchain and native dependencies may be required |
-| Bazel | `MODULE.bazel`, `WORKSPACE`, or `.bazelversion` | Commands and flags must be explicit |
+A small fixture corpus is not a general accuracy claim.
 
-Manifest detection is evidence of project technology, not proof of the correct
-CI command or complete runtime environment.
+## Development and testing
 
-## Security and limits
-
-- Diagnosis and patch verification use isolated workspaces.
-- Docker execution can use no network, a read-only container root, dropped
-  capabilities, resource limits, bounded output, and a writable workspace.
-- Environment variables and original logs are filtered and bounded.
-- Secrets are not passed to the untrusted diagnosis job.
-- A PR comment is not permission to modify the PR branch.
-- Local execution is not a strong security boundary; use Docker for untrusted
-  code when the environment supports it.
-
-## Further documentation
-
-- [Installation and troubleshooting](docs/installation.md)
-- [CI integration](docs/ci-integration.md)
-- [Supported environments](docs/supported-environments.md)
-- [Diagnosis evaluation](docs/diagnosis-evaluation.md)
-- [External validation](docs/external-validation.md)
-- [Gateway, persistence, SSE, and MCP architecture](docs/runtime-architecture.md)
-
-## Build from source
+Run all tests:
 
 ```sh
-git clone https://github.com/causent/causent.git
-cd causent
 go test ./...
-go build -o "$HOME/.local/bin/causent" ./cmd/causent
 ```
+
+Run focused packages:
+
+```sh
+go test ./internal/diagnosis ./internal/execution ./internal/engine
+```
+
+The test suite includes deterministic diagnosis tests, executor policy tests,
+patch validation tests, disposable-workspace tests, fake-provider tests, and
+evaluation tests. External model access is not required.
+
+Docker behavioral tests should be run on a host with Docker when validating
+network, memory, process, filesystem, and cleanup controls.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `cmd/causent` | CLI commands and repository configuration |
+| `cmd/gateway` | Local model gateway entry point |
+| `internal/diagnosis` | Deterministic diagnosis, classification, localization, and bundles |
+| `internal/engine` | Investigation orchestration, providers, patches, and verification |
+| `internal/execution` | Local and Docker execution backends |
+| `internal/domain` | Persisted investigation and report contracts |
+| `internal/persistence` | SQLite state and artifact persistence |
+| `internal/environment` | Repository environment adapters |
+| `internal/evalcorpus` | Evaluation corpus loading and scoring |
+| `evaluation/corpus` | Checked-in deterministic cases |
+| `benchmarks` | Repair and model evaluation fixtures |
+| `docs` | Architecture, integration, and evaluation documentation |
+
+## Current limitations
+
+Causent currently does not provide:
+
+- automatic pull-request changes or deployment;
+- unrestricted network access for executed code;
+- universal root-cause proof;
+- exactly-once repair guarantees;
+- general vector-database RAG;
+- autonomous unrestricted agents;
+- LLM token streaming;
+- complete production token-cost telemetry;
+- a full human approval UI;
+- guaranteed host enforcement for platform-dependent Docker controls.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Causent is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).

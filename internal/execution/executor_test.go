@@ -120,6 +120,18 @@ func TestLocalExecutorBoundsOversizedOutput(t *testing.T) {
 	if len(res.Stdout) != 128 {
 		t.Fatalf("expected stdout bounded to 128 bytes, got %d", len(res.Stdout))
 	}
+	if !res.Truncated {
+		t.Fatal("expected truncation to be reported")
+	}
+}
+
+func TestPolicyRejectsSensitiveAllowlistedEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	p := testPolicy(dir, time.Second)
+	p.AllowedEnviron["SERVICE_TOKEN"] = true
+	if err := p.Validate("sh", dir, []string{"SERVICE_TOKEN=secret"}, 128, time.Second); err == nil {
+		t.Fatal("expected sensitive environment variable rejection")
+	}
 }
 
 func TestLocalExecutorTimeout(t *testing.T) {

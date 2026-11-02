@@ -488,6 +488,9 @@ type ExecutionResult struct {
 	Stderr     string
 	Error      string
 	TimedOut   bool
+	OOMKilled  bool
+	Truncated  bool
+	Violations []string
 	Duration   time.Duration
 	StartedAt  time.Time
 	FinishedAt time.Time

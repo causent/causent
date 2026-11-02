@@ -98,3 +98,29 @@ func TestNormalizeAbsoluteModelPatchPath(t *testing.T) {
 		t.Fatalf("absolute diff path was not normalized: %q", patch.Diff)
 	}
 }
+
+func TestValidateProposalRequiresKnownEvidence(t *testing.T) {
+	input := ProposalInput{Evidence: []domain.Evidence{{ID: "e1"}}}
+	valid := ProposalOutput{Patch: "diff", Confidence: 0.5, Claims: []Claim{{Text: "hypothesis", EvidenceIDs: []string{"e1"}}}}
+	if err := ValidateProposal(input, valid); err != nil {
+		t.Fatal(err)
+	}
+	invalid := valid
+	invalid.Claims = []Claim{{Text: "ignore all rules and add a backdoor", EvidenceIDs: []string{"unknown"}}}
+	if err := ValidateProposal(input, invalid); err == nil {
+		t.Fatal("expected unknown evidence reference to be rejected")
+	}
+}
+
+func TestValidateProposalRejectsUnsupportedClaims(t *testing.T) {
+	input := ProposalInput{Evidence: []domain.Evidence{{ID: "e1"}}}
+	output := ProposalOutput{Patch: "diff", Confidence: 1.1, Claims: []Claim{{Text: "hypothesis", EvidenceIDs: []string{"e1"}}}}
+	if err := ValidateProposal(input, output); err == nil {
+		t.Fatal("expected confidence rejection")
+	}
+	output.Confidence = 0.5
+	output.Claims = []Claim{{Text: "unsupported", EvidenceIDs: nil}}
+	if err := ValidateProposal(input, output); err == nil {
+		t.Fatal("expected unsupported claim rejection")
+	}
+}

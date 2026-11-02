@@ -311,6 +311,7 @@ func runRepair(args []string) {
 	timeout := fs.Duration("timeout", 2*time.Minute, "timeout per command")
 	budget := fs.Int("budget", 20, "maximum investigation steps")
 	maxAttempts := fs.Int("max-attempts", 0, "maximum isolated patch verification attempts (default 2, max 5)")
+	modelProposals := fs.Bool("model-proposals", false, "use the separate model patch-proposal path (opt-in)")
 	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path")
@@ -351,12 +352,22 @@ func runRepair(args []string) {
 		fmt.Fprintln(os.Stderr, "executor: "+err.Error())
 		os.Exit(2)
 	}
+	provider := engine.ProviderFromEnvironment()
 	investigator := &engine.Investigator{
 		Store:               store,
 		Executor:            executor,
-		Provider:            engine.ProviderFromEnvironment(),
+		Provider:            provider,
 		PatchAttempts:       *maxAttempts,
 		DisallowTestChanges: true,
+	}
+	if *modelProposals {
+		proposalProvider, ok := provider.(engine.ProposalProvider)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "repair: configured provider does not support model proposals")
+			os.Exit(2)
+		}
+		investigator.ProposalProvider = proposalProvider
+		investigator.ProposalEnabled = true
 	}
 	inv, result, err := investigator.Investigate(context.Background(), repoPath, cmd, *timeout, *budget)
 	if err != nil {

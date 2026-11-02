@@ -165,6 +165,23 @@ func TestValidatePatchRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestParsedPatchRejectsUndeclaredAndBinaryOperations(t *testing.T) {
+	diff := "--- a/bug.py\n+++ b/bug.py\n@@ -1 +1 @@\n-return 1\n+return 0\n"
+	if err := validateParsedPatch(diff, []string{"other.py"}); err == nil {
+		t.Fatal("expected parsed path mismatch")
+	}
+	if err := validateParsedPatch("GIT binary patch\n", []string{"bug.py"}); err == nil {
+		t.Fatal("expected binary patch rejection")
+	}
+}
+
+func TestParsedPatchRejectsSymlinkOperations(t *testing.T) {
+	diff := "new file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n"
+	if err := validateParsedPatch(diff, []string{"link"}); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+}
+
 func TestValidateStructuredEditTargetsRejectsBenchmarkTestFiles(t *testing.T) {
 	err := validateStructuredEditTargets(domain.PatchProposal{
 		Edits: []domain.EditProposal{{File: "test_bug.py", OldText: "assert True", NewText: "assert False"}},
