@@ -44,6 +44,7 @@ type Metadata struct {
 	Category     Category `yaml:"category"`
 	Repo         string   `yaml:"repo"`
 	RunURL       string   `yaml:"run_url"`
+	BaseRunURL   string   `yaml:"base_run_url"`
 	LogSHA256    string   `yaml:"log_sha256"`
 	HeadSHA      string   `yaml:"head_sha"`
 	BaseSHA      string   `yaml:"base_sha"`

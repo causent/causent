@@ -3,3 +3,12 @@ cases:
   - id: case-000-example
     tier: log_only
     category: regression
+  - id: case-001-rinkle-preexisting
+    tier: full
+    category: pre_existing
+  - id: case-002-kwaque-timeout-regression
+    tier: full
+    category: regression
+  - id: case-003-ruflo-lockfile-break
+    tier: full
+    category: dependency

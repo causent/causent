@@ -1,0 +1,29 @@
+CI run: https://github.com/VainJoker/rinkle/actions/runs/41454050035
+Command: cargo make test
+Underlying command: cargo test --verbose --all-features
+
+test (ubuntu-latest, nightly)
+running 3 tests
+test dry_run_link_remove_ok ... ok
+test link_and_remove_real ... FAILED
+test list_and_status_json ... FAILED
+
+---- link_and_remove_real stdout ----
+thread 'link_and_remove_real' panicked at tests/integration_cli.rs:87:5:
+assertion failed: dst_path.exists()
+
+---- list_and_status_json stdout ----
+thread 'list_and_status_json' panicked at tests/integration_cli.rs:23:10:
+Unexpected stdout, failed var.contains(zsh)
+
+failures:
+    link_and_remove_real
+    list_and_status_json
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+Error while executing command, exit code: 101
+Process completed with exit code 105.
+
+Base comparison evidence:
+the same two test names and assertions were present in the base revision's
+CI run https://github.com/VainJoker/rinkle/actions/runs/34850083794.

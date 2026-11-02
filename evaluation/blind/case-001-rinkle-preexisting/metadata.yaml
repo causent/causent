@@ -1,0 +1,13 @@
+id: case-001-rinkle-preexisting
+tier: full
+repo: https://github.com/VainJoker/rinkle
+run_url: https://github.com/VainJoker/rinkle/actions/runs/41454050035
+log_sha256: 65da4fe6deac122db2a51a88b344af69199024e2d3295ce6f6867754c501fa28
+head_sha: 713a0d77198e435c8761e8b00e40bfd5be00bad8
+base_sha: b3b18ebe451f69a111e8d7b9a44185a13a76785d
+command:
+  - cargo
+  - make
+  - test
+license_note: Public GitHub Actions log; repository is publicly available under its repository license.
+redacted: true

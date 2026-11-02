@@ -1,0 +1,3 @@
+What is the primary failure?
+What category does it belong to?
+What, if anything, is unclear?

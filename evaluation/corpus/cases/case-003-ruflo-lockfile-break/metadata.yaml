@@ -1,0 +1,13 @@
+id: case-003-ruflo-lockfile-break
+tier: full
+category: dependency
+repo: https://github.com/ruvnet/ruflo
+run_url: https://github.com/ruvnet/ruflo/actions/runs/41419940634
+log_sha256: 9f6b6959218ba57482fa745c2f0dc4a3882b7fd416c9c32b36d142829116b613
+head_sha: 2728bfb19a3fb323720a23f0b8dbcc3f45f11715
+base_sha: 5f3dacc54b7279e39b172d6027d7989791448e2e
+command:
+  - node
+  - scripts/ci-test-ratchet.mjs
+license_note: Public GitHub Actions log; repository is publicly available under its repository license.
+redacted: true

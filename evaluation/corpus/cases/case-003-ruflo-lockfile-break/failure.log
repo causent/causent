@@ -1,0 +1,14 @@
+CI run: https://github.com/ruvnet/ruflo/actions/runs/41419940634
+Job: Test Suite (ubuntu-latest)
+Dependency install command: npm ci --legacy-peer-deps
+Diagnostic command: node scripts/ci-test-ratchet.mjs
+
+The CI diagnostics repeatedly reported:
+@claude-flow/memory version: installed v3.0.0 does not satisfy declared 3.2.2 — a stale cached copy is running
+
+The final failure was:
+CI test ratchet: FAILED — 1 unexpected failing file(s)
+  + v3/@claude-flow/neural/__tests__/algorithms.test.ts
+      Decision Transformer should train under performance target (<10ms per batch)
+      AssertionError: expected 128.66686600000003 to be less than 100
+Process completed with exit code 1.

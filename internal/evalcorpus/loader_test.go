@@ -15,7 +15,7 @@ func TestExampleCorpusLoadsAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 1 || cases[0].Input.FailureLog == "" {
+	if len(cases) != 4 || cases[0].Input.FailureLog == "" {
 		t.Fatalf("unexpected cases: %+v", cases)
 	}
 	if err := ValidateExpectedFile(filepath.Join(cases[0].Dir, "expected.yaml")); err != nil {

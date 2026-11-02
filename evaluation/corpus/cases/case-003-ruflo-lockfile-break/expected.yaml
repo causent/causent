@@ -1,0 +1,6 @@
+primary_failure: "Decision Transformer should train under performance target: expected 128.66686600000003 to be less than 100"
+category: dependency
+expected_outcome: insufficient_evidence
+evidence_source: failed CI run and lockfile update PR
+annotator: Causent initial annotation
+disagreement_notes: The PR changes v3/@claude-flow/browser/package-lock.json, but the failing test is in v3/@claude-flow/neural and the log also reports stale cache state. Do not attribute causality without a controlled comparison.

@@ -1,0 +1,18 @@
+id: case-002-kwaque-timeout-regression
+tier: full
+category: regression
+repo: https://github.com/Kwaque-org/Kwaque
+run_url: https://github.com/Kwaque-org/Kwaque/actions/runs/40793690194
+log_sha256: 19ac9bde2730ed4e2f10539c27a6945817518ff612cc2aa09bd41f9465912937
+head_sha: 6a0d4f86223f07a2d3c6f194d099fa0cf7ad8a73
+base_sha: 44781e1724b46eeb7e464fe4dbe2590ad688b7a1
+command:
+  - bazel
+  - test
+  - --config=ci-debug
+  - --//bazel:reactor_backend=linux-aio
+  - --build_tag_filters=-fuzz,-manual
+  - --test_tag_filters=-fuzz,-manual
+  - //...
+license_note: Public GitHub Actions log; repository is publicly available under its repository license.
+redacted: true

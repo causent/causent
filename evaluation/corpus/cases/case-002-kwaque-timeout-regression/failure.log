@@ -1,0 +1,11 @@
+CI run: https://github.com/Kwaque-org/Kwaque/actions/runs/40793690194
+Job: Native allocation injection, unit and smoke tests
+Command: bazel test --config=ci-debug --//bazel:reactor_backend=linux-aio --build_tag_filters=-fuzz,-manual --test_tag_filters=-fuzz,-manual //...
+
+INFO: Starting local Bazel server (9.2.0)
+...
+//src/simulation/tests:local_store_test TIMEOUT in 305.8s
+  /home/runner/.bazel/execroot/_main/bazel-out/k8-dbg/testlogs/src/simulation/tests/local_store_test/test.log
+Executed 358 out of 358 tests: 357 tests pass and 1 fails locally.
+INFO: Build completed, 1 test FAILED
+Process completed with exit code 3.
