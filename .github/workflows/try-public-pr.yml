@@ -1,0 +1,162 @@
+name: Try Causent on a public PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: Public GitHub repository, owner/name
+        required: true
+        type: string
+      pull_request:
+        description: Pull request number
+        required: true
+        type: string
+      test_command:
+        description: Test command to run at the PR head (for example, go test ./...)
+        required: true
+        type: string
+      docker_image:
+        description: Optional Docker image with the project's runtime and test tools
+        required: false
+        type: string
+      attempts:
+        description: Reproduction attempts
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out Causent
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs and resolve PR revisions
+        id: pr
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          PULL_NUMBER: ${{ inputs.pull_request }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'target_repository must be owner/name' >&2
+            exit 2
+          fi
+          if [[ ! "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'pull_request must be a positive integer' >&2
+            exit 2
+          fi
+          metadata="$RUNNER_TEMP/target-pr.json"
+          curl --fail --silent --show-error --location \
+            "https://api.github.com/repos/$TARGET_REPOSITORY/pulls/$PULL_NUMBER" \
+            -H 'Accept: application/vnd.github+json' -o "$metadata"
+          jq -e '.state == "open" and .base.sha and .head.sha' "$metadata" >/dev/null || {
+            echo 'PR must be open and have resolvable base/head revisions' >&2
+            exit 2
+          }
+          echo "base_sha=$(jq -r '.base.sha' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r '.head.sha' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$(jq -r '.html_url' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "clone_url=$(jq -r '.base.repo.clone_url' "$metadata")" >> "$GITHUB_OUTPUT"
+          echo "artifact_slug=${TARGET_REPOSITORY//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out target PR
+        env:
+          CLONE_URL: ${{ steps.pr.outputs.clone_url }}
+          PULL_NUMBER: ${{ inputs.pull_request }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/target"
+          git -C "$RUNNER_TEMP/target" init
+          git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
+          git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
+            "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/causent-pr"
+          git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/causent-pr)"
+          if [ "$actual_head" != "$HEAD_SHA" ]; then
+            echo 'PR head changed while preparing the run; restart with the updated PR revision' >&2
+            exit 1
+          fi
+          git -C "$RUNNER_TEMP/target" checkout --detach "$HEAD_SHA"
+
+      - name: Set up Go for Causent
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build Causent
+        run: go build -trimpath -o "$RUNNER_TEMP/causent" ./cmd/causent
+
+      - name: Diagnose PR
+        id: diagnose
+        env:
+          CAUSENT_COMMAND: ${{ inputs.test_command }}
+          CAUSENT_BASE: ${{ steps.pr.outputs.base_sha }}
+          CAUSENT_ATTEMPTS: ${{ inputs.attempts }}
+          CAUSENT_DOCKER_IMAGE: ${{ inputs.docker_image }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CAUSENT_ATTEMPTS" =~ ^[1-5]$ ]]; then
+            echo 'attempts must be between 1 and 5' >&2
+            exit 2
+          fi
+          args=(diagnose --repo "$RUNNER_TEMP/target" --command "$CAUSENT_COMMAND"
+            --base "$CAUSENT_BASE" --attempts "$CAUSENT_ATTEMPTS" --json
+            --bundle "$RUNNER_TEMP/causent-bundle")
+          if [ -n "$CAUSENT_DOCKER_IMAGE" ]; then
+            args+=(--executor docker --image "$CAUSENT_DOCKER_IMAGE")
+          fi
+          "$RUNNER_TEMP/causent" "${args[@]}" > "$RUNNER_TEMP/causent-report.json"
+
+      - name: Write run summary
+        env:
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          PULL_NUMBER: ${{ inputs.pull_request }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/causent-report.json"
+          {
+            echo "## Causent test: [$TARGET_REPOSITORY#$PULL_NUMBER]($PR_URL)"
+            echo
+            echo "**Classification:** $(jq -r '.classification // "unknown"' "$report")"
+            echo
+            echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
+            echo
+            files="$(jq -r '.localization.likely_files[]? | "- `" + . + "`"' "$report")"
+            if [ -n "$files" ]; then
+              echo '**Likely files:**'
+              echo "$files"
+              echo
+            fi
+            claims="$(jq -r '.claims[]? | "- " + .statement' "$report")"
+            if [ -n "$claims" ]; then
+              echo '**Hypotheses:**'
+              echo "$claims"
+              echo
+            fi
+            echo 'Full JSON report and evidence bundle are attached as the workflow artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnosis report and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causent-pr-diagnosis-${{ steps.pr.outputs.artifact_slug }}-${{ inputs.pull_request }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/causent-report.json
+            ${{ runner.temp }}/causent-bundle
+          if-no-files-found: warn
+          retention-days: 14

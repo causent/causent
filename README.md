@@ -296,6 +296,22 @@ artifacts, patches, and verification details.
 
 ## GitHub Actions integration
 
+### Try Causent on a public PR without installing it in that repository
+
+In the Causent repository, open **Actions → Try Causent on a public PR → Run
+workflow**. Enter the target repository as `owner/name`, its open PR number, and
+the test command used by that project (for example, `go test ./...` or
+`npm test`). Optionally provide a Docker image containing the project's test
+runtime. The workflow checks out the PR's exact head and base revisions, runs
+Causent, and attaches a diagnosis report and evidence bundle to the Actions
+run. The target repository does not need a Causent config file or workflow.
+
+This manual trial is for public repositories and reports in the Causent Actions
+summary/artifact; it does not write a comment to the target PR. The target test
+command must be supplied because Causent cannot reliably infer the intended CI
+command from a repository alone. Use the reusable workflow below for automatic
+diagnosis and PR comments in a repository you control.
+
 The reusable workflow is available at
 `.github/workflows/ci-diagnose.yml`. A caller supplies the failing run and
 revision:
