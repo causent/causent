@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/history"
-	"github.com/causent/causent/internal/investigation"
-	"github.com/causent/causent/internal/localization"
-	"github.com/causent/causent/internal/reasoning"
-	"github.com/causent/causent/internal/relationships"
-	programrepo "github.com/causent/causent/internal/repository"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/history"
+	"github.com/causent/malenia/internal/investigation"
+	"github.com/causent/malenia/internal/localization"
+	"github.com/causent/malenia/internal/reasoning"
+	"github.com/causent/malenia/internal/relationships"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 var (

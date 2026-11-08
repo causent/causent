@@ -1,7 +1,7 @@
 id: case-000-example
 tier: log_only
 category: regression
-repo: https://example.invalid/causent/evaluation-example
+repo: https://example.invalid/malenia/evaluation-example
 run_url: https://example.invalid/runs/000
 log_sha256: 3c761e66bd0dfb3d1c99eee29b3b39be6e387af53ade673bf4d532abc4b6ed46
 license_note: Fake example created for schema and scorer tests; no external log.

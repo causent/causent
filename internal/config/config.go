@@ -1,4 +1,4 @@
-// Package config contains the small, environment-friendly Causent configuration
+// Package config contains the small, environment-friendly Malenia configuration
 // surface shared by command-line and MCP entry points.
 package config
 
@@ -25,7 +25,7 @@ type Config struct {
 
 func Defaults() Config {
 	home, _ := os.UserHomeDir()
-	db := filepath.Join(home, ".causent", "investigations.db")
+	db := filepath.Join(home, ".malenia", "investigations.db")
 	return Config{
 		DatabasePath: db, ArtifactPath: filepath.Join(filepath.Dir(db), "artifacts"),
 		Timeout: 10 * time.Minute, Budget: 20, MaxOutput: 64 << 10,
@@ -74,24 +74,24 @@ func Validate(cfg Config) error {
 }
 
 func applyEnv(cfg *Config) {
-	if value := os.Getenv("CAUSENT_DB"); value != "" {
+	if value := os.Getenv("MALENIA_DB"); value != "" {
 		cfg.DatabasePath = value
 	}
-	if value := os.Getenv("CAUSENT_ARTIFACTS"); value != "" {
+	if value := os.Getenv("MALENIA_ARTIFACTS"); value != "" {
 		cfg.ArtifactPath = value
 	}
-	if value := os.Getenv("CAUSENT_ROOTS"); value != "" {
+	if value := os.Getenv("MALENIA_ROOTS"); value != "" {
 		cfg.AuthorizedRoots = filepath.SplitList(value)
 	}
-	if value := os.Getenv("CAUSENT_COMMANDS"); value != "" {
+	if value := os.Getenv("MALENIA_COMMANDS"); value != "" {
 		cfg.AllowedCommands = filepath.SplitList(value)
 	}
-	if value := os.Getenv("CAUSENT_TIMEOUT"); value != "" {
+	if value := os.Getenv("MALENIA_TIMEOUT"); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
 			cfg.Timeout = parsed
 		}
 	}
-	if value := os.Getenv("CAUSENT_BUDGET"); value != "" {
+	if value := os.Getenv("MALENIA_BUDGET"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			cfg.Budget = parsed
 		}

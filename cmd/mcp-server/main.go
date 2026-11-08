@@ -9,16 +9,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/causent/causent/internal/engine"
-	"github.com/causent/causent/internal/execution"
-	"github.com/causent/causent/internal/mcp"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/engine"
+	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/mcp"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	fs := flag.NewFlagSet("causent-mcp", flag.ExitOnError)
-	db := fs.String("db", "causent.db", "SQLite database path")
+	fs := flag.NewFlagSet("malenia-mcp", flag.ExitOnError)
+	db := fs.String("db", "malenia.db", "SQLite database path")
 	root := fs.String("root", "", "authorized repository root (required)")
 	fs.Parse(os.Args[1:])
 	if *root == "" {

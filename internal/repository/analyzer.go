@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 )
 
 type Snapshot struct {
@@ -97,7 +97,7 @@ func (a Analyzer) Analyze(ctx context.Context, root, repositoryID, revisionID, c
 
 func excludedDir(name string) bool {
 	switch name {
-	case ".git", ".causent", "vendor", "node_modules", "dist", "build", "target":
+	case ".git", ".malenia", "vendor", "node_modules", "dist", "build", "target":
 		return true
 	}
 	return false

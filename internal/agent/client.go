@@ -150,7 +150,7 @@ func (c *Client) Analyze(ctx context.Context, in Input) (Report, error) {
 }
 
 func redact(s string) string {
-	for _, key := range []string{"AWS_SECRET_ACCESS_KEY=", "GITHUB_TOKEN=", "CAUSENT_GATEWAY_API_KEY="} {
+	for _, key := range []string{"AWS_SECRET_ACCESS_KEY=", "GITHUB_TOKEN=", "MALENIA_GATEWAY_API_KEY="} {
 		for {
 			i := strings.Index(s, key)
 			if i < 0 {

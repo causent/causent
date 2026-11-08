@@ -1,4 +1,4 @@
-module github.com/causent/causent
+module github.com/causent/malenia
 
 go 1.26
 

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/investigation"
-	programrepo "github.com/causent/causent/internal/repository"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/investigation"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 // repositoryAction performs bounded, deterministic queries over a fresh

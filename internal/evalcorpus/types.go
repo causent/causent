@@ -1,6 +1,6 @@
 package evalcorpus
 
-import "github.com/causent/causent/internal/diagnosis"
+import "github.com/causent/malenia/internal/diagnosis"
 
 type Tier string
 

@@ -1,4 +1,4 @@
-name: Try Causent on a public PR
+name: Try Malenia on a public PR
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out Causent
+      - name: Check out Malenia
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -81,44 +81,44 @@ jobs:
           git -C "$RUNNER_TEMP/target" init
           git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
-            "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/causent-pr"
+            "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/malenia-pr"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
-          actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/causent-pr)"
+          actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/malenia-pr)"
           if [ "$actual_head" != "$HEAD_SHA" ]; then
             echo 'PR head changed while preparing the run; restart with the updated PR revision' >&2
             exit 1
           fi
           git -C "$RUNNER_TEMP/target" checkout --detach "$HEAD_SHA"
 
-      - name: Set up Go for Causent
+      - name: Set up Go for Malenia
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
 
-      - name: Build Causent
-        run: go build -trimpath -o "$RUNNER_TEMP/causent" ./cmd/causent
+      - name: Build Malenia
+        run: go build -trimpath -o "$RUNNER_TEMP/malenia" ./cmd/malenia
 
       - name: Diagnose PR
         id: diagnose
         env:
-          CAUSENT_COMMAND: ${{ inputs.test_command }}
-          CAUSENT_BASE: ${{ steps.pr.outputs.base_sha }}
-          CAUSENT_ATTEMPTS: ${{ inputs.attempts }}
-          CAUSENT_DOCKER_IMAGE: ${{ inputs.docker_image }}
+          MALENIA_COMMAND: ${{ inputs.test_command }}
+          MALENIA_BASE: ${{ steps.pr.outputs.base_sha }}
+          MALENIA_ATTEMPTS: ${{ inputs.attempts }}
+          MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
         run: |
           set -euo pipefail
-          if [[ ! "$CAUSENT_ATTEMPTS" =~ ^[1-5]$ ]]; then
+          if [[ ! "$MALENIA_ATTEMPTS" =~ ^[1-5]$ ]]; then
             echo 'attempts must be between 1 and 5' >&2
             exit 2
           fi
-          args=(diagnose --repo "$RUNNER_TEMP/target" --command "$CAUSENT_COMMAND"
-            --base "$CAUSENT_BASE" --attempts "$CAUSENT_ATTEMPTS" --json
-            --bundle "$RUNNER_TEMP/causent-bundle")
-          if [ -n "$CAUSENT_DOCKER_IMAGE" ]; then
-            args+=(--executor docker --image "$CAUSENT_DOCKER_IMAGE")
+          args=(diagnose --repo "$RUNNER_TEMP/target" --command "$MALENIA_COMMAND"
+            --base "$MALENIA_BASE" --attempts "$MALENIA_ATTEMPTS" --json
+            --bundle "$RUNNER_TEMP/malenia-bundle")
+          if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
+            args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
           fi
-          "$RUNNER_TEMP/causent" "${args[@]}" > "$RUNNER_TEMP/causent-report.json"
+          "$RUNNER_TEMP/malenia" "${args[@]}" > "$RUNNER_TEMP/malenia-report.json"
 
       - name: Write run summary
         env:
@@ -127,9 +127,9 @@ jobs:
           PULL_NUMBER: ${{ inputs.pull_request }}
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/causent-report.json"
+          report="$RUNNER_TEMP/malenia-report.json"
           {
-            echo "## Causent test: [$TARGET_REPOSITORY#$PULL_NUMBER]($PR_URL)"
+            echo "## Malenia test: [$TARGET_REPOSITORY#$PULL_NUMBER]($PR_URL)"
             echo
             echo "**Classification:** $(jq -r '.classification // "unknown"' "$report")"
             echo
@@ -154,9 +154,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: causent-pr-diagnosis-${{ steps.pr.outputs.artifact_slug }}-${{ inputs.pull_request }}-${{ github.run_id }}
+          name: malenia-pr-diagnosis-${{ steps.pr.outputs.artifact_slug }}-${{ inputs.pull_request }}-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/causent-report.json
-            ${{ runner.temp }}/causent-bundle
+            ${{ runner.temp }}/malenia-report.json
+            ${{ runner.temp }}/malenia-bundle
           if-no-files-found: warn
           retention-days: 14

@@ -1,8 +1,8 @@
-// Command causent is the diagnosis-first entry point.
+// Command malenia is the diagnosis-first entry point.
 //
-//	causent diagnose --repo <path> --command "<failing command>"
-//	causent replay ./bundle
-//	causent repair --repo <path> --command "<command>"   # explicit opt-in
+//	malenia diagnose --repo <path> --command "<failing command>"
+//	malenia replay ./bundle
+//	malenia repair --repo <path> --command "<command>"   # explicit opt-in
 //
 // diagnose is the default workflow: reproduce, classify, localize, and produce
 // a replayable bundle. It never edits the repository and never claims a fix.
@@ -23,13 +23,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/agent"
-	"github.com/causent/causent/internal/diagnosis"
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/engine"
-	"github.com/causent/causent/internal/evalcorpus"
-	"github.com/causent/causent/internal/execution"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/agent"
+	"github.com/causent/malenia/internal/diagnosis"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/engine"
+	"github.com/causent/malenia/internal/evalcorpus"
+	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 const defaultVersion = "0.2.0-diagnosis"
@@ -56,7 +56,7 @@ func main() {
 	case "eval":
 		runEval(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("causent " + version)
+		fmt.Println("malenia " + version)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -67,10 +67,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`usage: causent <command> [flags]
+	fmt.Print(`usage: malenia <command> [flags]
 
 commands:
-  init       detect the repository and generate Causent integration files
+  init       detect the repository and generate Malenia integration files
   diagnose   reproduce, classify, localize, and record a replayable bundle (default)
   analyze    analyze an existing deterministic report with the configured model
   replay     re-run the checks recorded in a diagnosis bundle
@@ -78,13 +78,13 @@ commands:
   eval       manage the frozen evaluation corpus
   version    print the version
 
-run "causent <command> -h" for command flags.
+run "malenia <command> -h" for command flags.
 `)
 }
 
 func runEval(args []string) {
 	if len(args) == 0 || args[0] != "freeze" {
-		fmt.Fprintln(os.Stderr, "usage: causent eval freeze")
+		fmt.Fprintln(os.Stderr, "usage: malenia eval freeze")
 		os.Exit(2)
 	}
 	repo, err := os.Getwd()
@@ -106,13 +106,13 @@ func runDiagnose(args []string) {
 	command := fs.String("command", "", "failing command to reproduce")
 	attempts := fs.Int("attempts", diagnosis.DefaultAttempts, "reproduction attempts")
 	timeout := fs.Duration("timeout", diagnosis.DefaultTimeout, "timeout per attempt")
-	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path for persisted events")
-	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.causent/bundles/<timestamp>)")
+	db := fs.String("db", envOr("MALENIA_DB", dbPath()), "sqlite db path for persisted events")
+	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.malenia/bundles/<timestamp>)")
 	good := fs.String("good", "", "known-good revision; enables git bisect")
 	base := fs.String("base", "", "known base revision; compare its outcome with HEAD")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
-	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
-	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
+	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	var probes stringList
 	fs.Var(&probes, "probe", "optional diagnostic command; repeatable; never a fix")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
@@ -125,7 +125,7 @@ func runDiagnose(args []string) {
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	if *repo == "" {
-		fmt.Fprintln(os.Stderr, "causent diagnose: --repo is required")
+		fmt.Fprintln(os.Stderr, "malenia diagnose: --repo is required")
 		os.Exit(2)
 	}
 	repoPath, err := filepath.Abs(*repo)
@@ -157,10 +157,10 @@ func runDiagnose(args []string) {
 			os.Exit(2)
 		}
 	}
-	if !set["executor"] && os.Getenv("CAUSENT_EXECUTOR") == "" && repoCfg.Executor != "" {
+	if !set["executor"] && os.Getenv("MALENIA_EXECUTOR") == "" && repoCfg.Executor != "" {
 		*executorMode = repoCfg.Executor
 	}
-	if !set["image"] && os.Getenv("CAUSENT_EXECUTOR_IMAGE") == "" && repoCfg.Image != "" {
+	if !set["image"] && os.Getenv("MALENIA_EXECUTOR_IMAGE") == "" && repoCfg.Image != "" {
 		*image = repoCfg.Image
 	}
 	if !set["agent"] {
@@ -169,18 +169,18 @@ func runDiagnose(args []string) {
 	probes = append(probes, repoCfg.Probes...)
 
 	if *command == "" {
-		fmt.Fprintln(os.Stderr, "causent diagnose: --command is required (or set command in .causent.yml)")
+		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is required (or set command in .malenia.yml)")
 		os.Exit(2)
 	}
 	cmd := splitCommand(*command)
 	if len(cmd) == 0 {
-		fmt.Fprintln(os.Stderr, "causent diagnose: --command is empty")
+		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is empty")
 		os.Exit(2)
 	}
 
 	bundleDir := *bundle
 	if bundleDir == "" {
-		bundleDir = filepath.Join(repoPath, ".causent", "bundles", time.Now().UTC().Format("20060102T150405Z"))
+		bundleDir = filepath.Join(repoPath, ".malenia", "bundles", time.Now().UTC().Format("20060102T150405Z"))
 	}
 
 	store, err := openStore(*db)
@@ -261,13 +261,13 @@ func runDiagnose(args []string) {
 }
 
 func configuredAgent() (*agent.Client, error) {
-	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("CAUSENT_GATEWAY_ENDPOINT")), "/")
-	model := strings.TrimSpace(os.Getenv("CAUSENT_GATEWAY_MODEL"))
+	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("MALENIA_GATEWAY_ENDPOINT")), "/")
+	model := strings.TrimSpace(os.Getenv("MALENIA_GATEWAY_MODEL"))
 	if endpoint == "" {
-		return nil, fmt.Errorf("CAUSENT_GATEWAY_ENDPOINT is required when model analysis is enabled")
+		return nil, fmt.Errorf("MALENIA_GATEWAY_ENDPOINT is required when model analysis is enabled")
 	}
 	if model == "" {
-		return nil, fmt.Errorf("CAUSENT_GATEWAY_MODEL is required when model analysis is enabled")
+		return nil, fmt.Errorf("MALENIA_GATEWAY_MODEL is required when model analysis is enabled")
 	}
 	return &agent.Client{Endpoint: endpoint, Model: model}, nil
 }
@@ -281,7 +281,7 @@ func runAnalyze(args []string) {
 	outputPath := fs.String("output", "", "output path for the combined report JSON")
 	fs.Parse(args)
 	if *reportPath == "" || *outputPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: causent analyze --report report.json --output combined-report.json")
+		fmt.Fprintln(os.Stderr, "usage: malenia analyze --report report.json --output combined-report.json")
 		os.Exit(2)
 	}
 	data, err := os.ReadFile(*reportPath)
@@ -335,13 +335,13 @@ func runReplay(args []string) {
 	fs := flag.NewFlagSet("replay", flag.ExitOnError)
 	repo := fs.String("repo", "", "override the recorded repository path")
 	timeout := fs.Duration("timeout", diagnosis.DefaultTimeout, "timeout per attempt")
-	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
-	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
+	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
 
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: causent replay <bundle-dir>")
+		fmt.Fprintln(os.Stderr, "usage: malenia replay <bundle-dir>")
 		os.Exit(2)
 	}
 	bundleDir := fs.Arg(0)
@@ -399,14 +399,14 @@ func runRepair(args []string) {
 	budget := fs.Int("budget", 20, "maximum investigation steps")
 	maxAttempts := fs.Int("max-attempts", 0, "maximum isolated patch verification attempts (default 2, max 5)")
 	modelProposals := fs.Bool("model-proposals", false, "use the separate model patch-proposal path (opt-in)")
-	executorMode := fs.String("executor", envOr("CAUSENT_EXECUTOR", "local"), "execution backend: local or docker")
-	image := fs.String("image", envOr("CAUSENT_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
-	db := fs.String("db", envOr("CAUSENT_DB", dbPath()), "sqlite db path")
+	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
+	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
+	db := fs.String("db", envOr("MALENIA_DB", dbPath()), "sqlite db path")
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	fs.Parse(args)
 
 	if *command == "" || *repo == "" {
-		fmt.Fprintln(os.Stderr, "causent repair: --repo and --command are required")
+		fmt.Fprintln(os.Stderr, "malenia repair: --repo and --command are required")
 		os.Exit(2)
 	}
 	repoPath, err := filepath.Abs(*repo)
@@ -654,7 +654,7 @@ func buildExecutor(mode, image, repoPath string, timeout time.Duration, command 
 	case "docker":
 		image = strings.TrimSpace(image)
 		if image == "" {
-			return nil, fmt.Errorf("Docker image is required; pass --image or set CAUSENT_EXECUTOR_IMAGE")
+			return nil, fmt.Errorf("Docker image is required; pass --image or set MALENIA_EXECUTOR_IMAGE")
 		}
 		collect := execution.CollectPolicy{Image: image, MaxOutput: 64 << 10, Timeout: timeout, MemoryLimitMB: 512, CPULimitPercent: 80, ProcessLimit: 128}
 		return execution.NewDockerExecutor(policy, artifacts, collect), nil
@@ -698,7 +698,7 @@ func envOr(key, fallback string) string {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".causent", "investigations.db")
+	return filepath.Join(home, ".malenia", "investigations.db")
 }
 
 func valueOr(value, fallback string) string {

@@ -2,5 +2,5 @@ primary_failure: "Decision Transformer should train under performance target: ex
 category: dependency
 expected_outcome: insufficient_evidence
 evidence_source: failed CI run and lockfile update PR
-annotator: Causent initial annotation
+annotator: Malenia initial annotation
 disagreement_notes: The PR changes v3/@claude-flow/browser/package-lock.json, but the failing test is in v3/@claude-flow/neural and the log also reports stale cache state. Do not attribute causality without a controlled comparison.

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/engine"
-	"github.com/causent/causent/internal/execution"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/engine"
+	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 type blockingExecutor struct{}
@@ -25,7 +25,7 @@ func (blockingExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()
-	store, err := persistence.Open(filepath.Join(root, "causent.db"))
+	store, err := persistence.Open(filepath.Join(root, "malenia.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

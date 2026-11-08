@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// repoConfig is the subset of .causent.yml that `causent diagnose` understands.
+// repoConfig is the subset of .malenia.yml that `malenia diagnose` understands.
 // Command-line flags always win over these values.
 type repoConfig struct {
 	Command  string       `yaml:"command"`
@@ -30,9 +30,9 @@ type repairConfig struct {
 	MaxAttempts int `yaml:"max_attempts"`
 }
 
-var repoConfigNames = []string{".causent.yml", ".causent.yaml"}
+var repoConfigNames = []string{".malenia.yml", ".malenia.yaml"}
 
-// loadRepoConfig reads the first .causent.yml found in the repository root.
+// loadRepoConfig reads the first .malenia.yml found in the repository root.
 // A missing file is not an error.
 func loadRepoConfig(repoPath string) (repoConfig, error) {
 	for _, name := range repoConfigNames {

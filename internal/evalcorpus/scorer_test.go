@@ -3,7 +3,7 @@ package evalcorpus
 import (
 	"testing"
 
-	"github.com/causent/causent/internal/diagnosis"
+	"github.com/causent/malenia/internal/diagnosis"
 )
 
 func scoredReport() diagnosis.Report {

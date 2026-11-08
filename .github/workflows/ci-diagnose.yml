@@ -1,28 +1,28 @@
-name: Causent Diagnose
+name: Malenia Diagnose
 
 # Reusable workflow. Call it from a job in another repository:
 #
 #   jobs:
-#     causent:
+#     malenia:
 #       if: github.event.workflow_run.conclusion == 'failure'
 #       permissions:
 #         actions: read
 #         contents: read
 #         pull-requests: write
-#       uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+#       uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
 #       with:
 #         run_id: ${{ github.event.workflow_run.id }}
 #         head_sha: ${{ github.event.workflow_run.head_sha }}
 #
 # The target repository supplies the source code, the failing command (through
-# .causent.yml or the `command` input), and its runtime. Causent supplies the
+# .malenia.yml or the `command` input), and its runtime. Malenia supplies the
 # diagnosis engine.
 
 on:
   workflow_call:
     inputs:
       command:
-        description: Failing command; overrides command in .causent.yml
+        description: Failing command; overrides command in .malenia.yml
         type: string
         required: false
         default: ''
@@ -47,12 +47,12 @@ on:
         required: false
         default: ''
       attempts:
-        description: Reproduction attempts; overrides attempts in .causent.yml
+        description: Reproduction attempts; overrides attempts in .malenia.yml
         type: string
         required: false
         default: ''
       docker_image:
-        description: Docker image for the docker executor; overrides image in .causent.yml
+        description: Docker image for the docker executor; overrides image in .malenia.yml
         type: string
         required: false
         default: ''
@@ -61,32 +61,32 @@ on:
         type: boolean
         required: false
         default: false
-      causent_version:
-        description: Causent release tag to install, or "latest"
+      malenia_version:
+        description: Malenia release tag to install, or "latest"
         type: string
         required: false
         default: latest
-      causent_repository:
-        description: Repository that publishes Causent releases
+      malenia_repository:
+        description: Repository that publishes Malenia releases
         type: string
         required: false
-        default: causent/causent
+        default: causent/malenia
       comment:
         description: Post the diagnosis as a pull request comment when the run belongs to a PR
         type: boolean
         required: false
         default: true
     secrets:
-      CAUSENT_GATEWAY_ENDPOINT:
+      MALENIA_GATEWAY_ENDPOINT:
         required: false
-      CAUSENT_GATEWAY_MODEL:
+      MALENIA_GATEWAY_MODEL:
         required: false
     outputs:
       classification:
         description: Deterministic classification of the failure
         value: ${{ jobs.diagnose.outputs.classification }}
       refused:
-        description: Whether Causent refused to classify the failure
+        description: Whether Malenia refused to classify the failure
         value: ${{ jobs.diagnose.outputs.refused }}
 
 permissions:
@@ -166,7 +166,7 @@ jobs:
           INPUT_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
-          raw_log="$RUNNER_TEMP/causent-failed.raw.log"
+          raw_log="$RUNNER_TEMP/malenia-failed.raw.log"
           gh run view "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
             --log-failed > "$raw_log" 2>&1 || true
           # Keep original CI evidence bounded and remove common credential-shaped
@@ -176,37 +176,37 @@ jobs:
             -e 's/(authorization:[[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
             -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
             -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
-            "$raw_log" | head -c 262144 > "$RUNNER_TEMP/causent-failed.log" || true
+            "$raw_log" | head -c 262144 > "$RUNNER_TEMP/malenia-failed.log" || true
           gh run view "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
             --json jobs \
             --jq '.jobs[] | select(.conclusion == "failure") | "\(.name) (\(.databaseId))"' \
-            > "$RUNNER_TEMP/causent-failed-jobs.txt" 2>&1 || true
+            > "$RUNNER_TEMP/malenia-failed-jobs.txt" 2>&1 || true
 
-      - name: Install causent
+      - name: Install malenia
         env:
-          INPUT_VERSION: ${{ inputs.causent_version }}
-          INPUT_REPOSITORY: ${{ inputs.causent_repository }}
+          INPUT_VERSION: ${{ inputs.malenia_version }}
+          INPUT_REPOSITORY: ${{ inputs.malenia_repository }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
           repository="$INPUT_REPOSITORY"
           if [[ ! "$version" =~ ^(latest|v[0-9A-Za-z._-]+)$ ]]; then
-            echo "invalid causent_version" >&2
+            echo "invalid malenia_version" >&2
             exit 2
           fi
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "invalid causent_repository" >&2
+            echo "invalid malenia_repository" >&2
             exit 2
           fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/$repository/releases/latest/download/causent_linux_amd64"
+            url="https://github.com/$repository/releases/latest/download/malenia_linux_amd64"
           else
-            url="https://github.com/$repository/releases/download/$version/causent_linux_amd64"
+            url="https://github.com/$repository/releases/download/$version/malenia_linux_amd64"
           fi
-          curl -fsSL "$url" -o "$RUNNER_TEMP/causent"
-          chmod +x "$RUNNER_TEMP/causent"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/malenia"
+          chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/causent" version
+          "$RUNNER_TEMP/malenia" version
 
       - name: Set up Go
         if: inputs.docker_image == '' && hashFiles('go.mod') != ''
@@ -222,10 +222,10 @@ jobs:
           INPUT_ATTEMPTS: ${{ inputs.attempts }}
           INPUT_DOCKER_IMAGE: ${{ inputs.docker_image }}
           INPUT_BASE: ${{ steps.revisions.outputs.base }}
-          INPUT_CI_LOG: ${{ runner.temp }}/causent-failed.log
+          INPUT_CI_LOG: ${{ runner.temp }}/malenia-failed.log
         run: |
           set -euo pipefail
-          args=(diagnose --repo . --json --bundle "$RUNNER_TEMP/causent-bundle")
+          args=(diagnose --repo . --json --bundle "$RUNNER_TEMP/malenia-bundle")
 
           if [ -n "$INPUT_COMMAND" ]; then
             args+=(--command "$INPUT_COMMAND")
@@ -243,31 +243,31 @@ jobs:
             args+=(--executor docker --image "$INPUT_DOCKER_IMAGE")
           fi
           status=0
-          causent "${args[@]}" > "$RUNNER_TEMP/causent-report.json" \
-            2> "$RUNNER_TEMP/causent-stderr.log" || status=$?
+          malenia "${args[@]}" > "$RUNNER_TEMP/malenia-report.json" \
+            2> "$RUNNER_TEMP/malenia-stderr.log" || status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
 
-          if ! jq -e . "$RUNNER_TEMP/causent-report.json" > /dev/null 2>&1; then
+          if ! jq -e . "$RUNNER_TEMP/malenia-report.json" > /dev/null 2>&1; then
             {
-              echo "## Causent diagnosis"
+              echo "## Malenia diagnosis"
               echo
-              echo "Causent did not produce a report (exit $status)."
+              echo "Malenia did not produce a report (exit $status)."
               echo
               echo '```'
-              tail -50 "$RUNNER_TEMP/causent-stderr.log"
+              tail -50 "$RUNNER_TEMP/malenia-stderr.log"
               echo '```'
-            } > "$RUNNER_TEMP/causent-summary.md"
-            cat "$RUNNER_TEMP/causent-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            } > "$RUNNER_TEMP/malenia-summary.md"
+            cat "$RUNNER_TEMP/malenia-summary.md" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          classification="$(jq -r '.classification // "unknown"' "$RUNNER_TEMP/causent-report.json")"
-          refused="$(jq -r '.refused // false' "$RUNNER_TEMP/causent-report.json")"
+          classification="$(jq -r '.classification // "unknown"' "$RUNNER_TEMP/malenia-report.json")"
+          refused="$(jq -r '.refused // false' "$RUNNER_TEMP/malenia-report.json")"
           echo "classification=$classification" >> "$GITHUB_OUTPUT"
           echo "refused=$refused" >> "$GITHUB_OUTPUT"
 
           {
-            echo "## Causent diagnosis"
+            echo "## Malenia diagnosis"
             echo
             echo "**Classification**: \`$classification\`"
             echo
@@ -293,24 +293,24 @@ jobs:
               (if ((.uncertainty // []) | length) > 0 then
                 "**Uncertainty**:\n" + ((.uncertainty // []) | map("- \(.)") | join("\n"))
               else empty end)
-            ' "$RUNNER_TEMP/causent-report.json"
+            ' "$RUNNER_TEMP/malenia-report.json"
             echo
-            echo "Bundle: \`$(jq -r '.bundle_path // "not written"' "$RUNNER_TEMP/causent-report.json")\`"
-          } > "$RUNNER_TEMP/causent-summary.md"
-          cat "$RUNNER_TEMP/causent-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "Bundle: \`$(jq -r '.bundle_path // "not written"' "$RUNNER_TEMP/malenia-report.json")\`"
+          } > "$RUNNER_TEMP/malenia-summary.md"
+          cat "$RUNNER_TEMP/malenia-summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload diagnosis bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: causent-diagnosis-raw-${{ github.run_id }}
+          name: malenia-diagnosis-raw-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/causent-report.json
-            ${{ runner.temp }}/causent-summary.md
-            ${{ runner.temp }}/causent-stderr.log
-            ${{ runner.temp }}/causent-failed.log
-            ${{ runner.temp }}/causent-failed-jobs.txt
-            ${{ runner.temp }}/causent-bundle
+            ${{ runner.temp }}/malenia-report.json
+            ${{ runner.temp }}/malenia-summary.md
+            ${{ runner.temp }}/malenia-stderr.log
+            ${{ runner.temp }}/malenia-failed.log
+            ${{ runner.temp }}/malenia-failed-jobs.txt
+            ${{ runner.temp }}/malenia-bundle
           if-no-files-found: ignore
 
   analyze:
@@ -325,72 +325,72 @@ jobs:
       - name: Download deterministic diagnosis
         uses: actions/download-artifact@v4
         with:
-          name: causent-diagnosis-raw-${{ github.run_id }}
-          path: ${{ runner.temp }}/causent-raw
+          name: malenia-diagnosis-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/malenia-raw
 
-      - name: Install causent
+      - name: Install malenia
         env:
-          INPUT_VERSION: ${{ inputs.causent_version }}
-          INPUT_REPOSITORY: ${{ inputs.causent_repository }}
+          INPUT_VERSION: ${{ inputs.malenia_version }}
+          INPUT_REPOSITORY: ${{ inputs.malenia_repository }}
         run: |
           set -euo pipefail
           version="$INPUT_VERSION"
           repository="$INPUT_REPOSITORY"
           if [[ ! "$version" =~ ^(latest|v[0-9A-Za-z._-]+)$ ]]; then
-            echo "invalid causent_version" >&2
+            echo "invalid malenia_version" >&2
             exit 2
           fi
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "invalid causent_repository" >&2
+            echo "invalid malenia_repository" >&2
             exit 2
           fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/$repository/releases/latest/download/causent_linux_amd64"
+            url="https://github.com/$repository/releases/latest/download/malenia_linux_amd64"
           else
-            url="https://github.com/$repository/releases/download/$version/causent_linux_amd64"
+            url="https://github.com/$repository/releases/download/$version/malenia_linux_amd64"
           fi
-          curl -fsSL "$url" -o "$RUNNER_TEMP/causent"
-          chmod +x "$RUNNER_TEMP/causent"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/malenia"
+          chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/causent" version
+          "$RUNNER_TEMP/malenia" version
 
       - name: Preserve deterministic report
         if: inputs.agent == false
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/causent-final"
-          cp "$RUNNER_TEMP/causent-raw/causent-report.json" "$RUNNER_TEMP/causent-final/causent-report.json"
+          mkdir -p "$RUNNER_TEMP/malenia-final"
+          cp "$RUNNER_TEMP/malenia-raw/malenia-report.json" "$RUNNER_TEMP/malenia-final/malenia-report.json"
 
       - name: Analyze validated diagnosis
         if: inputs.agent == true
         env:
-          CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
-          CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
+          MALENIA_GATEWAY_ENDPOINT: ${{ secrets.MALENIA_GATEWAY_ENDPOINT }}
+          MALENIA_GATEWAY_MODEL: ${{ secrets.MALENIA_GATEWAY_MODEL }}
         run: |
           set -euo pipefail
-          if [ -z "$CAUSENT_GATEWAY_ENDPOINT" ] || [ -z "$CAUSENT_GATEWAY_MODEL" ]; then
-            echo "agent=true requires CAUSENT_GATEWAY_ENDPOINT and CAUSENT_GATEWAY_MODEL secrets" >&2
+          if [ -z "$MALENIA_GATEWAY_ENDPOINT" ] || [ -z "$MALENIA_GATEWAY_MODEL" ]; then
+            echo "agent=true requires MALENIA_GATEWAY_ENDPOINT and MALENIA_GATEWAY_MODEL secrets" >&2
             exit 2
           fi
-          mkdir -p "$RUNNER_TEMP/causent-final"
-          causent analyze \
-            --report "$RUNNER_TEMP/causent-raw/causent-report.json" \
-            --output "$RUNNER_TEMP/causent-final/causent-report.json"
+          mkdir -p "$RUNNER_TEMP/malenia-final"
+          malenia analyze \
+            --report "$RUNNER_TEMP/malenia-raw/malenia-report.json" \
+            --output "$RUNNER_TEMP/malenia-final/malenia-report.json"
 
       - name: Copy evidence artifacts
         run: |
           set -euo pipefail
-          cp "$RUNNER_TEMP/causent-raw/causent-summary.md" "$RUNNER_TEMP/causent-final/causent-summary.md" || true
-          cp "$RUNNER_TEMP/causent-raw/causent-stderr.log" "$RUNNER_TEMP/causent-final/causent-stderr.log" || true
-          cp "$RUNNER_TEMP/causent-raw/causent-failed.log" "$RUNNER_TEMP/causent-final/causent-failed.log" || true
-          cp "$RUNNER_TEMP/causent-raw/causent-failed-jobs.txt" "$RUNNER_TEMP/causent-final/causent-failed-jobs.txt" || true
-          cp -R "$RUNNER_TEMP/causent-raw/causent-bundle" "$RUNNER_TEMP/causent-final/causent-bundle" || true
+          cp "$RUNNER_TEMP/malenia-raw/malenia-summary.md" "$RUNNER_TEMP/malenia-final/malenia-summary.md" || true
+          cp "$RUNNER_TEMP/malenia-raw/malenia-stderr.log" "$RUNNER_TEMP/malenia-final/malenia-stderr.log" || true
+          cp "$RUNNER_TEMP/malenia-raw/malenia-failed.log" "$RUNNER_TEMP/malenia-final/malenia-failed.log" || true
+          cp "$RUNNER_TEMP/malenia-raw/malenia-failed-jobs.txt" "$RUNNER_TEMP/malenia-final/malenia-failed-jobs.txt" || true
+          cp -R "$RUNNER_TEMP/malenia-raw/malenia-bundle" "$RUNNER_TEMP/malenia-final/malenia-bundle" || true
 
       - name: Upload final diagnosis
         uses: actions/upload-artifact@v4
         with:
-          name: causent-diagnosis-${{ github.run_id }}
-          path: ${{ runner.temp }}/causent-final
+          name: malenia-diagnosis-${{ github.run_id }}
+          path: ${{ runner.temp }}/malenia-final
           if-no-files-found: error
 
   publish:
@@ -407,15 +407,15 @@ jobs:
       - name: Download diagnosis result
         uses: actions/download-artifact@v4
         with:
-          name: causent-diagnosis-${{ github.run_id }}
-          path: ${{ runner.temp }}/causent-result
+          name: malenia-diagnosis-${{ github.run_id }}
+          path: ${{ runner.temp }}/malenia-result
 
       - name: Prepare bounded diagnosis comment
         env:
           PR_NUMBER: ${{ needs.diagnose.outputs.pr }}
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/causent-result/causent-report.json"
+          report="$RUNNER_TEMP/malenia-result/malenia-report.json"
           test -s "$report"
           classification="$(jq -r '.classification // "unknown"' "$report")"
           refused="$(jq -r '.refused // false' "$report")"
@@ -433,7 +433,7 @@ jobs:
           failure="$(jq -r '.baseline.results[0].stderr_excerpt // ""' "$report" | grep -E -- '--- FAIL:|^FAIL' | head -3 | tr '\n' ' ' || true)"
           artifact_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           body=$(cat <<EOF
-          ## Causent diagnosis
+          ## Malenia diagnosis
 
           **Classification:** ${classification}<br>
           **Confidence:** ${confidence}<br>
@@ -458,20 +458,20 @@ jobs:
           [View workflow run and diagnosis artifact](${artifact_url})
           EOF
           )
-          printf '%s\n' "$body" > "$RUNNER_TEMP/causent-comment.md"
+          printf '%s\n' "$body" > "$RUNNER_TEMP/malenia-comment.md"
 
       - name: Publish bounded diagnosis comment
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.diagnose.outputs.pr }}
-          COMMENT_PATH: ${{ runner.temp }}/causent-comment.md
+          COMMENT_PATH: ${{ runner.temp }}/malenia-comment.md
         with:
           github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
             const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
             const issueNumber = Number(process.env.PR_NUMBER);
-            const marker = '<!-- causent-diagnosis -->';
+            const marker = '<!-- malenia-diagnosis -->';
             const markedBody = `${marker}\n${body}`;
             if (!Number.isInteger(issueNumber) || issueNumber < 1) {
               throw new Error(`Invalid pull request number: ${process.env.PR_NUMBER}`);

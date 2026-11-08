@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 )
 
 // RecoveryReport describes what was found and repaired after a restart.

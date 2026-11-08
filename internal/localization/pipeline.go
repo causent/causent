@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/causent/causent/internal/domain"
-	programrepo "github.com/causent/causent/internal/repository"
+	"github.com/causent/malenia/internal/domain"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 type Frame struct {

@@ -3,8 +3,8 @@ package evaluation
 import (
 	"testing"
 
-	"github.com/causent/causent/internal/diagnosis"
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/diagnosis"
+	"github.com/causent/malenia/internal/domain"
 )
 
 func TestMeasureDiagnosticQualitySeparatesLocalizationGroupingAndClaims(t *testing.T) {

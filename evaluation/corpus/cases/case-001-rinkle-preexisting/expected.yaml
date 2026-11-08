@@ -2,5 +2,5 @@ primary_failure: "link_and_remove_real: assertion failed: dst_path.exists()"
 category: pre_existing
 expected_outcome: insufficient_evidence
 evidence_source: base CI run
-annotator: Causent initial annotation
+annotator: Malenia initial annotation
 disagreement_notes: The same failures are visible on the base revision. No culprit should be attributed to the dependency update.

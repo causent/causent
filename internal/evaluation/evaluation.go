@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/engine"
-	"github.com/causent/causent/internal/execution"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/engine"
+	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 type Config struct {
@@ -236,7 +236,7 @@ func prepareTrialRepository(source string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("benchmark repository is not a directory: %s", source)
 	}
-	destination, err := os.MkdirTemp("", "causent-eval-repo-*")
+	destination, err := os.MkdirTemp("", "malenia-eval-repo-*")
 	if err != nil {
 		return "", fmt.Errorf("create trial repository: %w", err)
 	}
@@ -286,7 +286,7 @@ func prepareTrialRepository(source string) (string, error) {
 		os.RemoveAll(destination)
 		return "", err
 	}
-	if err := runGit("-c", "user.email=causent-evaluation@example.invalid", "-c", "user.name=Causent Evaluation", "commit", "-qm", "benchmark fixture"); err != nil {
+	if err := runGit("-c", "user.email=malenia-evaluation@example.invalid", "-c", "user.name=Malenia Evaluation", "commit", "-qm", "benchmark fixture"); err != nil {
 		os.RemoveAll(destination)
 		return "", err
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/execution"
+	"github.com/causent/malenia/internal/execution"
 )
 
 // ReplayConfig controls one replay of a recorded diagnosis bundle.

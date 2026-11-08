@@ -76,7 +76,7 @@ func TestInitWorkflowAndConfigAreSupported(t *testing.T) {
 		t.Fatalf("unexpected config: %s", got)
 	}
 	w := renderInitWorkflow(d)
-	for _, want := range []string{"workflow_run:", "workflows: [CI]", "causent/causent/.github/workflows/ci-diagnose.yml@v1", "run_id:"} {
+	for _, want := range []string{"workflow_run:", "workflows: [CI]", "causent/malenia/.github/workflows/ci-diagnose.yml@v1", "run_id:"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("workflow missing %q", want)
 		}

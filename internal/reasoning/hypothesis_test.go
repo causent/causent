@@ -1,7 +1,7 @@
 package reasoning
 
 import (
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 	"testing"
 	"time"
 )

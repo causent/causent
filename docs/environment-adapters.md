@@ -1,6 +1,6 @@
 # Environment adapters
 
-Causent keeps repository-specific environment knowledge outside the diagnosis
+Malenia keeps repository-specific environment knowledge outside the diagnosis
 engine in `internal/environment`. An adapter detects evidence, reports runtime
 metadata, provides dependency-preparation commands, and may provide a
 conservative test command. The configured command always wins; CI-discovered

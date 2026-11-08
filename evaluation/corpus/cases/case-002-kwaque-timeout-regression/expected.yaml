@@ -4,5 +4,5 @@ expected_outcome: answerable
 culprit_commit: 6a0d4f86223f07a2d3c6f194d099fa0cf7ad8a73
 culprit_file: src/simulation/tests/local_store_test.cc
 evidence_source: merged change and failed CI run
-annotator: Causent initial annotation
+annotator: Malenia initial annotation
 disagreement_notes: The head run is a real failure after a large storage change. This case tests localization; mechanism verification is not asserted by this expected record.

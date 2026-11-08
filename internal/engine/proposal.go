@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 )
 
 // ProposalProvider is the optional, separate model call used only to propose

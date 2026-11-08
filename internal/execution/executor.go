@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 )
 
 // Policy defines the security constraints for a command execution.
@@ -520,7 +520,7 @@ func containerName(instanceID string) string {
 	}
 	buf := make([]byte, 3)
 	_, _ = rand.Read(buf)
-	return "causent-exec-" + b.String() + "-" + hex.EncodeToString(buf)
+	return "malenia-exec-" + b.String() + "-" + hex.EncodeToString(buf)
 }
 
 // containerArgs builds the `docker run` argument list (everything before the

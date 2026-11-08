@@ -1,4 +1,4 @@
-package causent_test
+package malenia_test
 
 import (
 	"os"
@@ -60,7 +60,7 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"run_id input":                                strings.Contains(content, "run_id:"),
 		"checks out failing commit":                   strings.Contains(content, "github.event.workflow_run.head_sha"),
 		"fetches failed logs":                         strings.Contains(content, "--log-failed"),
-		"installs released binary":                    strings.Contains(content, "releases/latest/download/causent_linux_amd64"),
+		"installs released binary":                    strings.Contains(content, "releases/latest/download/malenia_linux_amd64"),
 		"passes base revision":                        strings.Contains(content, "--base"),
 		"passes docker executor":                      strings.Contains(content, "--executor docker"),
 		"passes attempts":                             strings.Contains(content, "--attempts"),
@@ -74,12 +74,12 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"passes original CI log":                      strings.Contains(content, "--ci-log"),
 		"separate publication job":                    strings.Contains(content, "publish:"),
 		"publication can write issue comments":        strings.Contains(content, "issues: write"),
-		"does not expose gateway secret to diagnosis": !strings.Contains(content[:strings.Index(content, "name: Optional model analysis")], "CAUSENT_GATEWAY_ENDPOINT: ${{ secrets"),
-		"has separate analysis job":                   strings.Contains(content, "name: Optional model analysis") && strings.Contains(content, "causent analyze"),
-		"uploads raw diagnosis artifact":              strings.Contains(content, "causent-diagnosis-raw-"),
-		"passes final diagnosis artifact":             strings.Contains(content, "causent-diagnosis-${{ github.run_id }}"),
-		"validates release version":                   strings.Contains(content, "invalid causent_version"),
-		"validates release repository":                strings.Contains(content, "invalid causent_repository"),
+		"does not expose gateway secret to diagnosis": !strings.Contains(content[:strings.Index(content, "name: Optional model analysis")], "MALENIA_GATEWAY_ENDPOINT: ${{ secrets"),
+		"has separate analysis job":                   strings.Contains(content, "name: Optional model analysis") && strings.Contains(content, "malenia analyze"),
+		"uploads raw diagnosis artifact":              strings.Contains(content, "malenia-diagnosis-raw-"),
+		"passes final diagnosis artifact":             strings.Contains(content, "malenia-diagnosis-${{ github.run_id }}"),
+		"validates release version":                   strings.Contains(content, "invalid malenia_version"),
+		"validates release repository":                strings.Contains(content, "invalid malenia_repository"),
 		"redacts bearer tokens":                       strings.Contains(content, "bearer"),
 		"redacts GitHub tokens":                       strings.Contains(content, "gh[pousr]_") && strings.Contains(content, "github_pat_"),
 	}
@@ -110,7 +110,7 @@ func TestReleaseWorkflowPublishesBinary(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/release.yml")
 	checks := map[string]bool{
 		"tag trigger":         strings.Contains(content, "tags:"),
-		"builds causent":      strings.Contains(content, "./cmd/causent"),
+		"builds malenia":      strings.Contains(content, "./cmd/malenia"),
 		"stamps version":      strings.Contains(content, "-X main.version="),
 		"publishes release":   strings.Contains(content, "action-gh-release"),
 		"publishes checksums": strings.Contains(content, "SHA256SUMS"),
@@ -123,9 +123,9 @@ func TestReleaseWorkflowPublishesBinary(t *testing.T) {
 }
 
 func TestRepoConfigExample(t *testing.T) {
-	content := readWorkflow(t, ".causent.yml")
+	content := readWorkflow(t, ".malenia.yml")
 	if !strings.Contains(content, "command:") {
-		t.Fatal(".causent.yml must document the command key")
+		t.Fatal(".malenia.yml must document the command key")
 	}
 }
 

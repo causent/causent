@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/causent/causent/internal/config"
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/engine"
-	"github.com/causent/causent/internal/evaluation"
-	"github.com/causent/causent/internal/execution"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/config"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/engine"
+	"github.com/causent/malenia/internal/evaluation"
+	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 func main() {
@@ -130,7 +130,7 @@ func runInit(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Println("Causent investigation database initialized.")
+	fmt.Println("Malenia investigation database initialized.")
 }
 
 func runRecover(args []string) {
@@ -271,14 +271,14 @@ func runEvaluationCommand(args []string) {
 			strategies = append(strategies, domain.EvaluationStrategy(strings.TrimSpace(raw)))
 		}
 		provider := engine.ProviderFromEnvironment()
-		providerName := os.Getenv("CAUSENT_MODEL_PROVIDER")
-		modelName := os.Getenv("CAUSENT_MODEL")
-		endpoint := os.Getenv("CAUSENT_GATEWAY_ENDPOINT")
+		providerName := os.Getenv("MALENIA_MODEL_PROVIDER")
+		modelName := os.Getenv("MALENIA_MODEL")
+		endpoint := os.Getenv("MALENIA_GATEWAY_ENDPOINT")
 		if modelName == "" {
-			modelName = os.Getenv("CAUSENT_OLLAMA_MODEL")
+			modelName = os.Getenv("MALENIA_OLLAMA_MODEL")
 		}
 		if endpoint == "" {
-			endpoint = os.Getenv("CAUSENT_OLLAMA_ENDPOINT")
+			endpoint = os.Getenv("MALENIA_OLLAMA_ENDPOINT")
 		}
 		modelMetadata := domain.ModelMetadata{Provider: providerName, Model: modelName, Endpoint: endpoint}
 		summary, err := evaluation.RunSuite(context.Background(), evaluation.Config{Suite: suite, Strategies: strategies, Budget: *budget, Timeout: *timeout, Model: modelMetadata, Store: store, Provider: provider, Executor: execution.NewLocalExecutor(policy, execution.NewArtifactFactory(filepath.Join(filepath.Dir(*db), "artifacts")))})
@@ -329,7 +329,7 @@ func joinIDs(ids []domain.ID) string {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".causent", "investigations.db")
+	return filepath.Join(home, ".malenia", "investigations.db")
 }
 
 func writeJSON(value interface{}) {

@@ -1,11 +1,11 @@
 # Runtime architecture
 
-This page documents Causent internals that are useful to contributors and
+This page documents Malenia internals that are useful to contributors and
 integrators but are not part of the main onboarding path.
 
 ## Persistence
 
-Causent can persist investigations, lifecycle events, evidence, hypotheses,
+Malenia can persist investigations, lifecycle events, evidence, hypotheses,
 experiments, patches, and verification reports in SQLite. The store is used by
 the gateway and MCP server when they need durable investigation state.
 
@@ -21,8 +21,8 @@ providers, Gemini, or another configured upstream supported by the repository.
 Start it locally with:
 
 ```sh
-CAUSENT_GATEWAY_PROVIDER=ollama \
-CAUSENT_GATEWAY_MODEL=qwen2.5:7b \
+MALENIA_GATEWAY_PROVIDER=ollama \
+MALENIA_GATEWAY_MODEL=qwen2.5:7b \
 go run ./cmd/gateway
 ```
 
@@ -66,8 +66,8 @@ The MCP server is a separate local integration for agent clients. It uses stdio
 JSON-RPC and requires an explicitly authorized repository root.
 
 ```sh
-go build -o causent-mcp ./cmd/mcp-server
-./causent-mcp --root "$PWD" --db "$PWD/.causent/mcp.db"
+go build -o malenia-mcp ./cmd/mcp-server
+./malenia-mcp --root "$PWD" --db "$PWD/.malenia/mcp.db"
 ```
 
 The server exposes tools for starting and cancelling investigations, reading

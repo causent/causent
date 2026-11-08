@@ -4,8 +4,8 @@ package reasoning
 
 import (
 	"fmt"
-	"github.com/causent/causent/internal/domain"
-	"github.com/causent/causent/internal/localization"
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/localization"
 	"sort"
 	"time"
 )

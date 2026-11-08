@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/causent/causent/internal/domain"
+	"github.com/causent/malenia/internal/domain"
 )
 
 type testAction struct{ kind string }

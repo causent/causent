@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/causent/causent/internal/diagnosis"
+	"github.com/causent/malenia/internal/diagnosis"
 )
 
 // ScoreCase reads expected.yaml only in the scorer. Runner code receives only
@@ -31,12 +31,12 @@ func ScoreCase(caseDir string, report diagnosis.Report) (Score, error) {
 func ScoreReport(caseID string, report diagnosis.Report, expected Expected) Score {
 	if expected.ExpectedOutcome == OutcomeInsufficientEvidence {
 		if report.Refused {
-			return Score{CaseID: caseID, Outcome: JustifiedAbstention, Reason: "the case is annotated as insufficient evidence and Causent abstained"}
+			return Score{CaseID: caseID, Outcome: JustifiedAbstention, Reason: "the case is annotated as insufficient evidence and Malenia abstained"}
 		}
-		return Score{CaseID: caseID, Outcome: Wrong, Reason: "the case is annotated as insufficient evidence but Causent answered"}
+		return Score{CaseID: caseID, Outcome: Wrong, Reason: "the case is annotated as insufficient evidence but Malenia answered"}
 	}
 	if report.Refused {
-		return Score{CaseID: caseID, Outcome: UnjustifiedAbstention, Reason: "the case is answerable but Causent abstained"}
+		return Score{CaseID: caseID, Outcome: UnjustifiedAbstention, Reason: "the case is answerable but Malenia abstained"}
 	}
 	if !categoryMatches(report.Classification, expected.Category) {
 		return Score{CaseID: caseID, Outcome: Wrong, Reason: fmt.Sprintf("classification %q does not match expected category %q", report.Classification, expected.Category)}

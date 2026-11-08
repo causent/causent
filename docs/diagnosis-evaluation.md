@@ -43,11 +43,11 @@ deliberately separate from the existing `internal/evaluation` benchmark engine:
   ground truth, scores an existing diagnosis result, and enforces corpus
   freeze state.
 
-The corpus does not run Causent as part of this change. Add reviewed cases by
+The corpus does not run Malenia as part of this change. Add reviewed cases by
 hand, commit the corpus, and record its manifest revision:
 
 ```sh
-causent eval freeze
+malenia eval freeze
 ```
 
 An evaluation must refuse to run after files under `evaluation/corpus/` change

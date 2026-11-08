@@ -7,20 +7,20 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/causent/causent/internal/gateway"
-	"github.com/causent/causent/internal/persistence"
+	"github.com/causent/malenia/internal/gateway"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 func main() {
 	config := gateway.ConfigFromEnvironment()
 	// Open SQLite store for SSE event streaming and artifact access
-	dbPath := os.Getenv("CAUSENT_DB")
+	dbPath := os.Getenv("MALENIA_DB")
 	if dbPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			home = "/Users/yashbahuguna"
 		}
-		dbPath = home + "/.causent/investigations.db"
+		dbPath = home + "/.malenia/investigations.db"
 	}
 	db, err := persistence.Open(dbPath)
 	if err != nil {
@@ -31,7 +31,7 @@ func main() {
 	config.Store = db
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("causent gateway listening on %s (provider=%s model=%s)\n", config.ListenAddr, config.Provider, config.Model)
+	fmt.Printf("malenia gateway listening on %s (provider=%s model=%s)\n", config.ListenAddr, config.Provider, config.Model)
 	if err := gateway.NewServer(config).ListenAndServe(ctx); err != nil {
 		fmt.Println(err)
 	}

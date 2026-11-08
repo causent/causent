@@ -1,6 +1,6 @@
-# Causent
+# Malenia
 
-Causent investigates failed CI runs and produces bounded, replayable,
+Malenia investigates failed CI runs and produces bounded, replayable,
 evidence-first diagnosis reports.
 
 It reproduces a failure, compares revisions when possible, localizes relevant
@@ -11,10 +11,10 @@ verification.
 
 ## Project status
 
-Causent is under active development.
+Malenia is under active development.
 
 The deterministic diagnosis workflow is the primary product. Repair is
-experimental and opt-in. Causent does not silently modify a repository, create
+experimental and opt-in. Malenia does not silently modify a repository, create
 pull requests, merge changes, or deploy anything.
 
 ## Requirements
@@ -41,7 +41,7 @@ go test ./...
 Run a deterministic diagnosis:
 
 ```sh
-go run ./cmd/causent diagnose \
+go run ./cmd/malenia diagnose \
   --repo . \
   --command "go test ./..."
 ```
@@ -51,7 +51,7 @@ The diagnosis workflow does not require a model.
 Run the explicit experimental repair workflow:
 
 ```sh
-go run ./cmd/causent repair \
+go run ./cmd/malenia repair \
   --repo . \
   --command "go test ./..."
 ```
@@ -59,7 +59,7 @@ go run ./cmd/causent repair \
 Use Docker for repair execution:
 
 ```sh
-go run ./cmd/causent repair \
+go run ./cmd/malenia repair \
   --repo . \
   --command "go test ./..." \
   --executor docker \
@@ -69,10 +69,10 @@ go run ./cmd/causent repair \
 The separate model proposal path is disabled by default. Enable it explicitly:
 
 ```sh
-CAUSENT_MODEL_PROVIDER=gateway \
-CAUSENT_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
-CAUSENT_MODEL=your-model \
-go run ./cmd/causent repair \
+MALENIA_MODEL_PROVIDER=gateway \
+MALENIA_GATEWAY_ENDPOINT=http://127.0.0.1:8787 \
+MALENIA_MODEL=your-model \
+go run ./cmd/malenia repair \
   --repo . \
   --command "go test ./..." \
   --model-proposals
@@ -134,7 +134,7 @@ and Bazel. Repository-specific commands should still be reviewed explicitly.
 
 ## Optional model-assisted analysis
 
-Causent has three independent capabilities:
+Malenia has three independent capabilities:
 
 1. Deterministic diagnosis — enabled by default.
 2. Model-assisted analysis — optional evidence review after diagnosis.
@@ -149,16 +149,16 @@ For the reusable workflow, model analysis is selected explicitly:
 ```yaml
 jobs:
   diagnose:
-    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+    uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
     with:
       agent: true
     secrets:
-      CAUSENT_GATEWAY_ENDPOINT: ${{ secrets.CAUSENT_GATEWAY_ENDPOINT }}
-      CAUSENT_GATEWAY_MODEL: ${{ secrets.CAUSENT_GATEWAY_MODEL }}
+      MALENIA_GATEWAY_ENDPOINT: ${{ secrets.MALENIA_GATEWAY_ENDPOINT }}
+      MALENIA_GATEWAY_MODEL: ${{ secrets.MALENIA_GATEWAY_MODEL }}
 ```
 
 The provider endpoint and model must both be configured when `agent: true`.
-Missing configuration is an explicit error; Causent does not silently use a
+Missing configuration is an explicit error; Malenia does not silently use a
 local fallback or pretend that model analysis succeeded.
 
 The Actions flow is:
@@ -216,7 +216,7 @@ call external model services.
 
 ## Patch safety
 
-Before execution, Causent validates the actual parsed patch operations. It does
+Before execution, Malenia validates the actual parsed patch operations. It does
 not trust the model's declared paths.
 
 Validation includes:
@@ -296,19 +296,19 @@ artifacts, patches, and verification details.
 
 ## GitHub Actions integration
 
-### Try Causent on a public PR without installing it in that repository
+### Try Malenia on a public PR without installing it in that repository
 
-In the Causent repository, open **Actions → Try Causent on a public PR → Run
+In the Malenia repository, open **Actions → Try Malenia on a public PR → Run
 workflow**. Enter the target repository as `owner/name`, its open PR number, and
 the test command used by that project (for example, `go test ./...` or
 `npm test`). Optionally provide a Docker image containing the project's test
 runtime. The workflow checks out the PR's exact head and base revisions, runs
-Causent, and attaches a diagnosis report and evidence bundle to the Actions
-run. The target repository does not need a Causent config file or workflow.
+Malenia, and attaches a diagnosis report and evidence bundle to the Actions
+run. The target repository does not need a Malenia config file or workflow.
 
-This manual trial is for public repositories and reports in the Causent Actions
+This manual trial is for public repositories and reports in the Malenia Actions
 summary/artifact; it does not write a comment to the target PR. The target test
-command must be supplied because Causent cannot reliably infer the intended CI
+command must be supplied because Malenia cannot reliably infer the intended CI
 command from a repository alone. Use the reusable workflow below for automatic
 diagnosis and PR comments in a repository you control.
 
@@ -320,7 +320,7 @@ revision:
 jobs:
   diagnose:
     if: github.event.workflow_run.conclusion == 'failure'
-    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+    uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
     with:
       run_id: ${{ github.event.workflow_run.id }}
       head_sha: ${{ github.event.workflow_run.head_sha }}
@@ -340,14 +340,14 @@ credentials are not passed to the failing command, Docker container, or
 checked-out code. Analysis is not available for untrusted fork execution unless
 the caller deliberately provides a trusted, isolated workflow boundary.
 
-`causent init` generates the same integration with model assistance disabled by
+`malenia init` generates the same integration with model assistance disabled by
 default. Review the generated command, revision inputs, permissions, and
 secrets before committing it.
 
 ## Configuration
 
-Causent supports repository configuration through `.causent.yml` or
-`.causent.yaml`:
+Malenia supports repository configuration through `.malenia.yml` or
+`.malenia.yaml`:
 
 ```yaml
 command: go test ./...
@@ -417,7 +417,7 @@ network, memory, process, filesystem, and cleanup controls.
 
 | Path | Contents |
 | --- | --- |
-| `cmd/causent` | CLI commands and repository configuration |
+| `cmd/malenia` | CLI commands and repository configuration |
 | `cmd/gateway` | Local model gateway entry point |
 | `internal/diagnosis` | Deterministic diagnosis, classification, localization, and bundles |
 | `internal/engine` | Investigation orchestration, providers, patches, and verification |
@@ -432,7 +432,7 @@ network, memory, process, filesystem, and cleanup controls.
 
 ## Current limitations
 
-Causent currently does not provide:
+Malenia currently does not provide:
 
 - automatic pull-request changes or deployment;
 - unrestricted network access for executed code;
@@ -463,5 +463,5 @@ Causent currently does not provide:
 
 ## License
 
-Causent is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
+Malenia is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).

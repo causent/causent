@@ -1,25 +1,25 @@
 # CI integration
 
-## Onboard a repository with `causent init`
+## Onboard a repository with `malenia init`
 
 From the root of a project, run:
 
 ```sh
-causent init
+malenia init
 ```
 
 The command reports manifest, language, package-manager, GitHub Actions, runtime,
-and test-command evidence, then proposes `.causent.yml` and
-`.github/workflows/causent.yml`. It never overwrites an existing file without
-confirmation. Use `causent init --yes` for scripted onboarding, and review the
+and test-command evidence, then proposes `.malenia.yml` and
+`.github/workflows/malenia.yml`. It never overwrites an existing file without
+confirmation. Use `malenia init --yes` for scripted onboarding, and review the
 generated `command` whenever no test command could be proven from an existing
 workflow or package script.
 
-Causent diagnoses a failed CI run in **your** repository. Your repository keeps
-its source, its CI workflow, and a small `.causent.yml`. Causent supplies the
+Malenia diagnoses a failed CI run in **your** repository. Your repository keeps
+its source, its CI workflow, and a small `.malenia.yml`. Malenia supplies the
 diagnosis engine as a released binary, invoked through a reusable workflow.
 
-## 1. Add `.causent.yml`
+## 1. Add `.malenia.yml`
 
 Commit this at the repository root:
 
@@ -54,10 +54,10 @@ image: python:3.12
 
 ## 2. Add the caller workflow
 
-`.github/workflows/causent.yml`:
+`.github/workflows/malenia.yml`:
 
 ```yaml
-name: Causent
+name: Malenia
 
 on:
   workflow_run:
@@ -74,14 +74,14 @@ jobs:
     if: |
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    uses: causent/causent/.github/workflows/ci-diagnose.yml@v1
+    uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
     with:
       run_id: ${{ github.event.workflow_run.id }}
       head_sha: ${{ github.event.workflow_run.head_sha }}
       base_ref: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.base_sha || 'HEAD~1' }}
 ```
 
-That is the whole integration. On the next failing run Causent will:
+That is the whole integration. On the next failing run Malenia will:
 
 1. check out the exact failing commit (`head_sha`, not the default branch);
 2. download the failed jobs' logs with `gh run view --log-failed`;
@@ -92,22 +92,22 @@ That is the whole integration. On the next failing run Causent will:
 
 ## Inputs
 
-All inputs are optional; `.causent.yml` supplies the defaults.
+All inputs are optional; `.malenia.yml` supplies the defaults.
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `command` | from `.causent.yml` | Override the failing command |
+| `command` | from `.malenia.yml` | Override the failing command |
 | `head_sha` | checked-out commit | Commit to diagnose |
 | `base_sha` | none | Exact base commit |
 | `base_ref` | default branch | Base ref; merge-base with head is used |
 | `run_id` | none | Failed run whose logs are collected |
-| `attempts` | from `.causent.yml` | Reproduction attempts |
-| `docker_image` | from `.causent.yml` | Docker executor image |
+| `attempts` | from `.malenia.yml` | Reproduction attempts |
+| `docker_image` | from `.malenia.yml` | Docker executor image |
 | `agent` | `false` | Model-backed analysis of collected evidence |
-| `causent_version` | `latest` | Causent release tag to install |
+| `malenia_version` | `latest` | Malenia release tag to install |
 | `comment` | `true` | Post the diagnosis as a PR comment |
 
-Secrets `CAUSENT_GATEWAY_ENDPOINT` and `CAUSENT_GATEWAY_MODEL` are optional and
+Secrets `MALENIA_GATEWAY_ENDPOINT` and `MALENIA_GATEWAY_MODEL` are optional and
 only used when `agent: true`. They are passed only to the separate trusted
 analysis job, which consumes the deterministic report artifact and does not
 check out or execute the target repository. Missing either secret is a clear
@@ -121,16 +121,16 @@ explicit `repair --model-proposals` capability.
 
 ## Manual runs
 
-`.github/workflows/diagnosis.yml` in the Causent repository is a
+`.github/workflows/diagnosis.yml` in the Malenia repository is a
 `workflow_dispatch` caller for diagnosing a known failure on demand.
 
 ## Requirements and limits
 
-- **A Causent release must exist.** The workflow installs
-  `causent_linux_amd64` from the Causent GitHub releases. Publish a tag
+- **A Malenia release must exist.** The workflow installs
+  `malenia_linux_amd64` from the Malenia GitHub releases. Publish a tag
   (`git tag v0.2.0 && git push origin v0.2.0`) before pointing a repository at
   a versioned ref. The caller's `uses:` ref (`@v0.2.0`, or a moving `@v1` tag
-  you maintain) and `causent_version` are independent: the first selects the
+  you maintain) and `malenia_version` are independent: the first selects the
   workflow file, the second selects the binary.
 - **Linux amd64 only.** The binary embeds SQLite through cgo, so it is built on
   the runner platform it runs on.
@@ -152,8 +152,8 @@ explicit `repair --model-proposals` capability.
 ## Local reproduction
 
 ```sh
-causent diagnose --repo . --base origin/main
+malenia diagnose --repo . --base origin/main
 ```
 
-`causent diagnose` reads `.causent.yml` when flags are not supplied, and prints
+`malenia diagnose` reads `.malenia.yml` when flags are not supplied, and prints
 the replay command for the bundle it writes.
