@@ -78,7 +78,7 @@ func (d *Diagnoser) passesAt(ctx context.Context, commit string) bool {
 	return err == nil && passed
 }
 
-func (d *Diagnoser) localize(ctx context.Context, workspace string, baseline Baseline) (Localization, []EvidenceItem, error) {
+func (d *Diagnoser) localize(ctx context.Context, workspace string, baseline Baseline, comparison *Comparison) (Localization, []EvidenceItem, error) {
 	loc := Localization{
 		HeadCommit:   strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-parse", "HEAD")),
 		BisectStatus: "not_attempted",
@@ -94,21 +94,30 @@ func (d *Diagnoser) localize(ctx context.Context, workspace string, baseline Bas
 		if good == "" {
 			return loc, evidence, fmt.Errorf("known-good revision %q could not be resolved", d.cfg.GoodRef)
 		}
-		if !d.passesAt(ctx, good) {
+		knownGood := comparison != nil && comparison.BaseCommit == good && baselineIsPassing(comparison.Base)
+		if !knownGood && !d.passesAt(ctx, good) {
 			return loc, evidence, fmt.Errorf("known-good revision %q does not pass the recorded command", d.cfg.GoodRef)
 		}
-		loc.LastKnownGood = good
-		firstBad, status, log := d.bisect(ctx, good, loc.HeadCommit)
-		loc.BisectStatus = status
-		loc.BisectLog = bound(log, MaxEvidenceExcerpt)
-		if firstBad != "" {
-			loc.BisectResult = firstBad
-			loc.FirstKnownBad = firstBad
+		if !baselineIsFailing(baseline) {
+			loc.BisectStatus = "inconclusive: head outcome does not establish a reproducible failure"
 		} else {
-			loc.FirstKnownBad = loc.HeadCommit
+			loc.LastKnownGood, loc.FirstKnownBad, loc.BisectResult, loc.BisectStatus, loc.BisectLog = d.bisectFromKnownEndpoints(ctx, good, loc.HeadCommit)
 		}
+	} else if d.cfg.BaseRef != "" {
+		if comparison == nil {
+			loc.BisectStatus = "inconclusive: base/head comparison did not establish commit outcomes"
+		} else if baselineIsFailing(comparison.Base) {
+			loc.BisectStatus = "skipped: the failure also reproduces on the PR base; a PR regression is not established"
+		} else if baselineIsPassing(comparison.Base) && baselineIsFailing(baseline) {
+			good := strings.TrimSpace(comparison.BaseCommit)
+			loc.LastKnownGood, loc.FirstKnownBad, loc.BisectResult, loc.BisectStatus, loc.BisectLog = d.bisectFromKnownEndpoints(ctx, good, loc.HeadCommit)
+		} else {
+			loc.BisectStatus = "inconclusive: base/head outcomes were mixed or timed out; revision search stopped"
+		}
+	} else if baselineIsFailing(baseline) {
+		loc.LastKnownGood, loc.FirstKnownBad, loc.BisectResult, loc.BisectStatus, loc.BisectLog = d.adaptiveWalk(ctx, loc.HeadCommit)
 	} else {
-		loc.LastKnownGood, loc.FirstKnownBad, loc.BisectStatus = d.walk(ctx, loc.HeadCommit)
+		loc.BisectStatus = "inconclusive: head outcome does not establish a reproducible failure"
 	}
 
 	if loc.LastKnownGood != "" {
@@ -129,13 +138,13 @@ func (d *Diagnoser) localize(ctx context.Context, workspace string, baseline Bas
 			Detail: "first known bad commit: " + loc.FirstKnownBad,
 		})
 	}
-	if loc.BisectResult != "" {
+	if loc.BisectLog != "" {
 		evidence = append(evidence, EvidenceItem{
 			ID:     "E-git-bisect",
 			Kind:   "git_bisect",
-			Source: "git bisect run",
+			Source: "bounded adaptive revision search",
 			Digest: digestString(loc.BisectLog),
-			Detail: fmt.Sprintf("first bad commit from bisect: %s\n%s", loc.BisectResult, bound(loc.BisectLog, MaxEvidenceExcerpt)),
+			Detail: fmt.Sprintf("revision search status: %s\n%s", loc.BisectStatus, bound(loc.BisectLog, MaxEvidenceExcerpt)),
 		})
 	}
 
@@ -173,31 +182,127 @@ func (d *Diagnoser) localize(ctx context.Context, workspace string, baseline Bas
 	return loc, evidence, nil
 }
 
-// walk searches backwards from HEAD for the newest commit where the command
-// passes. It is bounded by MaxCommits.
-func (d *Diagnoser) walk(ctx context.Context, head string) (string, string, string) {
-	out := strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", d.cfg.MaxCommits), head))
-	if out == "" {
-		return "", "", "unavailable: no commits in range"
+func baselineIsPassing(b Baseline) bool {
+	return b.Attempts > 0 && b.Passes == b.Attempts && b.Failures == 0 && b.TimedOut == 0
+}
+
+func baselineIsFailing(b Baseline) bool {
+	return b.Attempts > 0 && b.Failures == b.Attempts && b.Passes == 0 && b.TimedOut == 0
+}
+
+// probeCommit returns a conclusive test result only when the command actually
+// passed or failed. Timeouts and execution errors never become negative evidence.
+func (d *Diagnoser) probeCommit(ctx context.Context, commit string) (passed, conclusive bool, duration time.Duration) {
+	var attempt Attempt
+	err := d.workspaceAt(ctx, commit, func(dir string) error {
+		attempt = d.runOnce(ctx, dir, 0)
+		return nil
+	})
+	if err != nil || ctx.Err() != nil {
+		return false, false, attempt.Duration
 	}
-	commits := strings.Fields(out)
-	for i, commit := range commits {
+	if attempt.Passed() {
+		return true, true, attempt.Duration
+	}
+	if attempt.Failed() {
+		return false, true, attempt.Duration
+	}
+	return false, false, attempt.Duration
+}
+
+// adaptiveWalk samples ancestors at exponentially increasing distances. Once
+// it finds a passing revision, it bisects only the bracket between that
+// revision and the nearest known failing checkpoint.
+func (d *Diagnoser) adaptiveWalk(ctx context.Context, head string) (string, string, string, string, string) {
+	commits := strings.Fields(strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-list", "--first-parent", fmt.Sprintf("--max-count=%d", d.cfg.MaxCommits), head)))
+	if len(commits) < 2 {
+		return "", head, "", "inconclusive: no ancestor commit is available to probe", ""
+	}
+	var log strings.Builder
+	fmt.Fprintf(&log, "strategy=exponential checkpoints then bisection; history_depth=%d probe_budget=%d\n", len(commits)-1, d.cfg.MaxLocalizationProbes)
+	badIndex, probes := 0, 0 // commits are newest-to-oldest; index zero is the observed failing HEAD.
+	distance := 1
+	for distance < len(commits) && probes < d.cfg.MaxLocalizationProbes {
 		if ctx.Err() != nil {
-			return "", "", "cancelled"
+			return "", commits[badIndex], "", "inconclusive: cancelled during revision search", log.String()
 		}
-		// HEAD is known bad; only inspect ancestors.
-		if i == 0 {
-			continue
+		passed, conclusive, took := d.probeCommit(ctx, commits[distance])
+		probes++
+		if !conclusive {
+			fmt.Fprintf(&log, "probe %s: inconclusive duration=%s\n", shortSHA(commits[distance]), took)
+			return "", commits[badIndex], "", "inconclusive: a revision probe timed out or failed to execute", log.String()
 		}
-		if d.passesAt(ctx, commit) {
-			firstBad := ""
-			if i-1 >= 0 {
-				firstBad = commits[i-1]
-			}
-			return commit, firstBad, "not_needed: last-good and first-bad are adjacent in the walked history"
+		fmt.Fprintf(&log, "probe %s: passed=%t duration=%s\n", shortSHA(commits[distance]), passed, took)
+		if passed {
+			goodIndex := distance
+			return d.bisectBracket(ctx, commits, badIndex, goodIndex, "", probes, log)
+		}
+		badIndex = distance
+		if distance == len(commits)-1 {
+			break
+		}
+		distance *= 2
+		if distance >= len(commits) {
+			distance = len(commits) - 1
 		}
 	}
-	return "", "", fmt.Sprintf("unavailable: no passing commit in the last %d commits", d.cfg.MaxCommits)
+	return "", commits[badIndex], "", fmt.Sprintf("inconclusive: no passing revision found in %d adaptive probes", probes), log.String()
+}
+
+// bisectFromKnownEndpoints reuses the observed base/head outcomes and tests
+// only intermediate first-parent commits. It stops after the configured probe
+// budget, reporting a bounded interval when the exact boundary is unresolved.
+func (d *Diagnoser) bisectFromKnownEndpoints(ctx context.Context, good, head string) (string, string, string, string, string) {
+	commits := strings.Fields(strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-list", "--first-parent", good+".."+head)))
+	if len(commits) == 0 || commits[0] != head {
+		return good, head, "", "inconclusive: base is not on the head's first-parent history", ""
+	}
+	var log strings.Builder
+	fmt.Fprintf(&log, "strategy=base/head bracket bisection; intermediate_commits=%d probe_budget=%d\n", len(commits), d.cfg.MaxLocalizationProbes)
+	return d.bisectBracket(ctx, commits, 0, len(commits), good, 0, log)
+}
+
+// bisectBracket uses indexes into newest-to-oldest commits. badIndex is a
+// known failure and goodIndex is a known pass; len(commits) represents a
+// known passing revision older than every item in the slice.
+func (d *Diagnoser) bisectBracket(ctx context.Context, commits []string, badIndex, goodIndex int, externalGood string, probes int, log strings.Builder) (string, string, string, string, string) {
+	for goodIndex-badIndex > 1 && probes < d.cfg.MaxLocalizationProbes {
+		if ctx.Err() != nil {
+			return boundaryGood(commits, goodIndex, externalGood), boundaryBad(commits, badIndex), "", "inconclusive: cancelled during revision search", log.String()
+		}
+		mid := badIndex + (goodIndex-badIndex)/2
+		passed, conclusive, took := d.probeCommit(ctx, commits[mid])
+		probes++
+		if !conclusive {
+			fmt.Fprintf(&log, "probe %s: inconclusive duration=%s\n", shortSHA(commits[mid]), took)
+			return boundaryGood(commits, goodIndex, externalGood), boundaryBad(commits, badIndex), "", "inconclusive: a revision probe timed out or failed to execute", log.String()
+		}
+		fmt.Fprintf(&log, "probe %s: passed=%t duration=%s\n", shortSHA(commits[mid]), passed, took)
+		if passed {
+			goodIndex = mid
+		} else {
+			badIndex = mid
+		}
+	}
+	good, bad := boundaryGood(commits, goodIndex, externalGood), boundaryBad(commits, badIndex)
+	if goodIndex-badIndex == 1 {
+		return good, bad, bad, "confirmed", log.String()
+	}
+	return good, bad, "", "probe budget exhausted: first-bad commit remains within the reported interval", log.String()
+}
+
+func boundaryGood(commits []string, index int, externalGood string) string {
+	if index >= len(commits) {
+		return externalGood
+	}
+	return commits[index]
+}
+
+func boundaryBad(commits []string, index int) string {
+	if index < 0 || index >= len(commits) {
+		return ""
+	}
+	return commits[index]
 }
 
 // bisect locates the first failing commit between a known-good and known-bad

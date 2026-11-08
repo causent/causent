@@ -111,6 +111,7 @@ func runDiagnose(args []string) {
 	good := fs.String("good", "", "known-good revision; enables git bisect")
 	base := fs.String("base", "", "known base revision; compare its outcome with HEAD")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
+	maxProbes := fs.Int("max-probes", diagnosis.DefaultMaxLocalizationProbes, "maximum test executions used to locate a revision boundary")
 	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	var probes stringList
@@ -196,18 +197,19 @@ func runDiagnose(args []string) {
 		os.Exit(2)
 	}
 	cfg := diagnosis.Config{
-		RepoPath:      repoPath,
-		Command:       cmd,
-		Attempts:      *attempts,
-		Timeout:       *timeout,
-		Executor:      executor,
-		ExecutorName:  strings.ToLower(*executorMode),
-		ExecutorImage: strings.TrimSpace(*image),
-		Store:         store,
-		BundleDir:     bundleDir,
-		GoodRef:       *good,
-		BaseRef:       *base,
-		MaxCommits:    *maxCommits,
+		RepoPath:              repoPath,
+		Command:               cmd,
+		Attempts:              *attempts,
+		Timeout:               *timeout,
+		Executor:              executor,
+		ExecutorName:          strings.ToLower(*executorMode),
+		ExecutorImage:         strings.TrimSpace(*image),
+		Store:                 store,
+		BundleDir:             bundleDir,
+		GoodRef:               *good,
+		BaseRef:               *base,
+		MaxCommits:            *maxCommits,
+		MaxLocalizationProbes: *maxProbes,
 	}
 	if strings.TrimSpace(*ciLog) != "" {
 		f, readErr := os.Open(*ciLog)
