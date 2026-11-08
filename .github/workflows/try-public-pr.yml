@@ -61,11 +61,22 @@ jobs:
             exit 2
           fi
           metadata="$RUNNER_TEMP/target-pr.json"
-          curl --fail --silent --show-error --location \
+          http_status="$(curl --silent --show-error --location --retry 2 --retry-all-errors \
             "https://api.github.com/repos/$TARGET_REPOSITORY/pulls/$PULL_NUMBER" \
-            -H 'Accept: application/vnd.github+json' -o "$metadata"
+            -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: Malenia-GitHub-Actions' \
+            -o "$metadata" -w '%{http_code}')"
+          if [[ "$http_status" != 200 ]]; then
+            api_message="$(jq -r '.message // "no error message returned"' "$metadata" 2>/dev/null || true)"
+            echo "GitHub could not resolve PR $TARGET_REPOSITORY#$PULL_NUMBER (HTTP $http_status): $api_message" >&2
+            if [[ "$http_status" == 404 ]]; then
+              echo 'Check that target_repository is the public owner/name repository and pull_request is an existing PR number.' >&2
+            fi
+            exit 2
+          fi
           jq -e '.state == "open" and .base.sha and .head.sha' "$metadata" >/dev/null || {
-            echo 'PR must be open and have resolvable base/head revisions' >&2
+            state="$(jq -r '.state // "unknown"' "$metadata")"
+            echo "PR $TARGET_REPOSITORY#$PULL_NUMBER must be open and have resolvable base/head revisions (state: $state)" >&2
             exit 2
           }
           echo "base_sha=$(jq -r '.base.sha' "$metadata")" >> "$GITHUB_OUTPUT"
