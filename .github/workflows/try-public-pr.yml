@@ -24,6 +24,11 @@ on:
         required: true
         default: '1'
         type: string
+      max_probes:
+        description: Maximum historical test runs for adaptive localization
+        required: true
+        default: '3'
+        type: string
 
 permissions:
   contents: read
@@ -82,6 +87,8 @@ jobs:
           git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
             "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/malenia-pr"
+          git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
+            "refs/pull/$PULL_NUMBER/head"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
           actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/malenia-pr)"
           if [ "$actual_head" != "$HEAD_SHA" ]; then
@@ -105,6 +112,7 @@ jobs:
           MALENIA_COMMAND: ${{ inputs.test_command }}
           MALENIA_BASE: ${{ steps.pr.outputs.base_sha }}
           MALENIA_ATTEMPTS: ${{ inputs.attempts }}
+          MALENIA_MAX_PROBES: ${{ inputs.max_probes }}
           MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
         run: |
           set -euo pipefail
@@ -112,8 +120,13 @@ jobs:
             echo 'attempts must be between 1 and 5' >&2
             exit 2
           fi
+          if [[ ! "$MALENIA_MAX_PROBES" =~ ^[1-6]$ ]]; then
+            echo 'max_probes must be between 1 and 6' >&2
+            exit 2
+          fi
           args=(diagnose --repo "$RUNNER_TEMP/target" --command "$MALENIA_COMMAND"
-            --base "$MALENIA_BASE" --attempts "$MALENIA_ATTEMPTS" --json
+            --base "$MALENIA_BASE" --attempts "$MALENIA_ATTEMPTS"
+            --max-probes "$MALENIA_MAX_PROBES" --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")

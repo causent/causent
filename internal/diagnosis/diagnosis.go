@@ -47,12 +47,13 @@ const (
 
 // Defaults bound every loop in this package.
 const (
-	DefaultAttempts    = 3
-	DefaultTimeout     = 2 * time.Minute
-	DefaultMaxCommits  = 20
-	MaxEvidenceExcerpt = 4096
-	MaxListedFiles     = 50
-	RefusalConfidence  = 0.4
+	DefaultAttempts              = 3
+	DefaultTimeout               = 2 * time.Minute
+	DefaultMaxCommits            = 20
+	DefaultMaxLocalizationProbes = 6
+	MaxEvidenceExcerpt           = 4096
+	MaxListedFiles               = 50
+	RefusalConfidence            = 0.4
 )
 
 // Attempt is one reproduction run. It is an observation, never an inference.
@@ -222,7 +223,9 @@ type Config struct {
 	BaseRef    string
 	Agent      *agent.Client
 	MaxCommits int
-	Probes     [][]string
+	// MaxLocalizationProbes bounds test executions used to locate a revision boundary.
+	MaxLocalizationProbes int
+	Probes                [][]string
 	// ExternalEvidence is bounded evidence collected by an integration such as
 	// GitHub Actions. It is recorded separately from reproduction output.
 	ExternalEvidence []EvidenceItem
@@ -262,6 +265,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	}
 	if cfg.MaxCommits <= 0 {
 		cfg.MaxCommits = DefaultMaxCommits
+	}
+	if cfg.MaxLocalizationProbes <= 0 {
+		cfg.MaxLocalizationProbes = DefaultMaxLocalizationProbes
 	}
 	if cfg.AdaptiveMaxIterations <= 0 {
 		cfg.AdaptiveMaxIterations = 4
@@ -360,7 +366,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		return report, nil
 	}
 	d.emit(EventLocalizationStarted, domain.StatusFormingHypotheses, "localizing likely cause")
-	localization, locEvidence, locErr := d.localize(ctx, workspace, baseline)
+	localization, locEvidence, locErr := d.localize(ctx, workspace, baseline, report.Comparison)
 	report.Localization = localization
 	report.Evidence = append(report.Evidence, locEvidence...)
 	if locErr != nil {
