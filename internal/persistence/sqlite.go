@@ -266,6 +266,34 @@ func (s *Store) migrate() error {
 		{4, `CREATE TABLE IF NOT EXISTS evaluation_summaries (
 			evaluation_id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL
 		)`},
+		{5, `CREATE TABLE IF NOT EXISTS architecture_records (
+			id TEXT PRIMARY KEY, kind TEXT NOT NULL, investigation_id TEXT, data TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_architecture_records_kind ON architecture_records(kind);
+		CREATE INDEX IF NOT EXISTS idx_architecture_records_investigation ON architecture_records(investigation_id);
+		CREATE TABLE IF NOT EXISTS architecture_relationships (
+			id TEXT PRIMARY KEY, investigation_id TEXT, source_type TEXT NOT NULL, source_id TEXT NOT NULL,
+			target_type TEXT NOT NULL, target_id TEXT NOT NULL, relationship_type TEXT NOT NULL,
+			revision_id TEXT, evidence_ids TEXT NOT NULL DEFAULT '[]', data TEXT NOT NULL, created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_architecture_relationships_source ON architecture_relationships(source_type, source_id);
+		CREATE INDEX IF NOT EXISTS idx_architecture_relationships_target ON architecture_relationships(target_type, target_id);
+		CREATE INDEX IF NOT EXISTS idx_architecture_relationships_type ON architecture_relationships(relationship_type);
+		CREATE TABLE IF NOT EXISTS claim_validations (
+			claim_id TEXT PRIMARY KEY, valid INTEGER NOT NULL, reasons TEXT NOT NULL DEFAULT '[]', validated_at TEXT NOT NULL
+		)`},
+		{6, `CREATE TABLE IF NOT EXISTS hypothesis_details (
+			hypothesis_id TEXT PRIMARY KEY,
+			hypothesis_group_id TEXT NOT NULL DEFAULT '',
+			version INTEGER NOT NULL DEFAULT 1,
+			supersedes_hypothesis_id TEXT NOT NULL DEFAULT '',
+			related_failure_ids TEXT NOT NULL DEFAULT '[]',
+			candidate_location_ids TEXT NOT NULL DEFAULT '[]',
+			relevance REAL NOT NULL DEFAULT 0,
+			missing_evidence TEXT NOT NULL DEFAULT '[]',
+			FOREIGN KEY(hypothesis_id) REFERENCES hypotheses(id)
+		)`},
 	}
 
 	for _, m := range migrations {
@@ -553,6 +581,13 @@ func (s *Store) SaveHypothesis(h domain.Hypothesis) error {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO hypothesis_provenance (hypothesis_id, provenance) VALUES (?,?) ON CONFLICT(hypothesis_id) DO UPDATE SET provenance=excluded.provenance`, h.ID, h.Provenance)
+	if err != nil {
+		return err
+	}
+	if h.Version <= 0 {
+		h.Version = 1
+	}
+	_, err = s.db.Exec(`INSERT INTO hypothesis_details (hypothesis_id, hypothesis_group_id, version, supersedes_hypothesis_id, related_failure_ids, candidate_location_ids, relevance, missing_evidence) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(hypothesis_id) DO UPDATE SET hypothesis_group_id=excluded.hypothesis_group_id, version=excluded.version, supersedes_hypothesis_id=excluded.supersedes_hypothesis_id, related_failure_ids=excluded.related_failure_ids, candidate_location_ids=excluded.candidate_location_ids, relevance=excluded.relevance, missing_evidence=excluded.missing_evidence`, h.ID, h.HypothesisGroupID, h.Version, h.SupersedesHypothesisID, mustJSON(h.RelatedFailureIDs), mustJSON(h.CandidateLocationIDs), h.Relevance, mustJSON(h.MissingEvidence))
 	return err
 }
 
@@ -577,6 +612,16 @@ func (s *Store) ListHypotheses(invID domain.ID) ([]domain.Hypothesis, error) {
 		h.ContradictingEvidenceIDs = parseIDSlice(ce)
 		h.PredictedObservations = mustParseStrings(po)
 		h.ExperimentIDs = parseIDSlice(ea)
+		var group, supersedes, relatedFailures, candidates, missing string
+		var version int
+		if err := s.db.QueryRow(`SELECT hypothesis_group_id, version, supersedes_hypothesis_id, related_failure_ids, candidate_location_ids, relevance, missing_evidence FROM hypothesis_details WHERE hypothesis_id=?`, h.ID).Scan(&group, &version, &supersedes, &relatedFailures, &candidates, &h.Relevance, &missing); err == nil {
+			h.HypothesisGroupID = domain.ID(group)
+			h.Version = version
+			h.SupersedesHypothesisID = domain.ID(supersedes)
+			h.RelatedFailureIDs = mustParseStrings(relatedFailures)
+			h.CandidateLocationIDs = mustParseStrings(candidates)
+			h.MissingEvidence = mustParseStrings(missing)
+		}
 		if err := s.db.QueryRow(`SELECT provenance FROM hypothesis_provenance WHERE hypothesis_id=?`, h.ID).Scan(&h.Provenance); err != nil && err != sql.ErrNoRows {
 			return nil, err
 		}

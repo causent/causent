@@ -165,27 +165,38 @@ type Comparison struct {
 
 // Report is the final diagnosis.
 type Report struct {
-	InvestigationID string         `json:"investigation_id"`
-	RepoPath        string         `json:"repo_path"`
-	Command         []string       `json:"command"`
-	Classification  Classification `json:"classification"`
-	Environment     Environment    `json:"environment"`
-	Baseline        Baseline       `json:"baseline"`
-	Comparison      *Comparison    `json:"comparison,omitempty"`
-	Agent           *agent.Report  `json:"agent,omitempty"`
-	AgentStatus     string         `json:"agent_status"`
-	AgentError      string         `json:"agent_error,omitempty"`
-	Localization    Localization   `json:"localization"`
-	Evidence        []EvidenceItem `json:"evidence"`
-	Claims          []Claim        `json:"claims"`
-	Confidence      float64        `json:"confidence"`
-	Uncertainty     []string       `json:"uncertainty"`
-	Refused         bool           `json:"refused"`
-	RefusalReason   string         `json:"refusal_reason,omitempty"`
-	Probes          []Probe        `json:"probes,omitempty"`
-	BundlePath      string         `json:"bundle_path,omitempty"`
-	ReplayCommand   string         `json:"replay_command,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
+	InvestigationID     string                         `json:"investigation_id"`
+	RepoPath            string                         `json:"repo_path"`
+	Command             []string                       `json:"command"`
+	Classification      Classification                 `json:"classification"`
+	Environment         Environment                    `json:"environment"`
+	Baseline            Baseline                       `json:"baseline"`
+	Comparison          *Comparison                    `json:"comparison,omitempty"`
+	Agent               *agent.Report                  `json:"agent,omitempty"`
+	AgentStatus         string                         `json:"agent_status"`
+	AgentError          string                         `json:"agent_error,omitempty"`
+	Localization        Localization                   `json:"localization"`
+	Evidence            []EvidenceItem                 `json:"evidence"`
+	Candidates          []domain.CandidateLocation     `json:"candidates,omitempty"`
+	Relationships       []domain.Relationship          `json:"relationships,omitempty"`
+	FailureGroups       []domain.FailureGroup          `json:"failure_groups,omitempty"`
+	FailureEpisodes     []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
+	Hypotheses          []domain.Hypothesis            `json:"hypotheses,omitempty"`
+	Findings            []domain.DiagnosticFinding     `json:"findings,omitempty"`
+	Experiments         []domain.Experiment            `json:"experiments,omitempty"`
+	UnresolvedQuestions []domain.InvestigationQuestion `json:"unresolved_questions,omitempty"`
+	StoppingReason      string                         `json:"stopping_reason,omitempty"`
+	AdaptiveIterations  int                            `json:"adaptive_iterations,omitempty"`
+	HistoricalContext   []domain.HistoricalReference   `json:"historical_context,omitempty"`
+	Claims              []Claim                        `json:"claims"`
+	Confidence          float64                        `json:"confidence"`
+	Uncertainty         []string                       `json:"uncertainty"`
+	Refused             bool                           `json:"refused"`
+	RefusalReason       string                         `json:"refusal_reason,omitempty"`
+	Probes              []Probe                        `json:"probes,omitempty"`
+	BundlePath          string                         `json:"bundle_path,omitempty"`
+	ReplayCommand       string                         `json:"replay_command,omitempty"`
+	CreatedAt           time.Time                      `json:"created_at"`
 }
 
 // Config controls one diagnosis run.
@@ -215,6 +226,13 @@ type Config struct {
 	// ExternalEvidence is bounded evidence collected by an integration such as
 	// GitHub Actions. It is recorded separately from reproduction output.
 	ExternalEvidence []EvidenceItem
+	// Adaptive budgets bound the durable investigation loop. Zero values use
+	// conservative defaults and never permit unbounded action execution.
+	InvestigationID        string
+	AdaptiveMaxIterations  int
+	AdaptiveMaxActivities  int
+	AdaptiveMaxExperiments int
+	AdaptiveTimeout        time.Duration
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -245,6 +263,18 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	if cfg.MaxCommits <= 0 {
 		cfg.MaxCommits = DefaultMaxCommits
 	}
+	if cfg.AdaptiveMaxIterations <= 0 {
+		cfg.AdaptiveMaxIterations = 4
+	}
+	if cfg.AdaptiveMaxActivities <= 0 {
+		cfg.AdaptiveMaxActivities = 4
+	}
+	if cfg.AdaptiveMaxExperiments <= 0 {
+		cfg.AdaptiveMaxExperiments = 2
+	}
+	if cfg.AdaptiveTimeout <= 0 {
+		cfg.AdaptiveTimeout = cfg.Timeout
+	}
 	if cfg.Executor == nil {
 		return Report{}, fmt.Errorf("executor is required")
 	}
@@ -257,11 +287,14 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	d := &Diagnoser{cfg: cfg}
 	report := Report{
-		InvestigationID: newID(),
+		InvestigationID: cfg.InvestigationID,
 		RepoPath:        cfg.RepoPath,
 		Command:         cfg.Command,
 		CreatedAt:       time.Now().UTC(),
 		AgentStatus:     "disabled",
+	}
+	if report.InvestigationID == "" {
+		report.InvestigationID = newID()
 	}
 	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
@@ -320,6 +353,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Localization = Localization{HeadCommit: env.HeadCommit, BisectStatus: "skipped: diagnosis refused"}
 		report.Uncertainty = append(report.Uncertainty, reason)
 		report.Confidence = 0
+		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization); err != nil {
+			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+		}
 		finish(&report, d, workspace)
 		return report, nil
 	}
@@ -329,6 +365,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	report.Evidence = append(report.Evidence, locEvidence...)
 	if locErr != nil {
 		report.Uncertainty = append(report.Uncertainty, "localization incomplete: "+locErr.Error())
+	}
+	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization); err != nil {
+		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+	}
+	if err := d.runAdaptiveLoop(ctx, &report, workspace); err != nil {
+		report.Uncertainty = append(report.Uncertainty, "adaptive investigation incomplete: "+err.Error())
 	}
 	d.emit(EventLocalizationCompleted, domain.StatusFormingHypotheses, locStatus(localization))
 
@@ -427,6 +469,14 @@ func compareVerdict(base, head Baseline) Classification {
 // finish writes the bundle, emits the terminal events, and persists the final
 // investigation status.
 func finish(report *Report, d *Diagnoser, workspace string) {
+	if d.cfg.Store != nil {
+		if inv, err := d.cfg.Store.GetInvestigation(domain.ID(report.InvestigationID)); err == nil {
+			inv.Status = statusFor(*report)
+			inv.UpdatedAt = time.Now().UTC()
+			inv.BudgetUsed = report.AdaptiveIterations
+			_ = d.cfg.Store.SaveInvestigation(inv)
+		}
+	}
 	if d.cfg.BundleDir != "" {
 		path, err := WriteBundle(*report, d.events, d.cfg.BundleDir)
 		if err != nil {

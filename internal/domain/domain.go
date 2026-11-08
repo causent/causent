@@ -50,18 +50,26 @@ const (
 	EvidenceSourceCode      EvidenceType = "source_code"
 	EvidenceStackTrace      EvidenceType = "stack_trace"
 	EvidenceBaselineCompare EvidenceType = "baseline_compare"
+	EvidenceHistorical      EvidenceType = "historical_context"
 )
 
 // Hypothesis represents a hypothesis about the cause of a failure.
 type Hypothesis struct {
 	ID                       ID
 	InvestigationID          ID
+	HypothesisGroupID        ID
+	Version                  int
+	SupersedesHypothesisID   ID
 	Statement                string
 	AffectedComponent        string
+	RelatedFailureIDs        []string
+	CandidateLocationIDs     []string
 	SupportingEvidenceIDs    []ID
 	ContradictingEvidenceIDs []ID
 	PredictedObservations    []string
 	Confidence               float64
+	Relevance                float64
+	MissingEvidence          []string
 	Status                   HypothesisStatus
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
@@ -76,8 +84,34 @@ const (
 	HypProposed           HypothesisStatus = "proposed"
 	HypUnderInvestigation HypothesisStatus = "under_investigation"
 	HypSupported          HypothesisStatus = "supported"
+	HypWeakened           HypothesisStatus = "weakened"
+	HypContradicted       HypothesisStatus = "contradicted"
+	HypEliminated         HypothesisStatus = "eliminated"
 	HypRefuted            HypothesisStatus = "refuted"
 	HypInconclusive       HypothesisStatus = "inconclusive"
+)
+
+type FailureGroup struct {
+	ID              string
+	InvestigationID ID
+	FailureIDs      []string
+	CandidateIDs    []string
+	Status          string
+	EvidenceIDs     []ID
+	Version         int
+	CreatedAt       time.Time
+}
+
+type ActivityStatus string
+
+const (
+	ActivityPending   ActivityStatus = "pending"
+	ActivityReady     ActivityStatus = "ready"
+	ActivityRunning   ActivityStatus = "running"
+	ActivityCompleted ActivityStatus = "completed"
+	ActivityFailed    ActivityStatus = "failed"
+	ActivityBlocked   ActivityStatus = "blocked"
+	ActivityCancelled ActivityStatus = "cancelled"
 )
 
 // Experiment represents an experiment run during an investigation.
