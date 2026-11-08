@@ -30,8 +30,8 @@ func TestOpenCreatesSchemaAtVersionOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("expected version 4, got %d", version)
+	if version != 6 {
+		t.Fatalf("expected version 6, got %d", version)
 	}
 }
 
@@ -114,8 +114,8 @@ func TestMigrationUpgradesExistingDatabaseWithoutDataLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("expected version 4 after upgrade, got %d", version)
+	if version != 6 {
+		t.Fatalf("expected version 6 after upgrade, got %d", version)
 	}
 
 	// Re-opening must be idempotent and must not drop data.

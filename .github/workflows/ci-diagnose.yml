@@ -426,6 +426,9 @@ jobs:
           base_attempts="$(jq -r '.comparison.base.attempts // 0' "$report")"
           files="$(jq -r '(.localization.likely_files // []) | if length == 0 then "not localized" else join(", ") end' "$report")"
           candidate="$(jq -r '(.localization.candidate_commits[0] // {}) | if .sha then ((.sha[0:7]) + " — " + (.subject // "")) else "not identified" end' "$report")"
+          groups="$(jq -r '(.failure_groups // []) | if length == 0 then "none recorded" else map("\(.status): \(.failure_ids | join(", "))") | join("; ") end' "$report")"
+          episodes="$(jq -r '(.failure_episodes // []) | if length == 0 then "none recorded" else map((.test_identifier // "unknown test") + ": " + (.failure_message // "")) | .[0:10] | join("; ") end' "$report")"
+          hypotheses="$(jq -r '(.hypotheses // []) | if length == 0 then "none recorded" else map("[\(.status)] \(.statement)") | .[0:3] | join("; ") end' "$report")"
           confidence="$(jq -r '((.confidence // 0) * 100 | floor | tostring) + "%"' "$report")"
           failure="$(jq -r '.baseline.results[0].stderr_excerpt // ""' "$report" | grep -E -- '--- FAIL:|^FAIL' | head -3 | tr '\n' ' ' || true)"
           artifact_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -441,6 +444,12 @@ jobs:
 
           **Likely changed files:** ${files}<br>
           **Candidate commit:** ${candidate}
+
+          **Failure groups:** ${groups}
+
+          **Failed tests/episodes:** ${episodes}
+
+          **Hypotheses:** ${hypotheses}
 
           **Observed failure:** ${failure:-No failure line extracted}
 
@@ -462,17 +471,34 @@ jobs:
             const fs = require('fs');
             const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
             const issueNumber = Number(process.env.PR_NUMBER);
+            const marker = '<!-- causent-diagnosis -->';
+            const markedBody = `${marker}\n${body}`;
             if (!Number.isInteger(issueNumber) || issueNumber < 1) {
               throw new Error(`Invalid pull request number: ${process.env.PR_NUMBER}`);
             }
 
             try {
-              await github.rest.issues.createComment({
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                body,
+                per_page: 100,
               });
+              const existing = comments.find(comment =>
+                comment.user?.login === 'github-actions[bot]' &&
+                comment.body?.includes(marker)
+              );
+              const payload = {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: markedBody,
+              };
+              if (existing) {
+                await github.rest.issues.updateComment({ ...payload, comment_id: existing.id });
+              } else {
+                await github.rest.issues.createComment(payload);
+              }
             } catch (error) {
               core.setFailed(`Unable to publish diagnosis comment: ${error.status ?? 'unknown'} ${error.message}`);
             }

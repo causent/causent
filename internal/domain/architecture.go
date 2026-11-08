@@ -1,0 +1,201 @@
+package domain
+
+import "time"
+
+// Repository and revision entities keep program knowledge scoped to a source
+// snapshot. They deliberately do not reuse RepoPath as an identity.
+type Repository struct {
+	ID            string            `json:"id"`
+	Provider      string            `json:"provider"`
+	Owner         string            `json:"owner"`
+	Name          string            `json:"name"`
+	CanonicalID   string            `json:"canonical_id"`
+	Configuration map[string]string `json:"configuration,omitempty"`
+}
+
+type Revision struct {
+	ID               string    `json:"id"`
+	RepositoryID     string    `json:"repository_id"`
+	CommitSHA        string    `json:"commit_sha"`
+	ParentRevisionID string    `json:"parent_revision_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type PullRequest struct {
+	ID             string            `json:"id"`
+	RepositoryID   string            `json:"repository_id"`
+	ExternalPRID   string            `json:"external_pr_id"`
+	BaseRevisionID string            `json:"base_revision_id"`
+	HeadRevisionID string            `json:"head_revision_id"`
+	Status         string            `json:"status"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+}
+
+type CIExecution struct {
+	ID                  string            `json:"id"`
+	RepositoryID        string            `json:"repository_id"`
+	PullRequestID       string            `json:"pull_request_id,omitempty"`
+	BaseRevisionID      string            `json:"base_revision_id,omitempty"`
+	HeadRevisionID      string            `json:"head_revision_id"`
+	Provider            string            `json:"provider"`
+	ExternalExecutionID string            `json:"external_execution_id"`
+	Status              string            `json:"status"`
+	StartedAt           *time.Time        `json:"started_at,omitempty"`
+	CompletedAt         *time.Time        `json:"completed_at,omitempty"`
+	ArtifactIDs         []ID              `json:"artifact_ids,omitempty"`
+	RawMetadata         map[string]string `json:"raw_metadata,omitempty"`
+}
+
+type FailureEpisode struct {
+	ID                     string `json:"id"`
+	ExecutionID            string `json:"execution_id"`
+	TestIdentifier         string `json:"test_identifier,omitempty"`
+	TestFramework          string `json:"test_framework,omitempty"`
+	FailureType            string `json:"failure_type,omitempty"`
+	FailureMessage         string `json:"failure_message"`
+	StackTraceEvidenceID   ID     `json:"stack_trace_evidence_id,omitempty"`
+	ObservationEvidenceIDs []ID   `json:"observation_evidence_ids,omitempty"`
+	Status                 string `json:"status"`
+}
+
+type CodeLocation struct {
+	ID             string `json:"id"`
+	RepositoryID   string `json:"repository_id"`
+	RevisionID     string `json:"revision_id"`
+	FilePath       string `json:"file_path"`
+	SymbolIdentity string `json:"symbol_identity,omitempty"`
+	StartLine      int    `json:"start_line,omitempty"`
+	EndLine        int    `json:"end_line,omitempty"`
+	LocationType   string `json:"location_type"`
+}
+
+// ProgramNode is a revision-scoped node in the repository/program graph.
+// Identity is language-aware and never consists of a path alone.
+type ProgramNode struct {
+	ID            string `json:"id"`
+	RepositoryID  string `json:"repository_id"`
+	RevisionID    string `json:"revision_id"`
+	Type          string `json:"type"`
+	Name          string `json:"name"`
+	Identity      string `json:"identity"`
+	FilePath      string `json:"file_path,omitempty"`
+	Language      string `json:"language,omitempty"`
+	StartLine     int    `json:"start_line,omitempty"`
+	EndLine       int    `json:"end_line,omitempty"`
+	ContentDigest string `json:"content_digest,omitempty"`
+	Changed       bool   `json:"changed"`
+}
+
+type CandidateLocation struct {
+	ID                       string       `json:"id"`
+	InvestigationID          ID           `json:"investigation_id"`
+	Location                 CodeLocation `json:"location"`
+	Score                    ScoreVector  `json:"score"`
+	SupportingEvidenceIDs    []ID         `json:"supporting_evidence_ids,omitempty"`
+	ContradictingEvidenceIDs []ID         `json:"contradicting_evidence_ids,omitempty"`
+	Status                   string       `json:"status"`
+}
+
+type ScoreVector struct {
+	ExecutionRelevance   float64         `json:"execution_relevance"`
+	ChangeRelevance      float64         `json:"change_relevance"`
+	DependencyRelevance  float64         `json:"dependency_relevance"`
+	BehaviouralRelevance float64         `json:"behavioural_relevance"`
+	HistoricalRelevance  float64         `json:"historical_relevance"`
+	RuntimeRelevance     float64         `json:"runtime_relevance"`
+	AvailableDimensions  []string        `json:"available_dimensions"`
+	EvidenceByDimension  map[string][]ID `json:"evidence_by_dimension,omitempty"`
+	ScoringPolicyVersion string          `json:"scoring_policy_version"`
+}
+
+type Relationship struct {
+	ID              string            `json:"id"`
+	InvestigationID ID                `json:"investigation_id,omitempty"`
+	SourceType      string            `json:"source_type"`
+	SourceID        string            `json:"source_id"`
+	TargetType      string            `json:"target_type"`
+	TargetID        string            `json:"target_id"`
+	Type            string            `json:"type"`
+	RevisionID      string            `json:"revision_id,omitempty"`
+	EvidenceIDs     []ID              `json:"evidence_ids,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+}
+
+type DiagnosticFinding struct {
+	ID              string    `json:"id"`
+	InvestigationID ID        `json:"investigation_id"`
+	Kind            string    `json:"kind"`
+	Statement       string    `json:"statement"`
+	HypothesisID    ID        `json:"hypothesis_id,omitempty"`
+	EvidenceIDs     []ID      `json:"evidence_ids,omitempty"`
+	CandidateIDs    []string  `json:"candidate_ids,omitempty"`
+	Status          string    `json:"status"`
+	Uncertainty     []string  `json:"uncertainty,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type ClaimValidation struct {
+	ClaimID     string    `json:"claim_id"`
+	Valid       bool      `json:"valid"`
+	Reasons     []string  `json:"reasons,omitempty"`
+	ValidatedAt time.Time `json:"validated_at"`
+}
+
+type Activity struct {
+	ID              string         `json:"id"`
+	InvestigationID ID             `json:"investigation_id"`
+	Type            string         `json:"type"`
+	Status          ActivityStatus `json:"status"`
+	InputRefs       []string       `json:"input_refs,omitempty"`
+	OutputRefs      []string       `json:"output_refs,omitempty"`
+	DependencyIDs   []string       `json:"dependency_ids,omitempty"`
+	AttemptCount    int            `json:"attempt_count"`
+	SelectionReason string         `json:"selection_reason,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	StartedAt       *time.Time     `json:"started_at,omitempty"`
+	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
+}
+
+type InvestigationBudget struct {
+	MaxIterations   int           `json:"max_iterations"`
+	MaxActivities   int           `json:"max_activities"`
+	MaxExperiments  int           `json:"max_experiments"`
+	MaxDuration     time.Duration `json:"max_duration"`
+	IterationsUsed  int           `json:"iterations_used"`
+	ActivitiesUsed  int           `json:"activities_used"`
+	ExperimentsUsed int           `json:"experiments_used"`
+}
+
+type InvestigationQuestion struct {
+	ID              string `json:"id"`
+	Statement       string `json:"statement"`
+	HypothesisIDs   []ID   `json:"hypothesis_ids,omitempty"`
+	MissingEvidence []ID   `json:"missing_evidence,omitempty"`
+	Resolved        bool   `json:"resolved"`
+}
+
+// AdaptiveState is the durable checkpoint for the adaptive investigation
+// loop. It is separate from repository knowledge and from individual
+// activities so a resumed process can reconstruct its decision context.
+type AdaptiveState struct {
+	InvestigationID ID
+	Questions       []InvestigationQuestion
+	Budget          InvestigationBudget
+	StoppingReason  string
+	Iterations      int
+	UpdatedAt       time.Time
+}
+
+// HistoricalReference points at prior repository knowledge without asserting
+// that the old revision contains the same code or cause.
+type HistoricalReference struct {
+	InvestigationID ID
+	FailureID       string
+	CandidateID     string
+	RevisionID      string
+	Similarity      float64
+	RelationshipID  string
+	EvidenceID      ID
+	Uncertainty     string
+}

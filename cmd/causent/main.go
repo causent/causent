@@ -25,6 +25,7 @@ import (
 
 	"github.com/causent/causent/internal/agent"
 	"github.com/causent/causent/internal/diagnosis"
+	"github.com/causent/causent/internal/domain"
 	"github.com/causent/causent/internal/engine"
 	"github.com/causent/causent/internal/evalcorpus"
 	"github.com/causent/causent/internal/execution"
@@ -117,6 +118,7 @@ func runDiagnose(args []string) {
 	jsonOutput := fs.Bool("json", false, "machine-readable JSON")
 	useAgent := fs.Bool("agent", false, "ask the configured gateway model to analyze collected evidence")
 	ciLog := fs.String("ci-log", "", "bounded original CI log to include as evidence")
+	junit := fs.String("junit", "", "JUnit XML test report to include as evidence")
 	fs.Parse(args)
 
 	set := map[string]bool{}
@@ -221,6 +223,15 @@ func runDiagnose(args []string) {
 		}
 		digest := sha256.Sum256(data)
 		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
+	}
+	if strings.TrimSpace(*junit) != "" {
+		data, readErr := os.ReadFile(*junit)
+		if readErr != nil {
+			fmt.Fprintln(os.Stderr, "junit: "+readErr.Error())
+			os.Exit(2)
+		}
+		digest := sha256.Sum256(data)
+		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_xml", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data)})
 	}
 	if *useAgent {
 		cfg.Agent, err = configuredAgent()
@@ -519,6 +530,35 @@ func diagnosisText(report diagnosis.Report) string {
 			claim.ID, claim.Confidence, claim.Statement, strings.Join(claim.Supporting, ", "))
 	}
 
+	if len(report.FailureGroups) > 0 {
+		b.WriteString("\nfailure groups:\n")
+		for _, group := range report.FailureGroups {
+			fmt.Fprintf(&b, "  %s (%s): failures %s\n", group.ID, group.Status, strings.Join(group.FailureIDs, ", "))
+		}
+	}
+	if len(report.FailureEpisodes) > 0 {
+		b.WriteString("\nfailed test episodes:\n")
+		for _, episode := range report.FailureEpisodes {
+			name := episode.TestIdentifier
+			if name == "" {
+				name = "unknown test"
+			}
+			fmt.Fprintf(&b, "  %s: %s\n", name, episode.FailureMessage)
+		}
+	}
+	if len(report.Hypotheses) > 0 {
+		b.WriteString("\nassessed hypotheses (candidate relevance, not causal probability):\n")
+		for _, hypothesis := range report.Hypotheses {
+			fmt.Fprintf(&b, "  %s v%d [%s relevance %.2f]: %s\n    supporting evidence: %s\n", hypothesis.ID, hypothesis.Version, hypothesis.Status, hypothesis.Relevance, hypothesis.Statement, strings.Join(idsToStrings(hypothesis.SupportingEvidenceIDs), ", "))
+		}
+	}
+	if len(report.Findings) > 0 {
+		b.WriteString("\nvalidated findings:\n")
+		for _, finding := range report.Findings {
+			fmt.Fprintf(&b, "  [%s] %s\n", finding.Status, finding.Statement)
+		}
+	}
+
 	b.WriteString("\nevidence (observations):\n")
 	for _, item := range report.Evidence {
 		detail := strings.SplitN(item.Detail, "\n", 2)[0]
@@ -543,6 +583,14 @@ func diagnosisText(report diagnosis.Report) string {
 		}
 	}
 	return b.String()
+}
+
+func idsToStrings(ids []domain.ID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
+	}
+	return out
 }
 
 func replayText(result diagnosis.ReplayResult) string {
