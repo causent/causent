@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -40,7 +42,7 @@ func TestLocalExecutorRunsAllowedCommand(t *testing.T) {
 	if res.Stdout != "hello\n" {
 		t.Fatalf("stdout = %q", res.Stdout)
 	}
-	if res.FirstOutputAt.IsZero() || res.StdoutBytes != len(res.Stdout) || !res.CleanupComplete {
+	if res.Status != domain.ExecutionSucceeded || res.FirstOutputAt.IsZero() || res.StdoutBytes != len(res.Stdout) || !res.CleanupComplete {
 		t.Fatalf("missing execution timing metadata: %#v", res)
 	}
 }
@@ -152,6 +154,9 @@ func TestLocalExecutorTimeout(t *testing.T) {
 	if !res.TimedOut {
 		t.Fatal("expected TimedOut to be set")
 	}
+	if res.Status != domain.ExecutionTimedOut {
+		t.Fatalf("status = %s, want %s", res.Status, domain.ExecutionTimedOut)
+	}
 	if !res.CleanupComplete {
 		t.Fatal("expected timed-out process cleanup to complete")
 	}
@@ -175,8 +180,37 @@ func TestLocalExecutorCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected cancellation error")
 	}
-	if !res.TimedOut {
-		t.Fatal("expected TimedOut to be set on cancellation")
+	if res.TimedOut {
+		t.Fatal("cancellation must not be reported as timeout")
+	}
+	if res.Status != domain.ExecutionCancelled {
+		t.Fatalf("status = %s, want %s", res.Status, domain.ExecutionCancelled)
+	}
+}
+
+func TestLocalExecutorTerminatesChildProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	ex := NewLocalExecutor(testPolicy(dir, 5*time.Second), NewArtifactFactory(filepath.Join(dir, "artifacts")))
+
+	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
+		Command: []string{"sh", "-c", "sleep 30 & echo $! > child.pid; wait"},
+		Dir:     dir,
+		Timeout: 100 * time.Millisecond,
+	})
+	if err == nil || res.Status != domain.ExecutionTimedOut {
+		t.Fatalf("expected bounded timeout, result=%#v err=%v", res, err)
+	}
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("read child pid: %v", readErr)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil {
+		t.Fatalf("parse child pid: %v", parseErr)
+	}
+	if err := syscall.Kill(pid, 0); err == nil {
+		t.Fatalf("child process %d survived process-group cleanup", pid)
 	}
 }
 
@@ -225,12 +259,16 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 	ex := NewDockerExecutor(p, NewArtifactFactory(filepath.Join(dir, "artifacts")), cp)
 
 	// Missing workspace must be rejected before any docker invocation.
-	if _, err := ex.Run(context.Background(), domain.ExecutionRequest{
+	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
 		Command: []string{"sh", "-c", "true"},
 		Dir:     dir,
 		Timeout: time.Second,
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected error for missing workspace path")
+	}
+	if res.Status != domain.ExecutionSetupFailed {
+		t.Fatalf("status = %s, want %s", res.Status, domain.ExecutionSetupFailed)
 	}
 
 	// Workspace escape via ".." must be rejected.
@@ -254,6 +292,38 @@ func TestDockerExecutorValidatesBeforeRunning(t *testing.T) {
 		InstanceID:    "no-image",
 	}); err == nil {
 		t.Fatal("expected error for missing container image")
+	}
+}
+
+func TestDockerExecutorTimeoutCleansUpWithBoundedResult(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	dockerPath := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nif [ \"$1\" = run ]; then sleep 30; exit 0; fi\nif [ \"$1\" = rm ]; then printf rm > " + logPath + "; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(dockerPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	policy := testPolicy(dir, time.Second)
+	policy.AllowedCommands["go"] = true
+	collect := CollectPolicy{Image: "test:latest", MaxOutput: 4096, Timeout: time.Second, MemoryLimitMB: 256, CPULimitPercent: 50, ProcessLimit: 32}
+	ex := NewDockerExecutor(policy, nil, collect)
+	res, err := ex.Run(context.Background(), domain.ExecutionRequest{
+		Command:       []string{"go", "test", "./..."},
+		Dir:           dir,
+		WorkspacePath: dir,
+		InstanceID:    "timeout-test",
+		Timeout:       50 * time.Millisecond,
+	})
+	if err == nil || res.Status != domain.ExecutionTimedOut {
+		t.Fatalf("expected timed out result, result=%#v err=%v", res, err)
+	}
+	if !res.CleanupComplete || res.CleanupDuration <= 0 {
+		t.Fatalf("expected bounded cleanup metadata: %#v", res)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected container cleanup command: %v", err)
 	}
 }
 

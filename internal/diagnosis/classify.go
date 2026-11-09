@@ -89,6 +89,9 @@ func classifyWithSignals(attempts []Attempt) (Classification, []string) {
 		} else {
 			unexecuted++
 		}
+		if a.Error != "" && !a.TimedOut {
+			unexecuted++
+		}
 		switch {
 		case a.Failed():
 			failures++

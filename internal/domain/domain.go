@@ -515,8 +515,21 @@ func (e *CancellationError) Error() string {
 	return "investigation cancelled"
 }
 
+type ExecutionStatus string
+
+const (
+	ExecutionSucceeded         ExecutionStatus = "succeeded"
+	ExecutionFailed            ExecutionStatus = "failed"
+	ExecutionTimedOut          ExecutionStatus = "timed_out"
+	ExecutionCancelled         ExecutionStatus = "cancelled"
+	ExecutionResourceExhausted ExecutionStatus = "resource_exhausted"
+	ExecutionSetupFailed       ExecutionStatus = "setup_failed"
+	ExecutionCleanupFailed     ExecutionStatus = "cleanup_failed"
+)
+
 // ExecutionResult represents the result of executing a command.
 type ExecutionResult struct {
+	Status             ExecutionStatus
 	ExitCode           int
 	Stdout             string
 	Stderr             string
@@ -532,6 +545,8 @@ type ExecutionResult struct {
 	StdoutBytes        int
 	StderrBytes        int
 	CleanupComplete    bool
+	CleanupDuration    time.Duration
+	ResourceLimits     map[string]string
 	TelemetryAvailable bool
 }
 

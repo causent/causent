@@ -84,7 +84,7 @@ type Attempt struct {
 
 // Failed reports whether this attempt observed the failing behaviour.
 func (a Attempt) Failed() bool {
-	return a.Executed && !a.TimedOut && a.ExitCode != 0
+	return a.Executed && !a.TimedOut && a.ExitCode != 0 && a.Error == ""
 }
 
 // Passed reports whether this attempt observed a clean run.
