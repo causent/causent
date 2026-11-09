@@ -744,10 +744,6 @@ func (d *Diagnoser) reproduce(ctx context.Context) (Baseline, Environment, strin
 		}
 	}
 	baseline.FinishedAt = time.Now().UTC()
-	// Keep the commit identifier canonical. git's combined output includes a
-	// trailing newline, and recording it verbatim makes replay treat the
-	// revision as invalid (for example, "<sha>\n^{commit}").
-	env.HeadCommit = strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-parse", "HEAD"))
 	return baseline, env, workspace, cleanup, nil
 }
 
