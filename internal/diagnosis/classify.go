@@ -223,10 +223,11 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 	}
 
 	statement := map[Classification]string{
-		ClassRealRegression:  "The failure reproduces deterministically in the current revision and is most likely a real regression rather than a flake or environment fault.",
-		ClassFlaky:           "The same command produced both passing and failing runs, so the failure is flaky rather than deterministic.",
-		ClassDependencyDrift: "The failure output matches dependency or toolchain errors, so the cause is most likely a version or toolchain mismatch rather than application logic.",
-		ClassInfrastructure:  "The failure output matches environment or infrastructure errors, so the cause is most likely the execution environment rather than application logic.",
+		ClassRealRegression:      "The failure reproduces deterministically in the current revision and is most likely a real regression rather than a flake or environment fault.",
+		ClassFlaky:               "The same command produced both passing and failing runs, so the failure is flaky rather than deterministic.",
+		ClassDependencyDrift:     "The failure output matches dependency or toolchain errors, so the cause is most likely a version or toolchain mismatch rather than application logic.",
+		ClassInfrastructure:      "The failure output matches environment or infrastructure errors, so the cause is most likely the execution environment rather than application logic.",
+		ClassTestFailureObserved: "CI evidence shows that a test or step failed in the recorded execution. This does not establish that the current change introduced the failure.",
 	}[class]
 	if statement != "" {
 		claims = append(claims, Claim{
@@ -282,12 +283,13 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 
 func confidence(class Classification, loc Localization, uncertainty []string) float64 {
 	base := map[Classification]float64{
-		ClassRealRegression:  0.75,
-		ClassFlaky:           0.8,
-		ClassDependencyDrift: 0.65,
-		ClassInfrastructure:  0.55,
-		ClassInconclusive:    0.0,
-		ClassNotReproduced:   0.0,
+		ClassRealRegression:      0.75,
+		ClassFlaky:               0.8,
+		ClassDependencyDrift:     0.65,
+		ClassInfrastructure:      0.55,
+		ClassTestFailureObserved: 0.45,
+		ClassInconclusive:        0.0,
+		ClassNotReproduced:       0.0,
 	}[class]
 
 	if loc.BisectResult != "" {
@@ -316,6 +318,9 @@ func confidence(class Classification, loc Localization, uncertainty []string) fl
 func defaultUncertainty(class Classification, loc Localization) []string {
 	items := []string{
 		"the classification is derived from exit codes and bounded command output, not from inspecting application state",
+	}
+	if class == ClassTestFailureObserved {
+		items = append(items, "a CI test failure was observed, but no base-versus-head comparison confirms that this change introduced it")
 	}
 	switch class {
 	case ClassFlaky:

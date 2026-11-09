@@ -56,12 +56,22 @@ func TestDecideReproductionDefersWhenEvidenceIsComplete(t *testing.T) {
 
 func TestDecideReproductionRequiresIncompleteEvidence(t *testing.T) {
 	decision := DecideReproduction(NormalizedEvidence{Executions: []CIExecution{{State: StateTimedOut}}}, []string{"go", "test", "./pkg/failing"})
-	if !decision.Required || decision.Command[0] != "go" {
+	if !decision.Required || decision.Reason != ReasonIncompleteEvidence || decision.Command[0] != "go" || decision.ExpectedQuestion == "" {
 		t.Fatalf("decision=%#v", decision)
 	}
 }
 
-func TestDiagnoseEvidenceDoesNotCallExecutor(t *testing.T) {
+func TestDecideReproductionIdentifiesConflictingEvidence(t *testing.T) {
+	decision := DecideReproduction(NormalizedEvidence{Executions: []CIExecution{
+		{State: StateFailed},
+		{State: StatePassed},
+	}}, []string{"go", "test", "./pkg/failing"})
+	if !decision.Required || decision.Reason != ReasonFlakyTestVerification {
+		t.Fatalf("decision=%#v", decision)
+	}
+}
+
+func TestDiagnoseEvidenceDoesNotCallExecutorOrClaimRegression(t *testing.T) {
 	got, err := DiagnoseEvidence(context.Background(), Config{
 		RepoPath: "/does/not/need/to/exist",
 		Evidence: nil,
@@ -69,7 +79,7 @@ func TestDiagnoseEvidenceDoesNotCallExecutor(t *testing.T) {
 		State:       StateFailed,
 		RawEvidence: []RawCIEvidence{{ID: "raw-1", Kind: "ci_log", Content: "FAIL TestBroken"}},
 	}}})
-	if err != nil || got.Classification != ClassRealRegression || got.ReproductionStatus != "deferred" {
+	if err != nil || got.Classification != ClassTestFailureObserved || got.ReproductionStatus != "deferred" {
 		t.Fatalf("report=%#v err=%v", got, err)
 	}
 	if got.ReproductionDeferredReason == "" {

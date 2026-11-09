@@ -28,13 +28,14 @@ import (
 type Classification string
 
 const (
-	ClassRealRegression  Classification = "real_regression"
-	ClassFlaky           Classification = "flaky"
-	ClassDependencyDrift Classification = "dependency_or_toolchain_drift"
-	ClassInfrastructure  Classification = "infrastructure_or_environment"
-	ClassInconclusive    Classification = "inconclusive"
-	ClassNotReproduced   Classification = "not_reproduced"
-	ClassPreExisting     Classification = "pre_existing_failure"
+	ClassRealRegression      Classification = "real_regression"
+	ClassFlaky               Classification = "flaky"
+	ClassDependencyDrift     Classification = "dependency_or_toolchain_drift"
+	ClassInfrastructure      Classification = "infrastructure_or_environment"
+	ClassInconclusive        Classification = "inconclusive"
+	ClassNotReproduced       Classification = "not_reproduced"
+	ClassPreExisting         Classification = "pre_existing_failure"
+	ClassTestFailureObserved Classification = "test_failure_observed"
 )
 
 // Event names emitted to the event store and to events.jsonl.
@@ -626,7 +627,7 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.NormalizedEvidence = &evidence
 	report.Baseline = normalizedBaseline(evidence, cfg.Command)
 	report.ReproductionDecision = DecideReproduction(evidence, cfg.Command)
-	report.Classification = Classify(report.Baseline.Results)
+	report.Classification = classifyNormalizedEvidence(evidence, report.Baseline)
 	report.Environment = Environment{RepoPath: cfg.RepoPath, Isolation: "external CI evidence"}
 	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
@@ -688,6 +689,7 @@ func normalizedBaseline(input NormalizedEvidence, command []string) Baseline {
 		for _, raw := range exec.RawEvidence {
 			text += raw.Content + "\n"
 		}
+
 		a := Attempt{Index: i, Executed: exec.State != StateNotExecuted && exec.State != StateUnknown && exec.State != StateCancelled && exec.State != StateSkipped, Stderr: bound(text, MaxEvidenceExcerpt), StderrDigest: digestString(text)}
 		a.TimedOut = exec.State == StateTimedOut
 		if exec.State == StateCancelled || exec.State == StateUnknown {
@@ -711,6 +713,14 @@ func normalizedBaseline(input NormalizedEvidence, command []string) Baseline {
 	b.Attempts = len(b.Results)
 	b.FinishedAt = time.Now().UTC()
 	return b
+}
+
+func classifyNormalizedEvidence(input NormalizedEvidence, baseline Baseline) Classification {
+	class := Classify(baseline.Results)
+	if class == ClassRealRegression {
+		return ClassTestFailureObserved
+	}
+	return class
 }
 
 func isTimeoutOrCancel(err error) bool {

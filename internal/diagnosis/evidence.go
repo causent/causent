@@ -75,28 +75,59 @@ type NormalizedEvidence struct {
 	Limitations []string        `json:"limitations,omitempty"`
 }
 
+type ReproductionReason string
+
+const (
+	ReasonIncompleteEvidence    ReproductionReason = "incomplete_evidence"
+	ReasonConflictingEvidence   ReproductionReason = "conflicting_evidence"
+	ReasonFlakyTestVerification ReproductionReason = "flaky_test_verification"
+	ReasonRuntimeHypothesis     ReproductionReason = "runtime_hypothesis_verification"
+	ReasonNoExecutionEvidence   ReproductionReason = "no_execution_evidence"
+	ReasonEvidenceSufficient    ReproductionReason = "evidence_sufficient"
+)
+
 // ReproductionDecision records whether another execution could materially
 // improve an evidence-first diagnosis. It does not execute anything.
 type ReproductionDecision struct {
-	Required bool     `json:"required"`
-	Reason   string   `json:"reason"`
-	Command  []string `json:"command,omitempty"`
+	Required         bool               `json:"required"`
+	Reason           ReproductionReason `json:"reason"`
+	Explanation      string             `json:"explanation"`
+	Command          []string           `json:"command,omitempty"`
+	ExpectedQuestion string             `json:"expected_question,omitempty"`
 }
 
 func DecideReproduction(input NormalizedEvidence, command []string) ReproductionDecision {
 	if len(input.Executions) == 0 {
-		return ReproductionDecision{Required: true, Reason: "no execution evidence was supplied", Command: command}
+		return ReproductionDecision{
+			Required: true, Reason: ReasonNoExecutionEvidence,
+			Explanation: "no execution evidence was supplied",
+			Command:     command, ExpectedQuestion: "What happens when the relevant command is executed on the target revision?",
+		}
 	}
+	var failed, passed bool
 	for _, execution := range input.Executions {
+		failed = failed || execution.State == StateFailed
+		passed = passed || execution.State == StatePassed
 		switch execution.State {
 		case StateUnknown, StateCancelled, StateTimedOut, StateNotExecuted:
-			return ReproductionDecision{Required: true, Reason: "execution evidence is incomplete", Command: command}
+			return ReproductionDecision{
+				Required: true, Reason: ReasonIncompleteEvidence,
+				Explanation: "execution evidence is incomplete",
+				Command:     command, ExpectedQuestion: "Did the relevant command actually execute and what result did it produce?",
+			}
+		}
+	}
+	if failed && passed {
+		return ReproductionDecision{
+			Required: true, Reason: ReasonFlakyTestVerification,
+			Explanation: "evidence contains both passing and failing executions",
+			Command:     command, ExpectedQuestion: "Is the observed failure reproducible or intermittent on the target revision?",
 		}
 	}
 	return ReproductionDecision{
-		Required: false,
-		Reason:   "execution evidence is complete enough for an initial diagnosis",
-		Command:  command,
+		Required: false, Reason: ReasonEvidenceSufficient,
+		Explanation: "execution evidence is complete enough for an initial diagnosis",
+		Command:     command,
 	}
 }
 
