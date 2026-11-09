@@ -743,9 +743,9 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	if cfg.BaseRef != "" && cfg.RepoPath != "" {
 		base := strings.TrimSpace(gitOutput(cfg.RepoPath, "rev-parse", cfg.BaseRef))
 		if base != "" && report.Environment.HeadCommit != "" {
-			for _, path := range strings.Split(gitOutput(cfg.RepoPath, "diff", "--name-only", base+"..."+report.Environment.HeadCommit), "\n") {
+			for _, path := range strings.Split(gitOutput(cfg.RepoPath, "diff", "--name-only", base, report.Environment.HeadCommit), "\n") {
 				path = strings.TrimSpace(path)
-				if path != "" && !containsPath(report.Localization.LikelyFiles, path) {
+				if path != "" && !strings.HasPrefix(path, "fatal:") && !strings.HasPrefix(path, "error:") && !containsPath(report.Localization.LikelyFiles, path) {
 					report.Localization.LikelyFiles = append(report.Localization.LikelyFiles, path)
 				}
 			}
@@ -792,7 +792,9 @@ func normalizedReportEvidence(input NormalizedEvidence) []EvidenceItem {
 			continue
 		}
 		seen[raw.ID] = true
-		excerpt, limits := boundedCIEvidence(raw.Kind, raw.Content, MaxEvidenceExcerpt)
+		// Keep enough normalized evidence for stack frames and failure sections
+		// that may sit between the log prefix and suffix.
+		excerpt, limits := boundedCIEvidence(raw.Kind, raw.Content, 64<<10)
 		out = append(out, EvidenceItem{ID: raw.ID, Kind: raw.Kind, Source: raw.Provenance.Provider, Digest: digestString(raw.Content), Detail: excerpt.Content, Provenance: raw.Provenance.URI, Limitations: append(raw.Limitations, limits...)})
 	}
 	return out
