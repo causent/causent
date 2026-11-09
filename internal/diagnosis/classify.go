@@ -79,11 +79,19 @@ func Classify(attempts []Attempt) Classification {
 
 func classifyWithSignals(attempts []Attempt) (Classification, []string) {
 	if len(attempts) == 0 {
-		return ClassNotReproduced, nil
+		return ClassInconclusive, []string{"no attempts were executed"}
 	}
-	failures, passes, timedOut := 0, 0, 0
+	failures, passes, timedOut, executed, unexecuted := 0, 0, 0, 0, 0
 	var output strings.Builder
 	for _, a := range attempts {
+		if a.Executed {
+			executed++
+		} else {
+			unexecuted++
+		}
+		if a.Error != "" && !a.TimedOut {
+			unexecuted++
+		}
 		switch {
 		case a.Failed():
 			failures++
@@ -99,33 +107,48 @@ func classifyWithSignals(attempts []Attempt) (Classification, []string) {
 		}
 	}
 
-	if failures == 0 {
-		return ClassNotReproduced, nil
-	}
 	// Mixed outcomes across identical runs are the definition of a flake.
 	if passes > 0 {
-		return ClassFlaky, nil
+		if failures > 0 {
+			return ClassFlaky, nil
+		}
+		if timedOut > 0 || unexecuted > 0 {
+			return ClassInconclusive, []string{"completed pass mixed with incomplete execution"}
+		}
+		return ClassNotReproduced, nil
 	}
-
-	text := strings.ToLower(output.String())
-	// A timeout on every attempt is an environment/limit observation. It can
-	// hide a hang introduced by a regression, which is recorded as uncertainty.
-	if timedOut == failures {
-		return ClassInfrastructure, []string{"all attempts timed out"}
+	// A timeout is neither a failure nor a pass. In particular, do not turn
+	// timeout-only or unexecuted runs into "not reproduced".
+	if failures == 0 {
+		switch {
+		case timedOut > 0:
+			return ClassInconclusive, []string{"all executed attempts timed out"}
+		case unexecuted > 0:
+			return ClassInconclusive, []string{"one or more attempts did not execute"}
+		case executed == 0:
+			return ClassInconclusive, []string{"no attempt produced a process result"}
+		default:
+			return ClassNotReproduced, nil
+		}
 	}
-
-	infra := matchSignals(text, infrastructureSignals)
-	deps := matchSignals(text, dependencySignals)
-	switch {
-	case len(infra) > 0 && len(deps) > len(infra):
-		return ClassDependencyDrift, deps
-	case len(infra) > 0:
-		return ClassInfrastructure, infra
-	case len(deps) > 0:
-		return ClassDependencyDrift, deps
-	default:
-		return ClassRealRegression, nil
+	// A completed failure remains a failure even when another attempt timed out.
+	// Only a run made entirely of timeouts is classified as inconclusive.
+	if failures > 0 {
+		text := strings.ToLower(output.String())
+		infra := matchSignals(text, infrastructureSignals)
+		deps := matchSignals(text, dependencySignals)
+		switch {
+		case len(infra) > 0 && len(deps) > len(infra):
+			return ClassDependencyDrift, deps
+		case len(infra) > 0:
+			return ClassInfrastructure, infra
+		case len(deps) > 0:
+			return ClassDependencyDrift, deps
+		default:
+			return ClassRealRegression, nil
+		}
 	}
+	return ClassInconclusive, []string{"execution outcome was inconclusive"}
 }
 
 func matchSignals(text string, signals []string) []string {
@@ -203,10 +226,12 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 	}
 
 	statement := map[Classification]string{
-		ClassRealRegression:  "The failure reproduces deterministically in the current revision and is most likely a real regression rather than a flake or environment fault.",
-		ClassFlaky:           "The same command produced both passing and failing runs, so the failure is flaky rather than deterministic.",
-		ClassDependencyDrift: "The failure output matches dependency or toolchain errors, so the cause is most likely a version or toolchain mismatch rather than application logic.",
-		ClassInfrastructure:  "The failure output matches environment or infrastructure errors, so the cause is most likely the execution environment rather than application logic.",
+		ClassRealRegression:      "The failure reproduces deterministically in the current revision and is most likely a real regression rather than a flake or environment fault.",
+		ClassFlaky:               "The same command produced both passing and failing runs, so the failure is flaky rather than deterministic.",
+		ClassDependencyDrift:     "The failure output matches dependency or toolchain errors, so the cause is most likely a version or toolchain mismatch rather than application logic.",
+		ClassInfrastructure:      "The failure output matches environment or infrastructure errors, so the cause is most likely the execution environment rather than application logic.",
+		ClassTestFailureObserved: "CI evidence shows that a test or step failed in the recorded execution. This does not establish that the current change introduced the failure.",
+		ClassLintFailureObserved: "CI evidence shows that a linter or static analysis check failed in the recorded execution. This does not establish that the current change introduced the failure.",
 	}[class]
 	if statement != "" {
 		claims = append(claims, Claim{
@@ -241,11 +266,17 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 	}
 
 	if len(loc.LikelyFiles) > 0 {
+		support := []string{}
+		for _, item := range evidence {
+			if item.ID == "E-git-diff" || item.Kind == "observed_source_location" {
+				support = append(support, item.ID)
+			}
+		}
 		claims = append(claims, Claim{
 			ID:         "H-affected-files",
 			Statement:  "The most likely affected files are " + strings.Join(loc.LikelyFiles, ", "),
 			Confidence: 0.5,
-			Supporting: []string{"E-git-diff"},
+			Supporting: support,
 		})
 	}
 
@@ -262,11 +293,14 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 
 func confidence(class Classification, loc Localization, uncertainty []string) float64 {
 	base := map[Classification]float64{
-		ClassRealRegression:  0.75,
-		ClassFlaky:           0.8,
-		ClassDependencyDrift: 0.65,
-		ClassInfrastructure:  0.55,
-		ClassNotReproduced:   0.0,
+		ClassRealRegression:      0.75,
+		ClassFlaky:               0.8,
+		ClassDependencyDrift:     0.65,
+		ClassInfrastructure:      0.55,
+		ClassTestFailureObserved: 0.45,
+		ClassLintFailureObserved: 0.45,
+		ClassInconclusive:        0.0,
+		ClassNotReproduced:       0.0,
 	}[class]
 
 	if loc.BisectResult != "" {
@@ -296,6 +330,13 @@ func defaultUncertainty(class Classification, loc Localization) []string {
 	items := []string{
 		"the classification is derived from exit codes and bounded command output, not from inspecting application state",
 	}
+	if class == ClassTestFailureObserved {
+		items = append(items, "a CI test failure was observed, but no base-versus-head comparison confirms that this change introduced it")
+	}
+	if class == ClassLintFailureObserved {
+		items = append(items, "a CI lint failure was observed, but no base-versus-head comparison confirms that this change introduced it")
+		items = append(items, "lint-hints checks may report findings that maintainers consider acceptable to merge; consult project guidelines before assuming all findings must be fixed")
+	}
 	switch class {
 	case ClassFlaky:
 		items = append(items, "flakiness depends on machine load and timing; the observed ratio is not a calibrated probability")
@@ -303,12 +344,18 @@ func defaultUncertainty(class Classification, loc Localization) []string {
 		items = append(items, "an environment fault can mask an underlying regression, so the cause may be conflated")
 	case ClassDependencyDrift:
 		items = append(items, "matching dependency error text does not prove the dependency is the only difference between revisions")
+	case ClassInconclusive:
+		items = append(items, "timeouts or incomplete execution do not establish failure, success, compilation, or test behavior")
 	}
-	if loc.BisectResult == "" {
-		items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")
-	}
-	if loc.LastKnownGood == "" {
-		items = append(items, "no known-good commit was found within the search bound, so the introduction point is unknown")
+	// Only include bisect/localization uncertainty when those investigations ran.
+	// If bisect was deferred (evidence-only mode), these uncertainties are irrelevant.
+	if !strings.Contains(loc.BisectStatus, "deferred") {
+		if loc.BisectResult == "" {
+			items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")
+		}
+		if loc.LastKnownGood == "" {
+			items = append(items, "no known-good commit was found within the search bound, so the introduction point is unknown")
+		}
 	}
 	return items
 }

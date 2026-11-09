@@ -67,6 +67,27 @@ Artifact ingestion is bounded, redacts common secret-shaped values, and records
 provenance and limitations. Missing or incomplete artifacts are uncertainty,
 not evidence that the failure did not occur.
 
+Integrations can also normalize provider output and skip local execution:
+
+```go
+evidence, _ := diagnosis.ParseJUnitXML(xml, diagnosis.EvidenceProvenance{Provider: "github-actions"})
+report, _ := diagnosis.DiagnoseEvidence(ctx, diagnosis.Config{RepoPath: repo}, evidence)
+```
+
+Evidence-first reports preserve workflow/job/step identity, bounded raw
+provenance, parser limitations, and explicit deferred reproduction status.
+Call `diagnosis.DecideReproduction(evidence, command)` before scheduling any
+rerun; complete failure or pass observations defer reproduction, while timeout,
+cancellation, unknown, or missing execution evidence requests a targeted
+follow-up instead of an entire suite rerun.
+
+For an offline replay of previously collected CI evidence:
+
+```sh
+malenia evidence --ci-log failed-job.log --junit test-results.xml \
+  --command 'go test ./...' --output diagnosis.json
+```
+
 Run the explicit experimental repair workflow:
 
 ```sh
@@ -151,6 +172,15 @@ reproduction and revision probes for the fast path. The report marks the
 baseline source as `ci_artifact` and states when localization or reproduction
 was deferred. Evidence is not proof of root cause; candidates, hypotheses, and
 verified causes remain separate.
+
+Evidence-only execution also applies when reproduction is inconclusive or a
+failure is not reproduced. It preserves failure evidence and publishes a
+partial report without repository-wide overview, indexing, cache lookup, or
+historical graph expansion. Stack frames may appear as `observed_frame`
+locations; they are execution observations, not inspected source symbols or
+verified root causes. Timeout-only and pass-plus-timeout executions are
+classified as `inconclusive`, never as successful reproduction or proof that
+the failure is absent.
 
 Supported environment adapters currently include Go, Node.js, Python, Rust,
 and Bazel. Repository-specific commands should still be reviewed explicitly.

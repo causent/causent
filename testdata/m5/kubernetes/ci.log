@@ -1,0 +1,5 @@
+go test ./...
+?   	k8s.io/kubernetes/build/pause/windows/wincat	[no test files]
+ok  	k8s.io/kubernetes/cluster/gce/gci	3.291s
+go: command timed out after 120s
+context deadline exceeded

@@ -231,6 +231,10 @@ jobs:
           INPUT_ATTEMPTS: ${{ inputs.attempts }}
           INPUT_DOCKER_IMAGE: ${{ inputs.docker_image }}
           INPUT_BASE: ${{ steps.revisions.outputs.base }}
+          MALENIA_CI_PROVIDER: github-actions
+          MALENIA_CI_RUN_ID: ${{ inputs.run_id }}
+          MALENIA_CI_PR_NUMBER: ${{ steps.revisions.outputs.pr }}
+          MALENIA_CI_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}
           INPUT_CI_LOG: ${{ runner.temp }}/malenia-failed.log
           INPUT_ARTIFACT_DIR: ${{ runner.temp }}/malenia-artifacts
         run: |
@@ -294,6 +298,15 @@ jobs:
               (if .comparison then
                 "**Base/head**: base \(.comparison.base.failures)/\(.comparison.base.attempts), head \(.comparison.head.failures)/\(.comparison.head.attempts) → `\(.comparison.verdict)`  "
               else empty end),
+              (if .comparison then
+                (if .comparison.verdict == "real_regression" then
+                  "**PR relationship**: the head failed while the base passed; the PR is implicated by controlled comparison  "
+                elif .comparison.verdict == "pre_existing_failure" then
+                  "**PR relationship**: the same command failed on the base; the failure is pre-existing  "
+                else
+                  "**PR relationship**: base/head evidence is not sufficient to attribute the failure to this PR  "
+                end)
+              else empty end),
               (if .localization.first_known_bad then
                 "**First known bad**: `\(.localization.first_known_bad)`  "
               else empty end),
@@ -301,6 +314,12 @@ jobs:
               "",
               (if ((.localization.likely_files // []) | length) > 0 then
                 "**Likely files**:\n" + ((.localization.likely_files // []) | map("- `\(.)`") | join("\n"))
+              else empty end),
+              (if ((.candidates // []) | length) > 0 then
+                "**Inspected source candidates**:\n" + ((.candidates[0:5] // []) | map("- `" + (.location.file_path // "unknown") + "` — " + (.location.symbol_identity // "unresolved") + " (" + (.location.location_type // "unknown") + ")") | join("\n"))
+              else empty end),
+              (if ((.execution_paths // []) | length) > 0 then
+                "**Execution paths**:\n" + ((.execution_paths[0:5] // []) | map("- " + .summary) | join("\n"))
               else empty end),
               "",
               (if ((.claims // []) | length) > 0 then
@@ -453,6 +472,7 @@ jobs:
           groups="$(jq -r '(.failure_groups // []) | if length == 0 then "none recorded" else map("\(.status): \(.failure_ids | join(", "))") | join("; ") end' "$report")"
           episodes="$(jq -r '(.failure_episodes // []) | if length == 0 then "none recorded" else map((.test_identifier // "unknown test") + ": " + (.failure_message // "")) | .[0:10] | join("; ") end' "$report")"
           hypotheses="$(jq -r '(.hypotheses // []) | if length == 0 then "none recorded" else map("[\(.status)] \(.statement)") | .[0:3] | join("; ") end' "$report")"
+          paths="$(jq -r '(.execution_paths // []) | if length == 0 then "none reconstructed" else map(.summary) | .[0:3] | join("; ") end' "$report")"
           confidence="$(jq -r '((.confidence // 0) * 100 | floor | tostring) + "%"' "$report")"
           failure="$(jq -r '.baseline.results[0].stderr_excerpt // ""' "$report" | grep -E -- '--- FAIL:|^FAIL' | head -3 | tr '\n' ' ' || true)"
           artifact_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -474,6 +494,8 @@ jobs:
           **Failed tests/episodes:** ${episodes}
 
           **Hypotheses:** ${hypotheses}
+
+          **Execution paths:** ${paths}
 
           **Observed failure:** ${failure:-No failure line extracted}
 

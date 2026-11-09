@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,11 +96,20 @@ type boundedBuffer struct {
 	data      []byte
 	max       int
 	truncated bool
+	firstAt   time.Time
+	total     int
+	mu        sync.Mutex
 }
 
 const defaultOutputLimit = 64 << 10
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.firstAt.IsZero() && len(p) > 0 {
+		b.firstAt = time.Now()
+	}
+	b.total += len(p)
 	if b.max <= 0 {
 		b.data = append(b.data, p...)
 		return len(p), nil
@@ -118,7 +128,17 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) String() string { return string(b.data) }
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}
+
+func (b *boundedBuffer) Metadata() (time.Time, int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.firstAt, b.total, b.truncated
+}
 
 // Request is an alias for domain.ExecutionRequest.
 type Request = domain.ExecutionRequest
@@ -215,20 +235,28 @@ func NewLocalExecutor(policy Policy, artifactFactory *ArtifactFactory) *LocalExe
 // Run executes a command with the given request and returns the result.
 func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (domain.ExecutionResult, error) {
 	if len(req.Command) == 0 {
-		return domain.ExecutionResult{}, fmt.Errorf("command is required")
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("command is required")
+	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = e.policy.Timeout
+	}
+	if timeout <= 0 {
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("execution timeout is required")
 	}
 	//Validate policy
-	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
-		return domain.ExecutionResult{}, err
+	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, timeout); err != nil {
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, err
 	}
 	//Enforce the requested timeout
-	if req.Timeout > 0 {
+	executionCtx := ctx
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		executionCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	//Create command
-	c := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
+	c := exec.CommandContext(executionCtx, req.Command[0], req.Command[1:]...)
 	// Commands such as go test spawn compiler and linker children. Keep the
 	// whole process tree in one group so a timeout cannot leave descendants
 	// running and block the executor indefinitely.
@@ -257,7 +285,7 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 	started := time.Now()
 	if err := c.Start(); err != nil {
 		slog.Warn("execution failed to start", "command", req.Command[0], "dir", req.Dir, "error", err)
-		return domain.ExecutionResult{}, err
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, err
 	}
 
 	//Wait for command with timeout
@@ -270,22 +298,37 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 	case err := <-done:
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		result := domain.ExecutionResult{
-			ExitCode:   c.ProcessState.ExitCode(),
-			Stdout:     stdout,
-			Stderr:     stderr,
-			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:   false,
-			Duration:   time.Since(started),
-			StartedAt:  started,
-			FinishedAt: time.Now(),
+			Status:             domain.ExecutionSucceeded,
+			ExitCode:           c.ProcessState.ExitCode(),
+			Stdout:             stdout,
+			Stderr:             stderr,
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           false,
+			Duration:           time.Since(started),
+			StartedAt:          started,
+			FirstOutputAt:      firstOutput,
+			FinishedAt:         time.Now(),
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    true,
+			ResourceLimits:     map[string]string{"timeout": timeout.String(), "max_output_bytes": fmt.Sprintf("%d", maxOut)},
+			TelemetryAvailable: true,
 		}
 		if err != nil {
-			if ctx.Err() != nil {
-				result.TimedOut = true
+			if executionCtx.Err() != nil {
+				result.Status = domain.ExecutionFailed
+				result.TimedOut = executionCtx.Err() == context.DeadlineExceeded
 			} else {
 				result.TimedOut = false
 				result.Error = err.Error()
+				result.Status = domain.ExecutionFailed
 			}
 		}
 		slog.Debug("execution completed",
@@ -296,20 +339,53 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 			"stderr_bytes", len(stderr),
 			"duration", result.Duration.String())
 		return result, nil
-	case <-ctx.Done():
+	case <-executionCtx.Done():
+		cleanupStarted := time.Now()
 		if err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL); err != nil {
 			_ = c.Process.Kill()
 		}
-		slog.Warn("execution cancelled", "command", req.Command[0], "dir", req.Dir, "after", time.Since(started).String())
+		cleanupComplete := false
+		select {
+		case <-done:
+			cleanupComplete = true
+		case <-time.After(2 * time.Second):
+		}
+		cleanupDuration := time.Since(cleanupStarted)
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
+		status := domain.ExecutionCancelled
+		if executionCtx.Err() == context.DeadlineExceeded {
+			status = domain.ExecutionTimedOut
+		}
+		if !cleanupComplete {
+			status = domain.ExecutionCleanupFailed
+		}
+		slog.Warn("execution stopped", "command", req.Command[0], "dir", req.Dir, "status", status, "after", time.Since(started).String())
+		err := ctx.Err()
+		if err == nil {
+			err = executionCtx.Err()
+		}
 		return domain.ExecutionResult{
-			ExitCode:  -1,
-			Stdout:    stdoutBuf.String(),
-			Stderr:    stderrBuf.String(),
-			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:  true,
-			Duration:  time.Since(started),
-			StartedAt: started,
-		}, ctx.Err()
+			Status:             status,
+			ExitCode:           -1,
+			Stdout:             stdoutBuf.String(),
+			Stderr:             stderrBuf.String(),
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           status == domain.ExecutionTimedOut,
+			Duration:           time.Since(started),
+			StartedAt:          started,
+			FirstOutputAt:      firstOutput,
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    cleanupComplete,
+			CleanupDuration:    cleanupDuration,
+			ResourceLimits:     map[string]string{"timeout": timeout.String(), "max_output_bytes": fmt.Sprintf("%d", maxOut)},
+			TelemetryAvailable: true,
+		}, err
 	}
 }
 
@@ -369,16 +445,24 @@ func NewDockerExecutor(policy Policy, artifactFactory *ArtifactFactory, collectP
 // Run executes a command inside a Docker container.
 func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (domain.ExecutionResult, error) {
 	if len(req.Command) == 0 {
-		return domain.ExecutionResult{}, fmt.Errorf("command is required")
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("command is required")
+	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = e.collectPolicy.Timeout
+	}
+	if timeout <= 0 {
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("execution timeout is required")
 	}
 	//Validate policy
-	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
-		return domain.ExecutionResult{}, err
+	if err := e.policy.Validate(req.Command[0], req.Dir, req.Environ, req.MaxOutput, timeout); err != nil {
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, err
 	}
 	//Enforce the requested timeout
-	if req.Timeout > 0 {
+	executionCtx := ctx
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		executionCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -389,25 +473,25 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 
 	//Validate workspace
 	if workspacePath == "" {
-		return domain.ExecutionResult{}, fmt.Errorf("workspace path required")
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("workspace path required")
 	}
 	if !filepath.IsAbs(workspacePath) {
-		return domain.ExecutionResult{}, fmt.Errorf("workspace path must be absolute: %s", workspacePath)
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("workspace path must be absolute: %s", workspacePath)
 	}
 
 	//Prevent path traversal
 	if strings.Contains(workspacePath, "..") {
-		return domain.ExecutionResult{}, fmt.Errorf("workspace path contains forbidden '..': %s", workspacePath)
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("workspace path contains forbidden '..': %s", workspacePath)
 	}
 
 	//Validate instance ID
 	if instanceID == "" {
-		return domain.ExecutionResult{}, fmt.Errorf("instance ID required")
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("instance ID required")
 	}
 
 	//Validate collect policy once the request shape is known.
 	if err := e.collectPolicy.Validate(req.Command, req.Dir, req.Environ, req.MaxOutput, req.Timeout); err != nil {
-		return domain.ExecutionResult{}, err
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, err
 	}
 
 	//Prepare container command
@@ -435,7 +519,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	args = append(args, req.Command...)
 
 	//Execute container
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(executionCtx, "docker", args...)
 	maxOut := req.MaxOutput
 	if maxOut == 0 {
 		maxOut = e.collectPolicy.MaxOutput
@@ -456,7 +540,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		}
 	}()
 	if err := cmd.Start(); err != nil {
-		return domain.ExecutionResult{}, fmt.Errorf("docker start: %w", err)
+		return domain.ExecutionResult{Status: domain.ExecutionSetupFailed}, fmt.Errorf("docker start: %w", err)
 	}
 	containerStarted = true
 	startedAt := time.Now()
@@ -471,42 +555,97 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	case err := <-done:
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		result := domain.ExecutionResult{
-			ExitCode:   cmd.ProcessState.ExitCode(),
-			Stdout:     stdout,
-			Stderr:     stderr,
-			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:   false,
-			Duration:   time.Since(startedAt),
-			StartedAt:  startedAt,
-			FinishedAt: time.Now(),
+			Status:             domain.ExecutionSucceeded,
+			ExitCode:           cmd.ProcessState.ExitCode(),
+			Stdout:             stdout,
+			Stderr:             stderr,
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           false,
+			Duration:           time.Since(startedAt),
+			StartedAt:          startedAt,
+			FirstOutputAt:      firstOutput,
+			FinishedAt:         time.Now(),
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    true,
+			ResourceLimits:     map[string]string{"timeout": timeout.String(), "max_output_bytes": fmt.Sprintf("%d", maxOut), "memory_mb": fmt.Sprintf("%d", e.collectPolicy.MemoryLimitMB), "cpu_percent": fmt.Sprintf("%d", e.collectPolicy.CPULimitPercent), "pids": fmt.Sprintf("%d", e.collectPolicy.ProcessLimit)},
+			TelemetryAvailable: true,
 		}
 		// docker exits 125 for daemon/CLI failures (bad image, no daemon),
 		// which is not a test failure and must not look like one.
 		if result.ExitCode == 125 {
 			result.Error = "docker could not start the container: " + strings.TrimSpace(stderr)
+			result.Status = domain.ExecutionSetupFailed
+		} else if result.ExitCode == 137 && e.collectPolicy.MemoryLimitMB > 0 {
+			result.Error = "container was killed, possibly by its memory limit"
+			result.Status = domain.ExecutionResourceExhausted
+			result.OOMKilled = true
 		} else if err != nil && ctx.Err() == nil {
 			result.Error = err.Error()
+			result.Status = domain.ExecutionFailed
+		} else if result.ExitCode != 0 {
+			result.Status = domain.ExecutionFailed
 		}
 		return result, nil
-	case <-ctx.Done():
+	case <-executionCtx.Done():
+		cleanupStarted := time.Now()
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		res := domain.ExecutionResult{
-			ExitCode:  -1,
-			Stdout:    stdoutBuf.String(),
-			Stderr:    stderrBuf.String(),
-			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:  true,
-			StartedAt: startedAt,
+			ExitCode:           -1,
+			Stdout:             stdoutBuf.String(),
+			Stderr:             stderrBuf.String(),
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           true,
+			StartedAt:          startedAt,
+			FirstOutputAt:      firstOutput,
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			TelemetryAvailable: true,
 		}
 		//Cleanup is best effort; failures are reported, not silently ignored.
-		if cleanupErr := e.cleanupContainer(ctx, name); cleanupErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cleanupErr := e.cleanupContainer(cleanupCtx, name)
+		cancel()
+		if cleanupErr != nil {
 			res.Error = "container cleanup failed: " + cleanupErr.Error()
+			res.Status = domain.ExecutionCleanupFailed
 			slog.Warn("container cleanup failed", "container", name, "error", cleanupErr)
+		} else {
+			res.CleanupComplete = true
 		}
-		//The docker CLI may still be waiting; --rm plus the explicit rm above
-		//guarantee the container itself is gone.
-		<-done
-		return res, ctx.Err()
+		//The docker CLI may still be waiting; bound the wait so a broken daemon
+		//cannot hold the investigation open forever.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			res.Status = domain.ExecutionCleanupFailed
+			res.CleanupComplete = false
+		}
+		res.CleanupDuration = time.Since(cleanupStarted)
+		if res.Status == "" {
+			if ctx.Err() == context.Canceled {
+				res.Status = domain.ExecutionCancelled
+			} else {
+				res.Status = domain.ExecutionTimedOut
+			}
+		}
+		err := ctx.Err()
+		if err == nil {
+			err = executionCtx.Err()
+		}
+		return res, err
 	}
 }
 

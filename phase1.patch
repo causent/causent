@@ -1,0 +1,878 @@
+diff --git a/README.md b/README.md
+index a7e488e..057f7bf 100644
+--- a/README.md
++++ b/README.md
+@@ -152,6 +152,15 @@ baseline source as `ci_artifact` and states when localization or reproduction
+ was deferred. Evidence is not proof of root cause; candidates, hypotheses, and
+ verified causes remain separate.
+ 
++Evidence-only execution also applies when reproduction is inconclusive or a
++failure is not reproduced. It preserves failure evidence and publishes a
++partial report without repository-wide overview, indexing, cache lookup, or
++historical graph expansion. Stack frames may appear as `observed_frame`
++locations; they are execution observations, not inspected source symbols or
++verified root causes. Timeout-only and pass-plus-timeout executions are
++classified as `inconclusive`, never as successful reproduction or proof that
++the failure is absent.
++
+ Supported environment adapters currently include Go, Node.js, Python, Rust,
+ and Bazel. Repository-specific commands should still be reviewed explicitly.
+ 
+diff --git a/internal/diagnosis/classify.go b/internal/diagnosis/classify.go
+index e127a70..2701a80 100644
+--- a/internal/diagnosis/classify.go
++++ b/internal/diagnosis/classify.go
+@@ -79,11 +79,16 @@ func Classify(attempts []Attempt) Classification {
+ 
+ func classifyWithSignals(attempts []Attempt) (Classification, []string) {
+ 	if len(attempts) == 0 {
+-		return ClassNotReproduced, nil
++		return ClassInconclusive, []string{"no attempts were executed"}
+ 	}
+-	failures, passes, timedOut := 0, 0, 0
++	failures, passes, timedOut, executed, unexecuted := 0, 0, 0, 0, 0
+ 	var output strings.Builder
+ 	for _, a := range attempts {
++		if a.Executed {
++			executed++
++		} else {
++			unexecuted++
++		}
+ 		switch {
+ 		case a.Failed():
+ 			failures++
+@@ -99,33 +104,48 @@ func classifyWithSignals(attempts []Attempt) (Classification, []string) {
+ 		}
+ 	}
+ 
+-	if failures == 0 {
+-		return ClassNotReproduced, nil
+-	}
+ 	// Mixed outcomes across identical runs are the definition of a flake.
+ 	if passes > 0 {
+-		return ClassFlaky, nil
++		if failures > 0 {
++			return ClassFlaky, nil
++		}
++		if timedOut > 0 || unexecuted > 0 {
++			return ClassInconclusive, []string{"completed pass mixed with incomplete execution"}
++		}
++		return ClassNotReproduced, nil
+ 	}
+-
+-	text := strings.ToLower(output.String())
+-	// A timeout on every attempt is an environment/limit observation. It can
+-	// hide a hang introduced by a regression, which is recorded as uncertainty.
+-	if timedOut == failures {
+-		return ClassInfrastructure, []string{"all attempts timed out"}
++	// A timeout is neither a failure nor a pass. In particular, do not turn
++	// timeout-only or unexecuted runs into "not reproduced".
++	if failures == 0 {
++		switch {
++		case timedOut > 0:
++			return ClassInconclusive, []string{"all executed attempts timed out"}
++		case unexecuted > 0:
++			return ClassInconclusive, []string{"one or more attempts did not execute"}
++		case executed == 0:
++			return ClassInconclusive, []string{"no attempt produced a process result"}
++		default:
++			return ClassNotReproduced, nil
++		}
+ 	}
+-
+-	infra := matchSignals(text, infrastructureSignals)
+-	deps := matchSignals(text, dependencySignals)
+-	switch {
+-	case len(infra) > 0 && len(deps) > len(infra):
+-		return ClassDependencyDrift, deps
+-	case len(infra) > 0:
+-		return ClassInfrastructure, infra
+-	case len(deps) > 0:
+-		return ClassDependencyDrift, deps
+-	default:
+-		return ClassRealRegression, nil
++	// A completed failure remains a failure even when another attempt timed out.
++	// Only a run made entirely of timeouts is classified as inconclusive.
++	if failures > 0 {
++		text := strings.ToLower(output.String())
++		infra := matchSignals(text, infrastructureSignals)
++		deps := matchSignals(text, dependencySignals)
++		switch {
++		case len(infra) > 0 && len(deps) > len(infra):
++			return ClassDependencyDrift, deps
++		case len(infra) > 0:
++			return ClassInfrastructure, infra
++		case len(deps) > 0:
++			return ClassDependencyDrift, deps
++		default:
++			return ClassRealRegression, nil
++		}
+ 	}
++	return ClassInconclusive, []string{"execution outcome was inconclusive"}
+ }
+ 
+ func matchSignals(text string, signals []string) []string {
+@@ -266,6 +286,7 @@ func confidence(class Classification, loc Localization, uncertainty []string) fl
+ 		ClassFlaky:           0.8,
+ 		ClassDependencyDrift: 0.65,
+ 		ClassInfrastructure:  0.55,
++		ClassInconclusive:    0.0,
+ 		ClassNotReproduced:   0.0,
+ 	}[class]
+ 
+@@ -303,6 +324,8 @@ func defaultUncertainty(class Classification, loc Localization) []string {
+ 		items = append(items, "an environment fault can mask an underlying regression, so the cause may be conflated")
+ 	case ClassDependencyDrift:
+ 		items = append(items, "matching dependency error text does not prove the dependency is the only difference between revisions")
++	case ClassInconclusive:
++		items = append(items, "timeouts or incomplete execution do not establish failure, success, compilation, or test behavior")
+ 	}
+ 	if loc.BisectResult == "" {
+ 		items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")
+diff --git a/internal/diagnosis/compare_test.go b/internal/diagnosis/compare_test.go
+index 04b54c6..82d0482 100644
+--- a/internal/diagnosis/compare_test.go
++++ b/internal/diagnosis/compare_test.go
+@@ -19,4 +19,12 @@ func TestCompareVerdict(t *testing.T) {
+ 	if got := compareVerdict(basePass, basePass); got != ClassNotReproduced {
+ 		t.Fatalf("clean verdict=%s", got)
+ 	}
++	timeout := Baseline{TimedOut: 1, Attempts: 1}
++	if got := compareVerdict(basePass, timeout); got != ClassInconclusive {
++		t.Fatalf("timeout verdict=%s, want %s", got, ClassInconclusive)
++	}
++	passTimeout := Baseline{Passes: 1, TimedOut: 1, Attempts: 2}
++	if got := compareVerdict(basePass, passTimeout); got != ClassInconclusive {
++		t.Fatalf("pass/timeout verdict=%s, want %s", got, ClassInconclusive)
++	}
+ }
+diff --git a/internal/diagnosis/diagnosis.go b/internal/diagnosis/diagnosis.go
+index 2a15206..f14dd26 100644
+--- a/internal/diagnosis/diagnosis.go
++++ b/internal/diagnosis/diagnosis.go
+@@ -32,6 +32,7 @@ const (
+ 	ClassFlaky           Classification = "flaky"
+ 	ClassDependencyDrift Classification = "dependency_or_toolchain_drift"
+ 	ClassInfrastructure  Classification = "infrastructure_or_environment"
++	ClassInconclusive    Classification = "inconclusive"
+ 	ClassNotReproduced   Classification = "not_reproduced"
+ 	ClassPreExisting     Classification = "pre_existing_failure"
+ )
+@@ -63,15 +64,20 @@ const (
+ 
+ // Attempt is one reproduction run. It is an observation, never an inference.
+ type Attempt struct {
+-	Index        int           `json:"index"`
+-	ExitCode     int           `json:"exit_code"`
+-	TimedOut     bool          `json:"timed_out"`
+-	Executed     bool          `json:"executed"`
+-	Duration     time.Duration `json:"duration"`
+-	StdoutDigest string        `json:"stdout_digest"`
+-	StderrDigest string        `json:"stderr_digest"`
+-	Stderr       string        `json:"stderr_excerpt,omitempty"`
+-	Error        string        `json:"error,omitempty"`
++	Index           int           `json:"index"`
++	ExitCode        int           `json:"exit_code"`
++	TimedOut        bool          `json:"timed_out"`
++	Executed        bool          `json:"executed"`
++	Duration        time.Duration `json:"duration"`
++	StdoutDigest    string        `json:"stdout_digest"`
++	StderrDigest    string        `json:"stderr_digest"`
++	Stderr          string        `json:"stderr_excerpt,omitempty"`
++	Error           string        `json:"error,omitempty"`
++	FirstOutputAt   time.Time     `json:"first_output_at,omitempty"`
++	StdoutBytes     int           `json:"stdout_bytes,omitempty"`
++	StderrBytes     int           `json:"stderr_bytes,omitempty"`
++	CleanupComplete bool          `json:"cleanup_complete"`
++	Truncated       bool          `json:"output_truncated,omitempty"`
+ }
+ 
+ // Failed reports whether this attempt observed the failing behaviour.
+@@ -460,14 +466,16 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
+ 		report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
+ 	}
+ 
+-	// Refuse before localization when the failure itself is not established.
++	// Preserve a lightweight report when the failure is not established. The
++	// evidence-only path must not trigger repository-wide analysis.
+ 	if reason, ok := refusalReason(report.Classification, baseline); ok && !artifactOnly {
+ 		report.Refused = true
+ 		report.RefusalReason = reason
+ 		report.Localization = Localization{HeadCommit: env.HeadCommit, BisectStatus: "skipped: diagnosis refused"}
+ 		report.Uncertainty = append(report.Uncertainty, reason)
+ 		report.Confidence = 0
+-		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization); err != nil {
++		report.Partial = true
++		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization, true); err != nil {
+ 			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+ 			report.Partial = true
+ 		}
+@@ -485,16 +493,17 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
+ 	var localization Localization
+ 	var locEvidence []EvidenceItem
+ 	var locErr error
++	evidenceOnly := artifactOnly || report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
+ 	if artifactOnly {
+ 		localization = Localization{
+ 			HeadCommit:   env.HeadCommit,
+ 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
+ 		}
+ 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
+-	} else if cfg.FastPath && reproductionInconclusive(baseline, report.Comparison) {
++	} else if evidenceOnly {
+ 		localization = Localization{
+ 			HeadCommit:   env.HeadCommit,
+-			BisectStatus: "skipped: fast-path reproduction inconclusive",
++			BisectStatus: "skipped: evidence-only diagnosis",
+ 		}
+ 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because the fast-path reproduction was inconclusive")
+ 		report.Partial = true
+@@ -513,7 +522,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
+ 	} else {
+ 		locStage.Done("completed", nil)
+ 	}
+-	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization); err != nil {
++	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization, evidenceOnly); err != nil {
+ 		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+ 		report.Partial = true
+ 	}
+@@ -583,19 +592,13 @@ func isTimeoutOrCancel(err error) bool {
+ }
+ 
+ func reproductionInconclusive(baseline Baseline, comparison *Comparison) bool {
+-	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
++	if baselineInconclusive(baseline) {
+ 		return true
+ 	}
+ 	if comparison == nil {
+ 		return false
+ 	}
+-	if comparison.Base.TimedOut > 0 && comparison.Base.Failures == 0 && comparison.Base.Passes == 0 {
+-		return true
+-	}
+-	if comparison.Head.TimedOut > 0 && comparison.Head.Failures == 0 && comparison.Head.Passes == 0 {
+-		return true
+-	}
+-	return false
++	return baselineInconclusive(comparison.Base) || baselineInconclusive(comparison.Head)
+ }
+ 
+ func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, headCommit string) (Comparison, error) {
+@@ -627,6 +630,9 @@ func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline,
+ }
+ 
+ func compareVerdict(base, head Baseline) Classification {
++	if baselineInconclusive(base) || baselineInconclusive(head) {
++		return ClassInconclusive
++	}
+ 	if (base.Failures > 0 && base.Passes > 0) || (head.Failures > 0 && head.Passes > 0) {
+ 		return ClassFlaky
+ 	}
+@@ -645,6 +651,13 @@ func compareVerdict(base, head Baseline) Classification {
+ 	return ClassNotReproduced
+ }
+ 
++func baselineInconclusive(baseline Baseline) bool {
++	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
++		return true
++	}
++	return baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes > 0
++}
++
+ // finish writes the bundle, emits the terminal events, and persists the final
+ // investigation status. It is safe to call after cancellation: already collected
+ // evidence and preliminary findings are preserved.
+@@ -765,14 +778,19 @@ func (d *Diagnoser) runOnce(ctx context.Context, dir string, index int) Attempt
+ 		MaxOutput: 64 << 10,
+ 	})
+ 	attempt := Attempt{
+-		Index:        index,
+-		ExitCode:     res.ExitCode,
+-		TimedOut:     res.TimedOut,
+-		Executed:     res.StartedAt != (time.Time{}) || res.TimedOut,
+-		Duration:     res.Duration,
+-		StdoutDigest: digestString(res.Stdout),
+-		StderrDigest: digestString(res.Stderr),
+-		Stderr:       bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
++		Index:           index,
++		ExitCode:        res.ExitCode,
++		TimedOut:        res.TimedOut,
++		Executed:        res.StartedAt != (time.Time{}) || res.TimedOut,
++		Duration:        res.Duration,
++		StdoutDigest:    digestString(res.Stdout),
++		StderrDigest:    digestString(res.Stderr),
++		Stderr:          bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
++		FirstOutputAt:   res.FirstOutputAt,
++		StdoutBytes:     res.StdoutBytes,
++		StderrBytes:     res.StderrBytes,
++		CleanupComplete: res.CleanupComplete,
++		Truncated:       res.Truncated,
+ 	}
+ 	if err != nil {
+ 		attempt.Error = err.Error()
+diff --git a/internal/diagnosis/diagnosis_test.go b/internal/diagnosis/diagnosis_test.go
+index cace31d..07ee400 100644
+--- a/internal/diagnosis/diagnosis_test.go
++++ b/internal/diagnosis/diagnosis_test.go
+@@ -218,6 +218,44 @@ func TestDiagnoseRefusesWithoutReproduction(t *testing.T) {
+ 	}
+ }
+ 
++func TestDiagnoseInconclusiveFastPathSkipsRepositoryIndexing(t *testing.T) {
++	dir := newRepo(t)
++	commit(t, dir, "timeout", map[string]string{
++		"run.sh": "#!/bin/sh\necho 'pkg/handler.go:42: blocked' >&2\nsleep 1\n",
++	})
++	report, err := Run(context.Background(), Config{
++		RepoPath:             dir,
++		Command:              []string{"sh", "run.sh"},
++		Attempts:             1,
++		Timeout:              20 * time.Millisecond,
++		InvestigationTimeout: 2 * time.Second,
++		FastPath:             true,
++		Executor:             testExecutor(t),
++	})
++	if err != nil {
++		t.Fatalf("run: %v", err)
++	}
++	if report.Classification != ClassInconclusive {
++		t.Fatalf("classification = %s, want %s", report.Classification, ClassInconclusive)
++	}
++	if report.IndexingMode != "skipped_evidence_only" {
++		t.Fatalf("indexing mode = %q, want skipped_evidence_only", report.IndexingMode)
++	}
++	if report.Overview != nil {
++		t.Fatal("expected repository overview to remain deferred")
++	}
++
++	if !report.Partial || report.Preliminary == nil {
++		t.Fatalf("expected partial preliminary report: %#v", report)
++	}
++	if len(report.FailureEpisodes) != 0 {
++		t.Fatalf("timeout must not fabricate failure episodes: %#v", report.FailureEpisodes)
++	}
++	if len(report.Candidates) != 1 || report.Candidates[0].Location.LocationType != "observed_frame" {
++		t.Fatalf("expected one observed stack-frame candidate: %#v", report.Candidates)
++	}
++}
++
+ func TestDiagnoseBisectLocalization(t *testing.T) {
+ 	dir := newRepo(t)
+ 	good := commit(t, dir, "good", map[string]string{
+diff --git a/internal/diagnosis/pipeline.go b/internal/diagnosis/pipeline.go
+index cc1cfcb..651952a 100644
+--- a/internal/diagnosis/pipeline.go
++++ b/internal/diagnosis/pipeline.go
+@@ -21,19 +21,17 @@ import (
+ // persistArchitecture runs the staged repository-intelligence and diagnosis path.
+ // Stages publish a preliminary finding as soon as candidates and hypotheses exist,
+ // then optionally continue into adaptive deep investigation.
+-func (d *Diagnoser) persistArchitecture(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization) error {
++func (d *Diagnoser) persistArchitecture(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, evidenceOnly bool) error {
+ 	if d.metrics == nil {
+ 		d.metrics = observability.NewMetrics(report.InvestigationID)
+ 	}
+ 	if d.cfg.Store == nil {
+-		// Architecture persistence requires a store, but overview/indexing still
+-		// run so reports can carry structural context without SQLite.
+-		return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, false)
++		return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, false, evidenceOnly)
+ 	}
+-	return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, true)
++	return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, true, evidenceOnly)
+ }
+ 
+-func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, persist bool) error {
++func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, persist, evidenceOnly bool) error {
+ 	repoID := "local:" + d.cfg.RepoPath
+ 	revisionID := "revision:" + env.HeadCommit
+ 	if persist {
+@@ -48,16 +46,27 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
+ 		}
+ 	}
+ 
+-	artifactCache, err := d.openArtifactCache()
+-	if err != nil {
+-		report.Uncertainty = append(report.Uncertainty, "artifact cache unavailable: "+err.Error())
+-	}
++	var artifactCache *cache.FSCache
++	var err error
++	if !evidenceOnly {
++		artifactCache, err = d.openArtifactCache()
++		if err != nil {
++			report.Uncertainty = append(report.Uncertainty, "artifact cache unavailable: "+err.Error())
++		}
+ 
+-	overview, err := d.stageOverview(ctx, report, workspace, repoID, revisionID, env.HeadCommit, artifactCache)
+-	if err != nil {
+-		return err
++		overview, overviewErr := d.stageOverview(ctx, report, workspace, repoID, revisionID, env.HeadCommit, artifactCache)
++		if overviewErr != nil {
++			return overviewErr
++		}
++		report.Overview = &overview
++	} else {
++		overviewStage := d.metrics.Begin(observability.StageRepositoryOverview)
++		overviewStage.Meta("mode", "skipped")
++		overviewStage.Meta("reason", "evidence_only")
++		overviewStage.Done("skipped", nil)
++		report.IndexingMode = "skipped_evidence_only"
++		report.Uncertainty = append(report.Uncertainty, "repository overview and indexing were deferred because source-level analysis was not justified")
+ 	}
+-	report.Overview = &overview
+ 
+ 	executionID := "execution:" + report.InvestigationID
+ 	if persist {
+@@ -76,12 +85,21 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
+ 	stage.Count("episodes", len(failures))
+ 	stage.Done("completed", nil)
+ 
+-	snapshot, indexMode, err := d.stageIndex(ctx, report, workspace, repoID, revisionID, env.HeadCommit, loc, artifactCache)
+-	if err != nil {
+-		return err
++	var snapshot programrepo.Snapshot
++	if !evidenceOnly {
++		var indexMode string
++		snapshot, indexMode, err = d.stageIndex(ctx, report, workspace, repoID, revisionID, env.HeadCommit, loc, artifactCache)
++		if err != nil {
++			return err
++		}
++		d.snapshot = &snapshot
++		report.IndexingMode = indexMode
++	} else {
++		indexStage := d.metrics.Begin(observability.StageIndexing)
++		indexStage.Meta("mode", "skipped")
++		indexStage.Meta("reason", "evidence_only")
++		indexStage.Done("skipped", nil)
+ 	}
+-	d.snapshot = &snapshot
+-	report.IndexingMode = indexMode
+ 	if persist {
+ 		for _, n := range snapshot.Nodes {
+ 			if err := d.cfg.Store.SaveProgramNode(n); err != nil {
+@@ -115,7 +133,14 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
+ 	}
+ 
+ 	candStage := d.metrics.Begin(observability.StageCandidateGeneration)
+-	candidates, relations := localization.Generate(snapshot, localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100})
++	var candidates []domain.CandidateLocation
++	var relations []domain.Relationship
++	input := localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100}
++	if evidenceOnly {
++		candidates, relations = localization.GenerateObserved(frames, input)
++	} else {
++		candidates, relations = localization.Generate(snapshot, input)
++	}
+ 	report.Candidates = candidates
+ 	report.Relationships = relations
+ 	candStage.Count("candidates", len(candidates))
+@@ -158,37 +183,39 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
+ 	}
+ 
+ 	if persist {
+-		historical, histErr := history.Discover(d.cfg.Store, history.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, Failures: failures, Candidates: candidates, EvidenceIDs: evidenceIDs})
+-		if histErr != nil {
+-			return histErr
+-		}
+-		report.HistoricalContext = historical.References
+-		if len(historical.Evidence) > 0 {
+-			for _, evidence := range historical.Evidence {
+-				if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
+-					return err
++		if !evidenceOnly {
++			historical, histErr := history.Discover(d.cfg.Store, history.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, Failures: failures, Candidates: candidates, EvidenceIDs: evidenceIDs})
++			if histErr != nil {
++				return histErr
++			}
++			report.HistoricalContext = historical.References
++			if len(historical.Evidence) > 0 {
++				for _, evidence := range historical.Evidence {
++					if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
++						return err
++					}
++					report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload})
+ 				}
+-				report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload})
++				report.Candidates = localization.ApplyHistoricalEvidence(report.Candidates, evidenceIDsOfHistorical(historical.Evidence))
++				for _, candidate := range report.Candidates {
++					if err := d.cfg.Store.SaveCandidate(candidate); err != nil {
++						return err
++					}
++				}
++				candidates = report.Candidates
+ 			}
+-			report.Candidates = localization.ApplyHistoricalEvidence(report.Candidates, evidenceIDsOfHistorical(historical.Evidence))
+-			for _, candidate := range report.Candidates {
+-				if err := d.cfg.Store.SaveCandidate(candidate); err != nil {
++			for _, rel := range historical.Relationships {
++				if err := d.cfg.Store.SaveRelationship(rel); err != nil {
+ 					return err
+ 				}
++				report.Relationships = append(report.Relationships, rel)
+ 			}
+-			candidates = report.Candidates
+-		}
+-		for _, rel := range historical.Relationships {
+-			if err := d.cfg.Store.SaveRelationship(rel); err != nil {
+-				return err
+-			}
+-			report.Relationships = append(report.Relationships, rel)
+-		}
+-		for _, stageName := range []string{"AnalyzeRepository", "GenerateCandidates", "DiscoverRelationships"} {
+-			activity := investigation.NewActivity(domain.ID(report.InvestigationID), "activity:"+report.InvestigationID+":"+stageName, stageName, nil, evidenceIDsToStrings(evidenceIDs))
+-			activity = investigation.Complete(activity, []string{"report:" + report.InvestigationID + ":" + stageName})
+-			if err := d.cfg.Store.SaveActivity(activity); err != nil {
+-				return err
++			for _, stageName := range []string{"AnalyzeRepository", "GenerateCandidates", "DiscoverRelationships"} {
++				activity := investigation.NewActivity(domain.ID(report.InvestigationID), "activity:"+report.InvestigationID+":"+stageName, stageName, nil, evidenceIDsToStrings(evidenceIDs))
++				activity = investigation.Complete(activity, []string{"report:" + report.InvestigationID + ":" + stageName})
++				if err := d.cfg.Store.SaveActivity(activity); err != nil {
++					return err
++				}
+ 			}
+ 		}
+ 	}
+diff --git a/internal/domain/domain.go b/internal/domain/domain.go
+index 2826d9a..57901ec 100644
+--- a/internal/domain/domain.go
++++ b/internal/domain/domain.go
+@@ -517,17 +517,21 @@ func (e *CancellationError) Error() string {
+ 
+ // ExecutionResult represents the result of executing a command.
+ type ExecutionResult struct {
+-	ExitCode   int
+-	Stdout     string
+-	Stderr     string
+-	Error      string
+-	TimedOut   bool
+-	OOMKilled  bool
+-	Truncated  bool
+-	Violations []string
+-	Duration   time.Duration
+-	StartedAt  time.Time
+-	FinishedAt time.Time
++	ExitCode        int
++	Stdout          string
++	Stderr          string
++	Error           string
++	TimedOut        bool
++	OOMKilled       bool
++	Truncated       bool
++	Violations      []string
++	Duration        time.Duration
++	StartedAt       time.Time
++	FirstOutputAt   time.Time
++	FinishedAt      time.Time
++	StdoutBytes     int
++	StderrBytes     int
++	CleanupComplete bool
+ }
+ 
+ // DiagnosisResult represents the result of an investigation.
+diff --git a/internal/execution/executor.go b/internal/execution/executor.go
+index 721b8b0..7aa34a4 100644
+--- a/internal/execution/executor.go
++++ b/internal/execution/executor.go
+@@ -11,6 +11,7 @@ import (
+ 	"os/exec"
+ 	"path/filepath"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 
+@@ -95,11 +96,20 @@ type boundedBuffer struct {
+ 	data      []byte
+ 	max       int
+ 	truncated bool
++	firstAt   time.Time
++	total     int
++	mu        sync.Mutex
+ }
+ 
+ const defaultOutputLimit = 64 << 10
+ 
+ func (b *boundedBuffer) Write(p []byte) (int, error) {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.firstAt.IsZero() && len(p) > 0 {
++		b.firstAt = time.Now()
++	}
++	b.total += len(p)
+ 	if b.max <= 0 {
+ 		b.data = append(b.data, p...)
+ 		return len(p), nil
+@@ -118,7 +128,17 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
+ 	return len(p), nil
+ }
+ 
+-func (b *boundedBuffer) String() string { return string(b.data) }
++func (b *boundedBuffer) String() string {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return string(b.data)
++}
++
++func (b *boundedBuffer) Metadata() (time.Time, int, bool) {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return b.firstAt, b.total, b.truncated
++}
+ 
+ // Request is an alias for domain.ExecutionRequest.
+ type Request = domain.ExecutionRequest
+@@ -270,15 +290,25 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
+ 	case err := <-done:
+ 		stdout := stdoutBuf.String()
+ 		stderr := stderrBuf.String()
++		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
++		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
++		firstOutput := stdoutFirst
++		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
++			firstOutput = stderrFirst
++		}
+ 		result := domain.ExecutionResult{
+-			ExitCode:   c.ProcessState.ExitCode(),
+-			Stdout:     stdout,
+-			Stderr:     stderr,
+-			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
+-			TimedOut:   false,
+-			Duration:   time.Since(started),
+-			StartedAt:  started,
+-			FinishedAt: time.Now(),
++			ExitCode:        c.ProcessState.ExitCode(),
++			Stdout:          stdout,
++			Stderr:          stderr,
++			Truncated:       stdoutTruncated || stderrTruncated,
++			TimedOut:        false,
++			Duration:        time.Since(started),
++			StartedAt:       started,
++			FirstOutputAt:   firstOutput,
++			FinishedAt:      time.Now(),
++			StdoutBytes:     stdoutBytes,
++			StderrBytes:     stderrBytes,
++			CleanupComplete: true,
+ 		}
+ 		if err != nil {
+ 			if ctx.Err() != nil {
+@@ -300,15 +330,31 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
+ 		if err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL); err != nil {
+ 			_ = c.Process.Kill()
+ 		}
++		cleanupComplete := false
++		select {
++		case <-done:
++			cleanupComplete = true
++		case <-time.After(100 * time.Millisecond):
++		}
++		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
++		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
++		firstOutput := stdoutFirst
++		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
++			firstOutput = stderrFirst
++		}
+ 		slog.Warn("execution cancelled", "command", req.Command[0], "dir", req.Dir, "after", time.Since(started).String())
+ 		return domain.ExecutionResult{
+-			ExitCode:  -1,
+-			Stdout:    stdoutBuf.String(),
+-			Stderr:    stderrBuf.String(),
+-			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
+-			TimedOut:  true,
+-			Duration:  time.Since(started),
+-			StartedAt: started,
++			ExitCode:        -1,
++			Stdout:          stdoutBuf.String(),
++			Stderr:          stderrBuf.String(),
++			Truncated:       stdoutTruncated || stderrTruncated,
++			TimedOut:        true,
++			Duration:        time.Since(started),
++			StartedAt:       started,
++			FirstOutputAt:   firstOutput,
++			StdoutBytes:     stdoutBytes,
++			StderrBytes:     stderrBytes,
++			CleanupComplete: cleanupComplete,
+ 		}, ctx.Err()
+ 	}
+ }
+diff --git a/internal/execution/executor_test.go b/internal/execution/executor_test.go
+index 0e316cd..cec840d 100644
+--- a/internal/execution/executor_test.go
++++ b/internal/execution/executor_test.go
+@@ -40,6 +40,9 @@ func TestLocalExecutorRunsAllowedCommand(t *testing.T) {
+ 	if res.Stdout != "hello\n" {
+ 		t.Fatalf("stdout = %q", res.Stdout)
+ 	}
++	if res.FirstOutputAt.IsZero() || res.StdoutBytes != len(res.Stdout) || !res.CleanupComplete {
++		t.Fatalf("missing execution timing metadata: %#v", res)
++	}
+ }
+ 
+ func TestLocalExecutorRejectsUnauthorizedCommand(t *testing.T) {
+@@ -149,6 +152,9 @@ func TestLocalExecutorTimeout(t *testing.T) {
+ 	if !res.TimedOut {
+ 		t.Fatal("expected TimedOut to be set")
+ 	}
++	if !res.CleanupComplete {
++		t.Fatal("expected timed-out process cleanup to complete")
++	}
+ }
+ 
+ func TestLocalExecutorCancellation(t *testing.T) {
+diff --git a/internal/localization/pipeline.go b/internal/localization/pipeline.go
+index 8475003..d778be1 100644
+--- a/internal/localization/pipeline.go
++++ b/internal/localization/pipeline.go
+@@ -1,7 +1,10 @@
+ package localization
+ 
+ import (
++	"crypto/sha256"
++	"encoding/hex"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 
+ 	"github.com/causent/malenia/internal/domain"
+@@ -30,6 +33,76 @@ type Input struct {
+ 	MaxCandidates         int
+ }
+ 
++// GenerateObserved creates conservative candidates directly from stack-frame
++// observations. These are locations mentioned by execution evidence, not
++// indexed symbols and not causal conclusions.
++func GenerateObserved(frames []Frame, input Input) ([]domain.CandidateLocation, []domain.Relationship) {
++	candidates := map[string]domain.CandidateLocation{}
++	var relations []domain.Relationship
++	for _, frame := range frames {
++		path := cleanPath(frame.File)
++		if path == "" {
++			continue
++		}
++		identity := "observed:" + path
++		if frame.Line > 0 {
++			identity += ":" + strconv.Itoa(frame.Line)
++		}
++		id := "candidate:observed:" + digest(identity)
++		candidate, ok := candidates[id]
++		if !ok {
++			candidate = domain.CandidateLocation{
++				ID:              id,
++				InvestigationID: input.InvestigationID,
++				Location: domain.CodeLocation{
++					ID:             "location:" + id,
++					RepositoryID:   input.RepositoryID,
++					RevisionID:     input.RevisionID,
++					FilePath:       path,
++					SymbolIdentity: identity,
++					StartLine:      frame.Line,
++					EndLine:        frame.Line,
++					LocationType:   "observed_frame",
++				},
++				Status: "observed",
++			}
++			candidate.Score = evaluateSignals(CandidateContext{Execution: true, Evidence: input.EvidenceIDs})
++			candidate.Score.ScoringPolicyVersion = PolicyVersion
++			candidates[id] = candidate
++		}
++		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, input.EvidenceIDs...)
++		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, frame.EvidenceIDs...)
++		candidates[id] = candidate
++		for _, failureID := range frame.FailureIDs {
++			relations = append(relations, domain.Relationship{
++				ID:              "failure:" + failureID + ":" + id + ":MANIFESTED_AT",
++				InvestigationID: input.InvestigationID,
++				SourceType:      "failure_episode",
++				SourceID:        failureID,
++				TargetType:      "candidate_location",
++				TargetID:        id,
++				Type:            "MANIFESTED_AT",
++				RevisionID:      input.RevisionID,
++				EvidenceIDs:     appendUnique(append([]domain.ID{}, input.EvidenceIDs...), frame.EvidenceIDs...),
++			})
++		}
++	}
++	result := make([]domain.CandidateLocation, 0, len(candidates))
++	for _, candidate := range candidates {
++		result = append(result, candidate)
++	}
++	result = Rank(result, DefaultWeights)
++	if input.MaxCandidates > 0 && len(result) > input.MaxCandidates {
++		result = result[:input.MaxCandidates]
++	}
++	return result, uniqueRelationships(relations)
++}
++
++func digest(value string) string {
++	sum := sha256.Sum256([]byte(value))
++	return hex.EncodeToString(sum[:8])
++}
++
+ // Generate creates candidates from execution evidence and then expands them
+ // through the program graph. It does not make a causal claim.
+ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLocation, []domain.Relationship) {
+diff --git a/internal/localization/pipeline_test.go b/internal/localization/pipeline_test.go
+index edcc1dc..f4c38d3 100644
+--- a/internal/localization/pipeline_test.go
++++ b/internal/localization/pipeline_test.go
+@@ -1,10 +1,11 @@
+ package localization
+ 
+ import (
+-	"github.com/causent/malenia/internal/domain"
+-	programrepo "github.com/causent/malenia/internal/repository"
+ 	"testing"
+ 	"time"
++
++	"github.com/causent/malenia/internal/domain"
++	programrepo "github.com/causent/malenia/internal/repository"
+ )
+ 
+ func TestGenerateExpandsToUnchangedCalleeAndSharesCandidate(t *testing.T) {
+@@ -12,7 +13,15 @@ func TestGenerateExpandsToUnchangedCalleeAndSharesCandidate(t *testing.T) {
+ 	test := domain.ProgramNode{ID: "test", Type: "Test", Name: "TestFailure", FilePath: "pkg_test.go", StartLine: 1, EndLine: 10, RevisionID: "rev", RepositoryID: "repo", Identity: "go:pkg_test.go:Test:TestFailure"}
+ 	changed := domain.ProgramNode{ID: "changed", Type: "Function", Name: "Changed", FilePath: "pkg.go", StartLine: 1, EndLine: 10, RevisionID: "rev", RepositoryID: "repo", Identity: "go:pkg.go:Function:Changed", Changed: true}
+ 	unchanged := domain.ProgramNode{ID: "utility", Type: "Function", Name: "Utility", FilePath: "utility.go", StartLine: 1, EndLine: 10, RevisionID: "rev", RepositoryID: "repo", Identity: "go:utility.go:Function:Utility"}
+-	s := programrepo.Snapshot{RepositoryID: "repo", RevisionID: "rev", Nodes: []domain.ProgramNode{file, test, changed, unchanged}, Relationships: []domain.Relationship{{ID: "r1", SourceID: "test", SourceType: "Test", TargetID: "changed", TargetType: "Function", Type: "TESTS", RevisionID: "rev", CreatedAt: time.Now()}, {ID: "r2", SourceID: "changed", SourceType: "Function", TargetID: "utility", TargetType: "Function", Type: "CALLS", RevisionID: "rev", CreatedAt: time.Now()}}}
++	s := programrepo.Snapshot{
++		RepositoryID: "repo",
++		RevisionID:   "rev",
++		Nodes:        []domain.ProgramNode{file, test, changed, unchanged},
++		Relationships: []domain.Relationship{
++			{ID: "r1", SourceID: "test", SourceType: "Test", TargetID: "changed", TargetType: "Function", Type: "TESTS", RevisionID: "rev", CreatedAt: time.Now()},
++			{ID: "r2", SourceID: "changed", SourceType: "Function", TargetID: "utility", TargetType: "Function", Type: "CALLS", RevisionID: "rev", CreatedAt: time.Now()},
++		},
++	}
+ 	got, rels := Generate(s, Input{InvestigationID: "inv", FailureIDs: []string{"failure-1"}, FailureText: "TestFailure", EvidenceIDs: []domain.ID{"ev-1"}, MaxDepth: 2})
+ 	if len(got) < 2 {
+ 		t.Fatalf("candidates = %d, want changed and expanded utility", len(got))
+@@ -33,3 +42,30 @@ func TestGenerateExpandsToUnchangedCalleeAndSharesCandidate(t *testing.T) {
+ 		t.Fatal("expected failure relationships")
+ 	}
+ }
++
++func TestGenerateObservedCandidatesWithoutSnapshot(t *testing.T) {
++	frames := []Frame{{File: "pkg/handler.go", Line: 142, FailureIDs: []string{"failure-1"}}}
++	candidates, relations := GenerateObserved(frames, Input{
++		InvestigationID: "inv",
++		RepositoryID:    "repo",
++		RevisionID:      "revision:head",
++		EvidenceIDs:     []domain.ID{"e1"},
++		MaxCandidates:   10,
++	})
++	if len(candidates) != 1 {
++		t.Fatalf("candidates = %d, want 1", len(candidates))
++	}
++	candidate := candidates[0]
++	if candidate.Location.LocationType != "observed_frame" {
++		t.Fatalf("location type = %q, want observed_frame", candidate.Location.LocationType)
++	}
++	if candidate.Location.FilePath != "pkg/handler.go" || candidate.Location.StartLine != 142 {
++		t.Fatalf("unexpected observed location: %#v", candidate.Location)
++	}
++	if len(candidate.SupportingEvidenceIDs) != 1 || candidate.SupportingEvidenceIDs[0] != "e1" {
++		t.Fatalf("candidate evidence = %#v", candidate.SupportingEvidenceIDs)
++	}
++	if len(relations) != 1 || relations[0].Type != "MANIFESTED_AT" {
++		t.Fatalf("relations = %#v", relations)
++	}
++}

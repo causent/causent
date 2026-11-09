@@ -296,28 +296,49 @@ func (s *Store) migrate() error {
 		)`},
 	}
 
-	for _, m := range migrations {
-		if currentVersion >= m.version {
+	for i := 0; i < len(migrations); {
+		version := migrations[i].version
+		end := i
+		for end < len(migrations) && migrations[end].version == version {
+			end++
+		}
+		if currentVersion >= version {
+			i = end
 			continue
+		}
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %d: %w", version, err)
+		}
+		rollback := func(err error) error {
+			_ = tx.Rollback()
+			return err
 		}
 		// Provenance is kept in side tables so version-one databases remain
 		// readable without a destructive schema rewrite.
-		if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS hypothesis_provenance (hypothesis_id TEXT PRIMARY KEY, provenance TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("create hypothesis provenance: %w", err)
+		for _, sqlText := range []string{
+			`CREATE TABLE IF NOT EXISTS hypothesis_provenance (hypothesis_id TEXT PRIMARY KEY, provenance TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS evidence_provenance (evidence_id TEXT PRIMARY KEY, provenance TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS model_metadata (investigation_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, endpoint TEXT NOT NULL, request_id TEXT NOT NULL)`,
+		} {
+			if _, err := tx.Exec(sqlText); err != nil {
+				return rollback(fmt.Errorf("migration %d: %w", version, err))
+			}
 		}
-		if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS evidence_provenance (evidence_id TEXT PRIMARY KEY, provenance TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("create evidence provenance: %w", err)
+		for _, m := range migrations[i:end] {
+			if _, err := tx.Exec(m.sql); err != nil {
+				return rollback(fmt.Errorf("migration %d: %w", version, err))
+			}
 		}
-		if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS model_metadata (investigation_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL, endpoint TEXT NOT NULL, request_id TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("create model metadata: %w", err)
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?,?) ON CONFLICT(version) DO NOTHING`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return rollback(fmt.Errorf("record migration %d: %w", version, err))
 		}
-		if _, err := s.db.Exec(m.sql); err != nil {
-			return fmt.Errorf("migration %d: %w", m.version, err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %d: %w", version, err)
 		}
-		if _, err := s.db.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?,?) ON CONFLICT(version) DO NOTHING`, m.version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("record migration %d: %w", m.version, err)
-		}
-		slog.Info("applied schema migration", "version", m.version)
+		currentVersion = version
+		slog.Info("applied schema migration", "version", version)
+		i = end
 	}
 	// Older databases created before budget accounting did not have these
 	// columns. CREATE TABLE IF NOT EXISTS does not alter an existing table, so

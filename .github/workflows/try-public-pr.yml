@@ -49,11 +49,16 @@ on:
         required: false
         default: '600'
         type: string
-      malenia_version:
-        description: Pinned Malenia release tag
+      source_run_id:
+        description: Existing failed CI workflow run to analyze; when omitted, the latest failed run for the PR head is selected
         required: false
-        default: v3
+        default: ''
         type: string
+      allow_reproduction_fallback:
+        description: Run the configured command when no original CI evidence can be collected
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -86,11 +91,22 @@ jobs:
             exit 2
           fi
           metadata="$RUNNER_TEMP/target-pr.json"
-          curl --fail --silent --show-error --location \
+          http_status="$(curl --silent --show-error --location --retry 2 --retry-all-errors \
             "https://api.github.com/repos/$TARGET_REPOSITORY/pulls/$PULL_NUMBER" \
-            -H 'Accept: application/vnd.github+json' -o "$metadata"
+            -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: Malenia-GitHub-Actions' \
+            -o "$metadata" -w '%{http_code}')"
+          if [[ "$http_status" != 200 ]]; then
+            api_message="$(jq -r '.message // "no error message returned"' "$metadata" 2>/dev/null || true)"
+            echo "GitHub could not resolve PR $TARGET_REPOSITORY#$PULL_NUMBER (HTTP $http_status): $api_message" >&2
+            if [[ "$http_status" == 404 ]]; then
+              echo 'Check that target_repository is the public owner/name repository and pull_request is an existing PR number.' >&2
+            fi
+            exit 2
+          fi
           jq -e '.state == "open" and .base.sha and .head.sha' "$metadata" >/dev/null || {
-            echo 'PR must be open and have resolvable base/head revisions' >&2
+            state="$(jq -r '.state // "unknown"' "$metadata")"
+            echo "PR $TARGET_REPOSITORY#$PULL_NUMBER must be open and have resolvable base/head revisions (state: $state)" >&2
             exit 2
           }
           echo "base_sha=$(jq -r '.base.sha' "$metadata")" >> "$GITHUB_OUTPUT"
@@ -99,12 +115,81 @@ jobs:
           echo "clone_url=$(jq -r '.base.repo.clone_url' "$metadata")" >> "$GITHUB_OUTPUT"
           echo "artifact_slug=${TARGET_REPOSITORY//\//-}" >> "$GITHUB_OUTPUT"
 
+      - name: Collect original CI evidence
+        id: evidence
+        if: inputs.source_run_id != '' || steps.pr.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          run_id="$SOURCE_RUN_ID"
+          mkdir -p "$RUNNER_TEMP/source-artifacts"
+          if [ -z "$run_id" ]; then
+            run_id="$(gh run list --repo "$TARGET_REPOSITORY" --commit "$HEAD_SHA" \
+              --status failure --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          fi
+          source_url=""
+          if [ -z "$run_id" ]; then
+            source_url="$(gh api "repos/$TARGET_REPOSITORY/commits/$HEAD_SHA/status" \
+              --jq '.statuses[] | select(.state == "failure") | .target_url' | sed -n '1p')"
+          fi
+          if [ -z "$run_id" ]; then
+            if [[ "$source_url" != https://prow.k8s.io/view/gs/* ]]; then
+              echo "No failed source CI run or supported status context found for $TARGET_REPOSITORY@$HEAD_SHA"
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            log_url="https://storage.googleapis.com/${source_url#https://prow.k8s.io/view/gs/}/build-log.txt"
+            if ! curl --fail --silent --show-error --location "$log_url" > "$RUNNER_TEMP/source-ci.log"; then
+              echo "Could not read Prow log: $log_url"
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            source_provider="prow"
+          else
+            if ! gh run view "$run_id" --repo "$TARGET_REPOSITORY" --log-failed \
+              > "$RUNNER_TEMP/source-ci.log"; then
+              echo "Could not read failed-job log for source CI run $run_id"
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            gh run download "$run_id" --repo "$TARGET_REPOSITORY" \
+              --dir "$RUNNER_TEMP/source-artifacts" || true
+            source_provider="github-actions"
+          fi
+          if [ -z "$run_id" ] && [ -z "$source_url" ]; then
+            echo "No failed source CI run found for $TARGET_REPOSITORY@$HEAD_SHA"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -s "$RUNNER_TEMP/source-ci.log" ]; then
+            echo "Source CI evidence was empty" >&2
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Keep evidence bounded and remove common credential-shaped values
+          # before it reaches the diagnosis process or uploaded artifact.
+          sed -E \
+            -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
+            -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+            -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
+            "$RUNNER_TEMP/source-ci.log" | head -c 262144 > "$RUNNER_TEMP/source-ci-bounded.log"
+          echo "source_url=$source_url" >> "$GITHUB_OUTPUT"
+          echo "provider=$source_provider" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - name: Check out target PR
         env:
           CLONE_URL: ${{ steps.pr.outputs.clone_url }}
           PULL_NUMBER: ${{ inputs.pull_request }}
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          FAST_PATH: ${{ inputs.fast_path }}
+          EVIDENCE_AVAILABLE: ${{ steps.evidence.outputs.available }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/target"
@@ -112,9 +197,11 @@ jobs:
           git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
             "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/malenia-pr"
-          git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
-            "refs/pull/$PULL_NUMBER/head"
-          git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if [[ "$FAST_PATH" != "true" || "$EVIDENCE_AVAILABLE" == "true" ]]; then
+            git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
+              "refs/pull/$PULL_NUMBER/head"
+            git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
           actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/malenia-pr)"
           if [ "$actual_head" != "$HEAD_SHA" ]; then
             echo 'PR head changed while preparing the run; restart with the updated PR revision' >&2
@@ -128,20 +215,31 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Install Malenia binary
-        env:
-          MALENIA_VERSION: ${{ inputs.malenia_version }}
+      - name: Build Malenia binary
         run: |
           set -euo pipefail
-          if [[ ! "$MALENIA_VERSION" =~ ^v[0-9A-Za-z._-]+$ ]]; then
-            echo 'malenia_version must be a release tag such as v3' >&2
-            exit 2
-          fi
-          curl --fail --silent --show-error --location \
-            "https://github.com/causent/malenia/releases/download/${MALENIA_VERSION}/malenia_linux_amd64" \
-            -o "$RUNNER_TEMP/malenia"
-          chmod +x "$RUNNER_TEMP/malenia"
+          go build -o "$RUNNER_TEMP/malenia" ./cmd/malenia
           "$RUNNER_TEMP/malenia" version
+
+      - name: Resolve target Go version
+        id: target-go
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/target/go.mod" ]]; then
+            version="$(sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' \
+              "$RUNNER_TEMP/target/go.mod" | head -n 1)"
+            if [[ -n "$version" ]]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Set up Go for target repository
+        if: steps.target-go.outputs.version != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.target-go.outputs.version }}
+          cache: true
+          cache-dependency-path: ${{ runner.temp }}/target/go.sum
 
       - name: Diagnose PR
         id: diagnose
@@ -153,6 +251,10 @@ jobs:
           MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
           MALENIA_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
           MALENIA_INVESTIGATION_TIMEOUT_SECONDS: ${{ inputs.investigation_timeout_seconds }}
+          MALENIA_CI_PROVIDER: github-actions
+          MALENIA_CI_RUN_ID: ${{ steps.evidence.outputs.run_id }}
+          MALENIA_CI_PR_NUMBER: ${{ inputs.pull_request }}
+          MALENIA_CI_SOURCE_URL: ${{ steps.evidence.outputs.source_url }}
         run: |
           set -euo pipefail
           if [[ ! "$MALENIA_ATTEMPTS" =~ ^[1-5]$ ]]; then
@@ -178,10 +280,23 @@ jobs:
             --investigation-timeout "${MALENIA_INVESTIGATION_TIMEOUT_SECONDS}s"
             --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
-          if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
+          evidence_mode=false
+          if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+            evidence_mode=true
+            args+=(--ci-log "$RUNNER_TEMP/source-ci-bounded.log" \
+              --artifact-dir "$RUNNER_TEMP/source-artifacts" --artifact-first)
+            junit="$(find "$RUNNER_TEMP/source-artifacts" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
+            if [ -n "$junit" ]; then
+              args+=(--junit "$junit")
+            fi
+          elif [ "${{ inputs.allow_reproduction_fallback }}" != "true" ]; then
+            echo "Original CI evidence was not found; refusing to run a fresh reproduction." >&2
+            exit 2
+          fi
+          if [ "$evidence_mode" != "true" ] && [ "${{ inputs.skip_adaptive }}" = "true" ]; then
             args+=(--skip-adaptive)
           fi
-          if [ "${{ inputs.fast_path }}" = "true" ]; then
+          if [ "$evidence_mode" != "true" ] && [ "${{ inputs.fast_path }}" = "true" ]; then
             args+=(--fast-path)
           fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
@@ -204,8 +319,23 @@ jobs:
             echo
             echo "**Classification:** $(jq -r '.classification // "unknown"' "$report")"
             echo
-            echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
+            if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+              echo "**Evidence-first:** analyzed original ${{ steps.evidence.outputs.provider }} CI evidence without local reproduction"
+              if [ -n "${{ steps.evidence.outputs.source_url }}" ]; then
+                echo
+                echo "Source check: ${{ steps.evidence.outputs.source_url }}"
+              fi
+            else
+              echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
+            fi
             echo
+            # Extract and display specific lint/test failures from normalized evidence
+            findings="$(jq -r '.normalized_evidence.executions[0].tests[]? | "- **" + .name + "**: `" + .file + ":" + (.line|tostring) + "` - " + .message' "$report" 2>/dev/null || true)"
+            if [ -n "$findings" ]; then
+              echo '**Findings:**'
+              echo "$findings"
+              echo
+            fi
             files="$(jq -r '.localization.likely_files[]? | "- `" + . + "`"' "$report")"
             if [ -n "$files" ]; then
               echo '**Likely files:**'
@@ -218,7 +348,11 @@ jobs:
               echo "$claims"
               echo
             fi
-            echo 'Full JSON report and evidence bundle are attached as the workflow artifact.'
+            if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+              echo 'The source CI log, downloaded artifacts, and JSON report are attached as the workflow artifact.'
+            else
+              echo 'The JSON report and reproduction bundle are attached as the workflow artifact.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload diagnosis report and evidence
@@ -229,5 +363,7 @@ jobs:
           path: |
             ${{ runner.temp }}/malenia-report.json
             ${{ runner.temp }}/malenia-bundle
+            ${{ runner.temp }}/source-ci-bounded.log
+            ${{ runner.temp }}/source-artifacts
           if-no-files-found: warn
           retention-days: 14

@@ -28,12 +28,15 @@ import (
 type Classification string
 
 const (
-	ClassRealRegression  Classification = "real_regression"
-	ClassFlaky           Classification = "flaky"
-	ClassDependencyDrift Classification = "dependency_or_toolchain_drift"
-	ClassInfrastructure  Classification = "infrastructure_or_environment"
-	ClassNotReproduced   Classification = "not_reproduced"
-	ClassPreExisting     Classification = "pre_existing_failure"
+	ClassRealRegression      Classification = "real_regression"
+	ClassFlaky               Classification = "flaky"
+	ClassDependencyDrift     Classification = "dependency_or_toolchain_drift"
+	ClassInfrastructure      Classification = "infrastructure_or_environment"
+	ClassInconclusive        Classification = "inconclusive"
+	ClassNotReproduced       Classification = "not_reproduced"
+	ClassPreExisting         Classification = "pre_existing_failure"
+	ClassTestFailureObserved Classification = "test_failure_observed"
+	ClassLintFailureObserved Classification = "lint_failure_observed"
 )
 
 // Event names emitted to the event store and to events.jsonl.
@@ -63,20 +66,26 @@ const (
 
 // Attempt is one reproduction run. It is an observation, never an inference.
 type Attempt struct {
-	Index        int           `json:"index"`
-	ExitCode     int           `json:"exit_code"`
-	TimedOut     bool          `json:"timed_out"`
-	Executed     bool          `json:"executed"`
-	Duration     time.Duration `json:"duration"`
-	StdoutDigest string        `json:"stdout_digest"`
-	StderrDigest string        `json:"stderr_digest"`
-	Stderr       string        `json:"stderr_excerpt,omitempty"`
-	Error        string        `json:"error,omitempty"`
+	Index              int           `json:"index"`
+	ExitCode           int           `json:"exit_code"`
+	TimedOut           bool          `json:"timed_out"`
+	Executed           bool          `json:"executed"`
+	Duration           time.Duration `json:"duration"`
+	StdoutDigest       string        `json:"stdout_digest"`
+	StderrDigest       string        `json:"stderr_digest"`
+	Stderr             string        `json:"stderr_excerpt,omitempty"`
+	Error              string        `json:"error,omitempty"`
+	FirstOutputAt      time.Time     `json:"first_output_at,omitempty"`
+	StdoutBytes        int           `json:"stdout_bytes,omitempty"`
+	StderrBytes        int           `json:"stderr_bytes,omitempty"`
+	CleanupComplete    bool          `json:"cleanup_complete"`
+	Truncated          bool          `json:"output_truncated,omitempty"`
+	TelemetryAvailable bool          `json:"telemetry_available"`
 }
 
 // Failed reports whether this attempt observed the failing behaviour.
 func (a Attempt) Failed() bool {
-	return a.Executed && !a.TimedOut && a.ExitCode != 0
+	return a.Executed && !a.TimedOut && a.ExitCode != 0 && a.Error == ""
 }
 
 // Passed reports whether this attempt observed a clean run.
@@ -140,6 +149,9 @@ type Environment struct {
 	OS            string    `json:"os"`
 	Arch          string    `json:"arch"`
 	GoVersion     string    `json:"go_version,omitempty"`
+	GoCommand     string    `json:"go_command,omitempty"`
+	GoRoot        string    `json:"go_root,omitempty"`
+	GoToolchain   string    `json:"go_toolchain,omitempty"`
 	GitVersion    string    `json:"git_version,omitempty"`
 	RepoPath      string    `json:"repo_path"`
 	HeadCommit    string    `json:"head_commit"`
@@ -175,52 +187,64 @@ type Comparison struct {
 
 // Report is the final diagnosis.
 type Report struct {
-	InvestigationID     string                         `json:"investigation_id"`
-	RepoPath            string                         `json:"repo_path"`
-	Command             []string                       `json:"command"`
-	Classification      Classification                 `json:"classification"`
-	Environment         Environment                    `json:"environment"`
-	Baseline            Baseline                       `json:"baseline"`
-	Comparison          *Comparison                    `json:"comparison,omitempty"`
-	Agent               *agent.Report                  `json:"agent,omitempty"`
-	AgentStatus         string                         `json:"agent_status"`
-	AgentError          string                         `json:"agent_error,omitempty"`
-	Localization        Localization                   `json:"localization"`
-	Evidence            []EvidenceItem                 `json:"evidence"`
-	Candidates          []domain.CandidateLocation     `json:"candidates,omitempty"`
-	Relationships       []domain.Relationship          `json:"relationships,omitempty"`
-	FailureGroups       []domain.FailureGroup          `json:"failure_groups,omitempty"`
-	FailureEpisodes     []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
-	Hypotheses          []domain.Hypothesis            `json:"hypotheses,omitempty"`
-	Findings            []domain.DiagnosticFinding     `json:"findings,omitempty"`
-	Preliminary         *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
-	Overview            *programrepo.Overview          `json:"overview,omitempty"`
-	Metrics             *observability.Metrics         `json:"metrics,omitempty"`
-	IndexingMode        string                         `json:"indexing_mode,omitempty"`
-	CoverageNotes       []string                       `json:"coverage_notes,omitempty"`
-	Partial             bool                           `json:"partial,omitempty"`
-	Experiments         []domain.Experiment            `json:"experiments,omitempty"`
-	UnresolvedQuestions []domain.InvestigationQuestion `json:"unresolved_questions,omitempty"`
-	StoppingReason      string                         `json:"stopping_reason,omitempty"`
-	AdaptiveIterations  int                            `json:"adaptive_iterations,omitempty"`
-	HistoricalContext   []domain.HistoricalReference   `json:"historical_context,omitempty"`
-	Claims              []Claim                        `json:"claims"`
-	Confidence          float64                        `json:"confidence"`
-	Uncertainty         []string                       `json:"uncertainty"`
-	Refused             bool                           `json:"refused"`
-	RefusalReason       string                         `json:"refusal_reason,omitempty"`
-	Probes              []Probe                        `json:"probes,omitempty"`
-	BundlePath          string                         `json:"bundle_path,omitempty"`
-	ReplayCommand       string                         `json:"replay_command,omitempty"`
-	CreatedAt           time.Time                      `json:"created_at"`
+	InvestigationID            string                         `json:"investigation_id"`
+	RepoPath                   string                         `json:"repo_path"`
+	Command                    []string                       `json:"command"`
+	Classification             Classification                 `json:"classification"`
+	Environment                Environment                    `json:"environment"`
+	Baseline                   Baseline                       `json:"baseline"`
+	Comparison                 *Comparison                    `json:"comparison,omitempty"`
+	Agent                      *agent.Report                  `json:"agent,omitempty"`
+	AgentStatus                string                         `json:"agent_status"`
+	AgentError                 string                         `json:"agent_error,omitempty"`
+	Localization               Localization                   `json:"localization"`
+	Evidence                   []EvidenceItem                 `json:"evidence"`
+	NormalizedEvidence         *NormalizedEvidence            `json:"normalized_evidence,omitempty"`
+	Candidates                 []domain.CandidateLocation     `json:"candidates,omitempty"`
+	Deltas                     []domain.CodeDelta             `json:"deltas,omitempty"`
+	ExecutionPaths             []domain.ExecutionPath         `json:"execution_paths,omitempty"`
+	Relationships              []domain.Relationship          `json:"relationships,omitempty"`
+	FailureGroups              []domain.FailureGroup          `json:"failure_groups,omitempty"`
+	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
+	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
+	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
+	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
+	Overview                   *programrepo.Overview          `json:"overview,omitempty"`
+	Metrics                    *observability.Metrics         `json:"metrics,omitempty"`
+	IndexingMode               string                         `json:"indexing_mode,omitempty"`
+	CoverageNotes              []string                       `json:"coverage_notes,omitempty"`
+	Partial                    bool                           `json:"partial,omitempty"`
+	Experiments                []domain.Experiment            `json:"experiments,omitempty"`
+	UnresolvedQuestions        []domain.InvestigationQuestion `json:"unresolved_questions,omitempty"`
+	StoppingReason             string                         `json:"stopping_reason,omitempty"`
+	AdaptiveIterations         int                            `json:"adaptive_iterations,omitempty"`
+	HistoricalContext          []domain.HistoricalReference   `json:"historical_context,omitempty"`
+	Claims                     []Claim                        `json:"claims"`
+	Confidence                 float64                        `json:"confidence"`
+	Uncertainty                []string                       `json:"uncertainty"`
+	Refused                    bool                           `json:"refused"`
+	RefusalReason              string                         `json:"refusal_reason,omitempty"`
+	Probes                     []Probe                        `json:"probes,omitempty"`
+	BundlePath                 string                         `json:"bundle_path,omitempty"`
+	ReplayCommand              string                         `json:"replay_command,omitempty"`
+	ReproductionStatus         string                         `json:"reproduction_status,omitempty"`
+	ReproductionDeferredReason string                         `json:"reproduction_deferred_reason,omitempty"`
+	ReproductionDecision       ReproductionDecision           `json:"reproduction_decision,omitempty"`
+	CreatedAt                  time.Time                      `json:"created_at"`
 }
 
 // Config controls one diagnosis run.
 type Config struct {
 	RepoPath string
 	Command  []string
-	Attempts int
-	Timeout  time.Duration
+	// CI metadata identifies the external execution without making provider
+	// metadata part of the deterministic diagnosis logic.
+	CIProvider          string
+	ExternalExecutionID string
+	PullRequestID       string
+	SourceURL           string
+	Attempts            int
+	Timeout             time.Duration
 	// Executor runs the command. It is required so local and container
 	// execution stay interchangeable behind one interface.
 	Executor      execution.Executor
@@ -263,6 +287,9 @@ type Config struct {
 	// FastPath publishes the preliminary result without base comparison or
 	// repository localization when reproduction is inconclusive.
 	FastPath bool
+	// Evidence is an optional normalized CI input. When set, Run performs an
+	// evidence-first diagnosis and never invokes Executor.
+	Evidence *NormalizedEvidence
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -290,9 +317,13 @@ type EventRecord struct {
 
 // Run performs the full diagnosis workflow.
 func Run(ctx context.Context, cfg Config) (Report, error) {
+	if cfg.Evidence != nil {
+		return diagnoseNormalizedEvidence(ctx, cfg, *cfg.Evidence)
+	}
 	if cfg.Attempts <= 0 {
 		cfg.Attempts = DefaultAttempts
 	}
+
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -445,7 +476,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			}
 		} else {
 			report.Comparison = &comparison
-			report.Classification = comparison.Verdict
+			if comparison.Verdict == ClassInconclusive {
+				report.Uncertainty = append(report.Uncertainty, "base/head comparison was inconclusive; preserving the head reproduction classification")
+				report.Partial = true
+			} else {
+				report.Classification = comparison.Verdict
+			}
 			cmpStage.Done("completed", nil)
 		}
 	}
@@ -460,21 +496,61 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
 	}
 
-	// Refuse before localization when the failure itself is not established.
+	// Existing CI evidence establishes what happened on the head. When a base
+	// revision is available, execute only that counterfactual revision so PR
+	// causality can be assessed without rerunning the already-observed head.
+	if artifactOnly && cfg.BaseRef != "" && ctx.Err() == nil {
+		cmpStage := d.metrics.Begin(observability.StageBaseComparison)
+		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
+		if cmpErr != nil {
+			cmpStage.Done("inconclusive", cmpErr)
+			report.Uncertainty = append(report.Uncertainty, "base comparison incomplete: "+cmpErr.Error())
+			report.Partial = true
+		} else {
+			report.Comparison = &comparison
+			cmpStage.Done("completed", nil)
+			if comparison.Verdict == ClassRealRegression {
+				report.Evidence = append(report.Evidence, EvidenceItem{
+					ID:         "E-pr-causality",
+					Kind:       "pr_causality",
+					Source:     "CI head artifact plus base execution",
+					Digest:     digestString(string(comparison.Verdict) + comparison.BaseCommit + comparison.HeadCommit),
+					Detail:     "the original CI evidence reports failure on the head while the same configured command passed on the base revision",
+					Provenance: "head from original CI evidence; base from controlled execution",
+				})
+			} else if comparison.Verdict == ClassPreExisting {
+				report.Evidence = append(report.Evidence, EvidenceItem{
+					ID:         "E-pr-causality",
+					Kind:       "pr_causality",
+					Source:     "CI head artifact plus base execution",
+					Digest:     digestString(string(comparison.Verdict) + comparison.BaseCommit + comparison.HeadCommit),
+					Detail:     "the same configured command failed on the base revision, so the PR is not established as the source of the failure",
+					Provenance: "head from original CI evidence; base from controlled execution",
+				})
+			}
+		}
+	}
+
+	// Preserve a lightweight report when the failure is not established. The
+	// evidence-only path must not trigger repository-wide analysis.
 	if reason, ok := refusalReason(report.Classification, baseline); ok && !artifactOnly {
 		report.Refused = true
 		report.RefusalReason = reason
 		report.Localization = Localization{HeadCommit: env.HeadCommit, BisectStatus: "skipped: diagnosis refused"}
 		report.Uncertainty = append(report.Uncertainty, reason)
 		report.Confidence = 0
-		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization); err != nil {
+		report.Partial = true
+		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization, true); err != nil {
 			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 			report.Partial = true
 		}
 		return report, nil
 	}
 
-	skipDeep := cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
+	// Artifact-backed runs can still inspect the checked-out source, but must
+	// not rerun the configured command: adaptive rerun actions would turn an
+	// evidence-first diagnosis into an implicit reproduction.
+	skipDeep := artifactOnly || cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
 	if skipDeep && !cfg.SkipAdaptive {
 		report.Uncertainty = append(report.Uncertainty, "deep investigation skipped because reproduction or base comparison was inconclusive")
 		report.Partial = true
@@ -485,16 +561,55 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	var localization Localization
 	var locEvidence []EvidenceItem
 	var locErr error
+	// Artifact evidence is execution evidence, not a reason to skip source
+	// indexing. Only inconclusive/fast-path runs remain observation-only.
+	evidenceOnly := report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
 	if artifactOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
 		}
+		localization.LikelyFiles = observedFilesFromEvidence(baseline, report.Evidence)
+		if len(localization.LikelyFiles) > 0 {
+			report.Evidence = append(report.Evidence, EvidenceItem{
+				ID:         "E-observed-source-location",
+				Kind:       "observed_source_location",
+				Source:     "CI diagnostic file and line output",
+				Digest:     digestString(strings.Join(localization.LikelyFiles, "\n")),
+				Detail:     "source files reported by CI diagnostics:\n" + strings.Join(localization.LikelyFiles, "\n"),
+				Provenance: "observed in original CI evidence; not yet independently verified",
+			})
+		}
+		if cfg.BaseRef != "" {
+			base := strings.TrimSpace(gitOutput(cfg.RepoPath, "rev-parse", cfg.BaseRef))
+			if base != "" {
+				changed := strings.TrimSpace(gitOutput(cfg.RepoPath, "diff", "--name-only", base+"..."+env.HeadCommit))
+				var changedPaths []string
+				for _, path := range strings.Split(changed, "\n") {
+					path = strings.TrimSpace(path)
+					if path == "" || containsPath(localization.LikelyFiles, path) {
+						continue
+					}
+					changedPaths = append(changedPaths, path)
+					localization.LikelyFiles = append(localization.LikelyFiles, path)
+				}
+				if len(changedPaths) > 0 {
+					report.Evidence = append(report.Evidence, EvidenceItem{
+						ID:     "E-git-diff",
+						Kind:   "git_diff",
+						Source: "git diff --name-only " + base + "..." + env.HeadCommit,
+						Digest: digestString(strings.Join(changedPaths, "\n")),
+						Detail: "files changed between the CI head and base:\n" + strings.Join(changedPaths, "\n"),
+					})
+				}
+			}
+		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
-	} else if cfg.FastPath && reproductionInconclusive(baseline, report.Comparison) {
+		report.Uncertainty = append(report.Uncertainty, "source localization used the checked-out CI head; no local reproduction was executed")
+	} else if evidenceOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
-			BisectStatus: "skipped: fast-path reproduction inconclusive",
+			BisectStatus: "skipped: evidence-only diagnosis",
 		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because the fast-path reproduction was inconclusive")
 		report.Partial = true
@@ -513,7 +628,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	} else {
 		locStage.Done("completed", nil)
 	}
-	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization); err != nil {
+	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization, evidenceOnly); err != nil {
 		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 		report.Partial = true
 	}
@@ -541,7 +656,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.RefusalReason = "generated diagnosis contained unsupported evidence references"
 		report.Claims = nil
 	}
-	if cfg.Agent != nil {
+	if cfg.Agent != nil && !evidenceOnly {
 		report.AgentStatus = "enabled"
 		input := agent.Input{
 			Classification: string(report.Classification),
@@ -571,11 +686,153 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.RefusalReason = fmt.Sprintf("confidence %.2f is below the %.2f threshold; evidence is insufficient for a diagnosis", report.Confidence, RefusalConfidence)
 	}
 
-	if len(cfg.Probes) > 0 && ctx.Err() == nil {
+	if len(cfg.Probes) > 0 && !evidenceOnly && ctx.Err() == nil {
 		report.Probes = d.runProbes(ctx, workspace)
 	}
 
 	return report, nil
+}
+
+// DiagnoseEvidence is the explicit evidence-first entrypoint. It reconstructs
+// execution from normalized CI evidence and defers local reproduction.
+func (d *Diagnoser) DiagnoseEvidence(ctx context.Context, evidence NormalizedEvidence) (Report, error) {
+	return diagnoseNormalizedEvidence(ctx, d.cfg, evidence)
+}
+
+func DiagnoseEvidence(ctx context.Context, cfg Config, evidence NormalizedEvidence) (Report, error) {
+	return diagnoseNormalizedEvidence(ctx, cfg, evidence)
+}
+
+func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence NormalizedEvidence) (Report, error) {
+	if cfg.InvestigationID == "" {
+		cfg.InvestigationID = newID()
+	}
+	d := &Diagnoser{cfg: cfg, investigationID: cfg.InvestigationID, executions: make(map[string]Attempt)}
+	d.metrics = observability.NewMetrics(cfg.InvestigationID)
+	now := time.Now().UTC()
+	report := Report{InvestigationID: cfg.InvestigationID, RepoPath: cfg.RepoPath, Command: cfg.Command, CreatedAt: now, AgentStatus: "deferred", ReproductionStatus: "deferred", ReproductionDeferredReason: "local reproduction was not requested for evidence-first diagnosis"}
+	report.Evidence = normalizedReportEvidence(evidence)
+	report.NormalizedEvidence = &evidence
+	report.Baseline = normalizedBaseline(evidence, cfg.Command)
+	report.ReproductionDecision = DecideReproduction(evidence, cfg.Command)
+	report.Classification = classifyNormalizedEvidence(evidence, report.Baseline)
+	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, report.Baseline))
+	report.Environment = Environment{RepoPath: cfg.RepoPath, Isolation: "external CI evidence"}
+	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
+	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
+	report.Partial = true
+	report.Localization = Localization{BisectStatus: "deferred: evidence-first diagnosis"}
+	d.emit(EventDiagnosisStarted, domain.StatusCollectingEvidence, "evidence-first diagnosis started")
+	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence, "local reproduction deferred")
+	if err := d.persistArchitecture(ctx, &report, "", report.Baseline, report.Environment, report.Localization, true); err != nil {
+		report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
+	}
+	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)
+	report.Confidence = confidence(report.Classification, report.Localization, report.Uncertainty)
+	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, report.Localization)...)
+	if report.Classification == ClassInconclusive {
+		report.Refused = true
+		report.RefusalReason = "CI evidence was incomplete or inconclusive"
+	}
+	if len(report.Evidence) == 0 {
+		report.Refused = true
+		report.RefusalReason = "no CI evidence was supplied"
+	}
+	if err := ValidateContract(report); err != nil {
+		report.Refused = true
+		report.RefusalReason = err.Error()
+		report.Claims = nil
+	}
+	finish(&report, d, "")
+	return report, nil
+}
+
+func normalizedReportEvidence(input NormalizedEvidence) []EvidenceItem {
+	var out []EvidenceItem
+	seen := map[string]bool{}
+	for _, raw := range append(append([]RawCIEvidence{}, input.RawEvidence...), executionRawEvidence(input.Executions)...) {
+		if raw.ID == "" {
+			raw.ID = "ci-evidence-" + digestString(raw.Content)[:12]
+		}
+		if seen[raw.ID] {
+			continue
+		}
+		seen[raw.ID] = true
+		out = append(out, EvidenceItem{ID: raw.ID, Kind: raw.Kind, Source: raw.Provenance.Provider, Digest: digestString(raw.Content), Detail: bound(raw.Content, MaxEvidenceExcerpt), Provenance: raw.Provenance.URI, Limitations: raw.Limitations})
+	}
+	return out
+}
+
+func executionRawEvidence(executions []CIExecution) []RawCIEvidence {
+	var out []RawCIEvidence
+	for _, exec := range executions {
+		out = append(out, exec.RawEvidence...)
+	}
+	return out
+}
+
+func normalizedBaseline(input NormalizedEvidence, command []string) Baseline {
+	b := Baseline{Command: command, Source: "normalized_ci_evidence", StartedAt: time.Now().UTC()}
+	for i, exec := range input.Executions {
+		var text string
+		for _, raw := range exec.RawEvidence {
+			text += raw.Content + "\n"
+		}
+
+		a := Attempt{Index: i, Executed: exec.State != StateNotExecuted && exec.State != StateUnknown && exec.State != StateCancelled && exec.State != StateSkipped, Stderr: bound(text, MaxEvidenceExcerpt), StderrDigest: digestString(text)}
+		a.TimedOut = exec.State == StateTimedOut
+		if exec.State == StateCancelled || exec.State == StateUnknown {
+			a.Executed = false
+		}
+		if exec.ExitCode != nil {
+			a.ExitCode = *exec.ExitCode
+		} else if exec.State == StateFailed {
+			a.ExitCode = 1
+		}
+		switch exec.State {
+		case StateFailed:
+			b.Failures++
+		case StatePassed:
+			b.Passes++
+		case StateTimedOut:
+			b.TimedOut++
+		}
+		b.Results = append(b.Results, a)
+	}
+	b.Attempts = len(b.Results)
+	b.FinishedAt = time.Now().UTC()
+	return b
+}
+
+func classifyNormalizedEvidence(input NormalizedEvidence, baseline Baseline) Classification {
+	class := Classify(baseline.Results)
+	if class == ClassRealRegression {
+		// Check if this is specifically a lint failure based on CI job identity
+		// and the pattern of extracted failures, not artificial naming conventions.
+		for _, exec := range input.Executions {
+			// Check job/step identity for lint-related checks
+			lintJob := strings.Contains(strings.ToLower(exec.Identity.Job), "lint") ||
+				strings.Contains(strings.ToLower(exec.Identity.Step), "lint")
+			// Check if extracted tests indicate lint failures
+			lintTests := false
+			for _, test := range exec.Tests {
+				if strings.HasPrefix(test.Name, "lint:") {
+					lintTests = true
+					break
+				}
+			}
+			if lintJob && lintTests {
+				return ClassLintFailureObserved
+			}
+			// If job identity indicates lint but parser cannot extract recognized diagnostics,
+			// preserve inconclusive rather than misclassifying as test failure.
+			if lintJob && !lintTests {
+				return ClassInconclusive
+			}
+		}
+		return ClassTestFailureObserved
+	}
+	return class
 }
 
 func isTimeoutOrCancel(err error) bool {
@@ -583,19 +840,13 @@ func isTimeoutOrCancel(err error) bool {
 }
 
 func reproductionInconclusive(baseline Baseline, comparison *Comparison) bool {
-	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
+	if baselineInconclusive(baseline) {
 		return true
 	}
 	if comparison == nil {
 		return false
 	}
-	if comparison.Base.TimedOut > 0 && comparison.Base.Failures == 0 && comparison.Base.Passes == 0 {
-		return true
-	}
-	if comparison.Head.TimedOut > 0 && comparison.Head.Failures == 0 && comparison.Head.Passes == 0 {
-		return true
-	}
-	return false
+	return baselineInconclusive(comparison.Base) || baselineInconclusive(comparison.Head)
 }
 
 func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, headCommit string) (Comparison, error) {
@@ -627,6 +878,9 @@ func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, 
 }
 
 func compareVerdict(base, head Baseline) Classification {
+	if baselineInconclusive(base) || baselineInconclusive(head) {
+		return ClassInconclusive
+	}
 	if (base.Failures > 0 && base.Passes > 0) || (head.Failures > 0 && head.Passes > 0) {
 		return ClassFlaky
 	}
@@ -643,6 +897,18 @@ func compareVerdict(base, head Baseline) Classification {
 		return ClassFlaky
 	}
 	return ClassNotReproduced
+}
+
+func baselineInconclusive(baseline Baseline) bool {
+	for _, attempt := range baseline.Results {
+		if !attempt.Executed || attempt.Error != "" {
+			return true
+		}
+	}
+	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
+		return true
+	}
+	return baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes > 0
 }
 
 // finish writes the bundle, emits the terminal events, and persists the final
@@ -744,6 +1010,9 @@ func (d *Diagnoser) reproduce(ctx context.Context) (Baseline, Environment, strin
 		}
 	}
 	baseline.FinishedAt = time.Now().UTC()
+	// Keep the commit identifier canonical. git's combined output can include
+	// a trailing marker, which would make replay treat the revision as invalid.
+	env.HeadCommit = strings.TrimSpace(gitOutput(d.cfg.RepoPath, "rev-parse", "HEAD"))
 	return baseline, env, workspace, cleanup, nil
 }
 
@@ -765,14 +1034,20 @@ func (d *Diagnoser) runOnce(ctx context.Context, dir string, index int) Attempt 
 		MaxOutput: 64 << 10,
 	})
 	attempt := Attempt{
-		Index:        index,
-		ExitCode:     res.ExitCode,
-		TimedOut:     res.TimedOut,
-		Executed:     res.StartedAt != (time.Time{}) || res.TimedOut,
-		Duration:     res.Duration,
-		StdoutDigest: digestString(res.Stdout),
-		StderrDigest: digestString(res.Stderr),
-		Stderr:       bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
+		Index:              index,
+		ExitCode:           res.ExitCode,
+		TimedOut:           res.TimedOut,
+		Executed:           res.StartedAt != (time.Time{}) || res.TimedOut,
+		Duration:           res.Duration,
+		StdoutDigest:       digestString(res.Stdout),
+		StderrDigest:       digestString(res.Stderr),
+		Stderr:             bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
+		FirstOutputAt:      res.FirstOutputAt,
+		StdoutBytes:        res.StdoutBytes,
+		StderrBytes:        res.StderrBytes,
+		CleanupComplete:    res.CleanupComplete,
+		Truncated:          res.Truncated,
+		TelemetryAvailable: res.TelemetryAvailable,
 	}
 	if err != nil {
 		attempt.Error = err.Error()

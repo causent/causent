@@ -1,0 +1,7 @@
+<testsuites name="kubernetes-pr-143709">
+  <testsuite name="representative">
+    <testcase classname="k8s.io/kubernetes/cluster/gce/gci" name="TestObservedTimeout">
+      <error message="execution timed out">the CI job ended before this test completed</error>
+    </testcase>
+  </testsuite>
+</testsuites>

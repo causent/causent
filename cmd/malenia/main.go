@@ -48,6 +48,8 @@ func main() {
 		runInit(os.Args[2:])
 	case "diagnose", "diagnosis":
 		runDiagnose(os.Args[2:])
+	case "evidence":
+		runEvidence(os.Args[2:])
 	case "analyze":
 		runAnalyze(os.Args[2:])
 	case "replay":
@@ -73,6 +75,7 @@ func usage() {
 commands:
   init       detect the repository and generate Malenia integration files
   diagnose   reproduce, classify, localize, and record a replayable bundle (default)
+  evidence   diagnose previously collected CI logs/reports without a repository
   analyze    analyze an existing deterministic report with the configured model
   replay     re-run the checks recorded in a diagnosis bundle
   repair     run the legacy patch-generating workflow (explicit opt-in)
@@ -81,6 +84,68 @@ commands:
 
 run "malenia <command> -h" for command flags.
 `)
+}
+
+func runEvidence(args []string) {
+	fs := flag.NewFlagSet("evidence", flag.ExitOnError)
+	ciLog := fs.String("ci-log", "", "previously collected CI log")
+	junit := fs.String("junit", "", "previously collected JUnit XML report")
+	command := fs.String("command", "", "relevant command, if known")
+	output := fs.String("output", "", "output report path (default stdout)")
+	fs.Parse(args)
+	if strings.TrimSpace(*ciLog) == "" && strings.TrimSpace(*junit) == "" {
+		fmt.Fprintln(os.Stderr, "malenia evidence: --ci-log or --junit is required")
+		os.Exit(2)
+	}
+
+	var evidence diagnosis.NormalizedEvidence
+	if strings.TrimSpace(*ciLog) != "" {
+		data, err := readBoundedFile(*ciLog, 256<<10)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ci log: "+err.Error())
+			os.Exit(2)
+		}
+		parsed := diagnosis.ParseCITextEvidence(string(data), diagnosis.EvidenceProvenance{Provider: "offline", URI: *ciLog})
+		evidence.Executions = append(evidence.Executions, parsed.Executions...)
+		evidence.RawEvidence = append(evidence.RawEvidence, parsed.RawEvidence...)
+		evidence.Limitations = append(evidence.Limitations, parsed.Limitations...)
+	}
+	if strings.TrimSpace(*junit) != "" {
+		data, err := readBoundedFile(*junit, 256<<10)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "junit: "+err.Error())
+			os.Exit(2)
+		}
+		parsed, parseErr := diagnosis.ParseJUnitXML(string(data), diagnosis.EvidenceProvenance{Provider: "offline", URI: *junit})
+		if parseErr != nil {
+			fmt.Fprintln(os.Stderr, "junit: "+parseErr.Error())
+		}
+		evidence.Executions = append(evidence.Executions, parsed.Executions...)
+		evidence.RawEvidence = append(evidence.RawEvidence, parsed.RawEvidence...)
+		evidence.Limitations = append(evidence.Limitations, parsed.Limitations...)
+	}
+	report, err := diagnosis.DiagnoseEvidence(context.Background(), diagnosis.Config{
+		RepoPath: "offline-evidence",
+		Command:  splitCommand(*command),
+	}, evidence)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "evidence diagnosis: "+err.Error())
+		os.Exit(1)
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "evidence encode: "+err.Error())
+		os.Exit(1)
+	}
+	data = append(data, '\n')
+	if *output == "" {
+		_, _ = os.Stdout.Write(data)
+		return
+	}
+	if err := os.WriteFile(*output, data, 0600); err != nil {
+		fmt.Fprintln(os.Stderr, "evidence output: "+err.Error())
+		os.Exit(1)
+	}
 }
 
 func runEval(args []string) {
@@ -175,12 +240,13 @@ func runDiagnose(args []string) {
 	}
 	probes = append(probes, repoCfg.Probes...)
 
-	if *command == "" {
+	hasEvidenceInput := strings.TrimSpace(*ciLog) != "" || strings.TrimSpace(*junit) != ""
+	if *command == "" && !hasEvidenceInput {
 		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is required (or set command in .malenia.yml)")
 		os.Exit(2)
 	}
 	cmd := splitCommand(*command)
-	if len(cmd) == 0 {
+	if len(cmd) == 0 && !hasEvidenceInput {
 		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is empty")
 		os.Exit(2)
 	}
@@ -205,6 +271,10 @@ func runDiagnose(args []string) {
 	cfg := diagnosis.Config{
 		RepoPath:              repoPath,
 		Command:               cmd,
+		CIProvider:            os.Getenv("MALENIA_CI_PROVIDER"),
+		ExternalExecutionID:   os.Getenv("MALENIA_CI_RUN_ID"),
+		PullRequestID:         os.Getenv("MALENIA_CI_PR_NUMBER"),
+		SourceURL:             os.Getenv("MALENIA_CI_SOURCE_URL"),
 		Attempts:              *attempts,
 		Timeout:               *timeout,
 		InvestigationTimeout:  *investigationTimeout,
@@ -221,6 +291,8 @@ func runDiagnose(args []string) {
 		FastPath:              *fastPath,
 		ArtifactFirst:         *artifactFirst,
 	}
+	var normalized diagnosis.NormalizedEvidence
+	hasNormalizedEvidence := false
 	if strings.TrimSpace(*ciLog) != "" {
 		f, readErr := os.Open(*ciLog)
 		if readErr != nil {
@@ -234,7 +306,16 @@ func runDiagnose(args []string) {
 			os.Exit(2)
 		}
 		digest := sha256.Sum256(data)
-		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
+		provenance := "explicit CLI input"
+		if sourceURL := os.Getenv("MALENIA_CI_SOURCE_URL"); sourceURL != "" {
+			provenance = sourceURL
+		}
+		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: provenance}}
+		parsed := diagnosis.ParseCITextEvidence(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *ciLog})
+		normalized.Executions = append(normalized.Executions, parsed.Executions...)
+		normalized.RawEvidence = append(normalized.RawEvidence, parsed.RawEvidence...)
+		normalized.Limitations = append(normalized.Limitations, parsed.Limitations...)
+		hasNormalizedEvidence = true
 	}
 	if strings.TrimSpace(*junit) != "" {
 		data, readErr := readBoundedFile(*junit, 256<<10)
@@ -243,7 +324,19 @@ func runDiagnose(args []string) {
 			os.Exit(2)
 		}
 		digest := sha256.Sum256(data)
-		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: "explicit CLI input"})
+		provenance := "explicit CLI input"
+		if sourceURL := os.Getenv("MALENIA_CI_SOURCE_URL"); sourceURL != "" {
+			provenance = sourceURL
+		}
+		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: provenance})
+		parsed, parseErr := diagnosis.ParseJUnitXML(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *junit})
+		if parseErr != nil {
+			fmt.Fprintln(os.Stderr, "junit: "+parseErr.Error())
+		}
+		normalized.Executions = append(normalized.Executions, parsed.Executions...)
+		normalized.RawEvidence = append(normalized.RawEvidence, parsed.RawEvidence...)
+		normalized.Limitations = append(normalized.Limitations, parsed.Limitations...)
+		hasNormalizedEvidence = true
 	}
 	if strings.TrimSpace(*artifactDir) != "" {
 		artifacts, readErr := loadArtifactEvidence(*artifactDir, 20, 256<<10)
@@ -262,6 +355,9 @@ func runDiagnose(args []string) {
 	}
 	for _, probe := range probes {
 		cfg.Probes = append(cfg.Probes, splitCommand(probe))
+	}
+	if hasNormalizedEvidence {
+		cfg.Evidence = &normalized
 	}
 
 	report, err := diagnosis.Run(context.Background(), cfg)
