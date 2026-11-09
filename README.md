@@ -1,7 +1,8 @@
 # Malenia
 
 Malenia investigates failed CI runs and produces bounded, replayable,
-evidence-first diagnosis reports.
+evidence-backed diagnosis reports. It consumes logs, JUnit reports, stack
+traces, and CI artifacts before considering targeted reproduction.
 
 It reproduces a failure, compares revisions when possible, localizes relevant
 changes, records evidence, and classifies the result deterministically.
@@ -11,7 +12,9 @@ verification.
 
 ## Project status
 
-Malenia is under active development.
+Malenia is under active development. The GitHub Actions integration is the
+primary delivery path: repositories install a reusable workflow and Malenia
+supplies a pinned prebuilt binary. A hosted GitHub App is not required.
 
 The deterministic diagnosis workflow is the primary product. Repair is
 experimental and opt-in. Malenia does not silently modify a repository, create
@@ -47,6 +50,21 @@ go run ./cmd/malenia diagnose \
 ```
 
 The diagnosis workflow does not require a model.
+
+To diagnose existing CI evidence without rerunning the test command when the
+artifacts contain decisive failure evidence:
+
+```sh
+go run ./cmd/malenia diagnose \
+  --repo . \
+  --artifact-dir ./ci-artifacts \
+  --artifact-first \
+  --ci-log ./ci-artifacts/failure.log
+```
+
+Artifact ingestion is bounded, redacts common secret-shaped values, and records
+provenance and limitations. Missing or incomplete artifacts are uncertainty,
+not evidence that the failure did not occur.
 
 Run the explicit experimental repair workflow:
 
@@ -86,17 +104,19 @@ receive a raw checkout or host credentials.
 
 ```mermaid
 flowchart LR
-    A[Failed CI command] --> B[Fresh workspace]
-    B --> C[Deterministic reproduction]
-    C --> D[Classification and localization]
-    D --> E[Validated evidence bundle]
-    E --> F{Optional capability}
-    F -->|analysis| G[Separate trusted model analysis]
-    F -->|repair| H[Patch proposal validation]
-    H --> I[Fresh patched workspace]
-    I --> J[Baseline and control verification]
-    G --> K[Auditable diagnosis]
-    J --> K
+    A[Failed CI run] --> B[Logs reports artifacts]
+    B --> C[Failure extraction and grouping]
+    C --> D[Targeted repository overview]
+    D --> E[Preliminary diagnosis]
+    E --> F{Evidence sufficient?}
+    F -->|yes| G[Publish partial finding]
+    F -->|no| H[Targeted reproduction and expansion]
+    H --> I[Updated diagnosis]
+    G --> J[Validated evidence bundle]
+    I --> J
+    J --> K{Optional capability}
+    K -->|analysis| L[Separate trusted model analysis]
+    K -->|repair| M[Patch proposal validation]
 ```
 
 The model boundary is deliberately separate:
@@ -117,17 +137,19 @@ whether verification succeeded.
 
 The normal workflow is:
 
-1. Check out the target revision in an isolated Git worktree.
-2. Run the configured command repeatedly.
-3. Classify the failure as reproducible, flaky, resolved, or unavailable.
-4. Compare the head with a base or known-good revision when configured.
-5. Localize relevant files, stack frames, and commit history.
-6. Build a bounded evidence bundle with stable IDs and digests.
-7. Validate diagnosis claims against evidence references.
-8. Persist the report, events, artifacts, and bundle checksums.
+1. Ingest bounded logs, structured reports, stack traces, and CI artifacts.
+2. Extract failure episodes and group them only when evidence supports a relationship.
+3. Build a cheap, revision-aware repository overview and inspect relevant code.
+4. Publish a preliminary diagnosis with candidates, hypotheses, evidence, and unknowns.
+5. Run targeted reproduction, revision comparison, or graph expansion only when it
+   can resolve a material uncertainty.
+6. Validate and persist a bounded evidence bundle with stable IDs and provenance.
 
-Diagnosis evidence is not the same as proof of root cause. Localization and
-classification are reported with their uncertainty and limitations.
+When decisive CI evidence is available, artifact-first mode skips local
+reproduction and revision probes for the fast path. The report marks the
+baseline source as `ci_artifact` and states when localization or reproduction
+was deferred. Evidence is not proof of root cause; candidates, hypotheses, and
+verified causes remain separate.
 
 Supported environment adapters currently include Go, Node.js, Python, Rust,
 and Bazel. Repository-specific commands should still be reviewed explicitly.
@@ -149,7 +171,7 @@ For the reusable workflow, model analysis is selected explicitly:
 ```yaml
 jobs:
   diagnose:
-    uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
+    uses: Malenia-org/Malenia/.github/workflows/ci-diagnose.yml@v1
     with:
       agent: true
     secrets:
@@ -320,7 +342,7 @@ revision:
 jobs:
   diagnose:
     if: github.event.workflow_run.conclusion == 'failure'
-    uses: causent/malenia/.github/workflows/ci-diagnose.yml@v1
+    uses: Malenia-org/Malenia/.github/workflows/ci-diagnose.yml@v1
     with:
       run_id: ${{ github.event.workflow_run.id }}
       head_sha: ${{ github.event.workflow_run.head_sha }}
@@ -329,9 +351,10 @@ jobs:
 ```
 
 With the default `agent: false`, the workflow checks out the exact failing
-commit, collects bounded failed-run logs, runs deterministic reproduction and
-comparison, uploads the evidence bundle, and publishes the diagnosis when a
-pull request is available. No model provider or gateway secret is required.
+commit, collects bounded failed-run logs and downloadable artifacts, and uses
+that evidence before deterministic reproduction or comparison. It uploads the
+evidence bundle and publishes the diagnosis when a pull request is available.
+No model provider or gateway secret is required.
 
 After the workflow connection is deployed, enable analysis by setting
 `agent: true` and pass only the two dedicated gateway secrets shown above. The
@@ -343,6 +366,19 @@ the caller deliberately provides a trusted, isolated workflow boundary.
 `malenia init` generates the same integration with model assistance disabled by
 default. Review the generated command, revision inputs, permissions, and
 secrets before committing it.
+
+## Performance and limits
+
+The fast path is intended to publish a useful preliminary finding within
+seconds when CI artifacts are available. Cold GitHub Actions runs still include
+runner startup, checkout, artifact download, and comment publication. Deep
+investigation can take longer and is bounded by the configured investigation
+timeout.
+
+Malenia does not claim a root cause when evidence is insufficient. It returns a
+partial or inconclusive report instead. Full-suite reruns are not the default;
+reproduction is targeted and equivalent completed executions are reused only
+when revision, command, and execution identity match.
 
 ## Configuration
 
