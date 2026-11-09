@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -385,6 +386,16 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 }
 
 func (d *Diagnoser) stageOverview(ctx context.Context, report *Report, workspace, repoID, revisionID, commitSHA string, artifactCache *cache.FSCache) (programrepo.Overview, error) {
+	if report.NormalizedEvidence != nil || report.Baseline.Source == "ci_artifact" {
+		stage := d.metrics.Begin(observability.StageRepositoryOverview)
+		stage.Meta("mode", "focused")
+		overview := focusedOverview(repoID, revisionID, commitSHA, report.Localization.LikelyFiles)
+		stage.Count("files", sumCounts(overview.FileCounts))
+		stage.Count("languages", len(overview.Languages))
+		stage.Done("completed", nil)
+		report.CoverageNotes = append(report.CoverageNotes, "repository overview is focused on CI-selected paths; broad metadata scan is deferred")
+		return overview, nil
+	}
 	stage := d.metrics.Begin(observability.StageRepositoryOverview)
 	key := cache.Key{RepositoryID: repoID, CommitSHA: commitSHA, AnalyzerVersion: cache.AnalyzerVersion, ArtifactType: cache.ArtifactOverview, ArtifactID: "overview"}
 	var overview programrepo.Overview
@@ -415,6 +426,39 @@ func (d *Diagnoser) stageOverview(ctx context.Context, report *Report, workspace
 	stage.Done("completed", nil)
 	_ = report
 	return overview, nil
+}
+
+func focusedOverview(repoID, revisionID, commitSHA string, paths []string) programrepo.Overview {
+	counts := map[string]int{}
+	langs := map[string]bool{}
+	for _, path := range paths {
+		var lang string
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".go":
+			lang = "go"
+		case ".py":
+			lang = "python"
+		case ".js", ".jsx", ".mjs", ".ts", ".tsx":
+			lang = "javascript"
+		case ".rs":
+			lang = "rust"
+		}
+		if lang != "" {
+			counts[lang]++
+			langs[lang] = true
+		}
+	}
+	var languages []string
+	for lang := range langs {
+		languages = append(languages, lang)
+	}
+	sort.Strings(languages)
+	return programrepo.Overview{
+		RepositoryID: repoID, RevisionID: revisionID, CommitSHA: commitSHA,
+		Languages: languages, FileCounts: counts, GeneratedAt: time.Now().UTC(),
+		CoverageNotes: []string{"focused overview is not exhaustive; missing languages and files are unresolved"},
+		Metadata:      map[string]string{"mode": "focused", "selected_paths": fmt.Sprint(len(paths))},
+	}
 }
 
 func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, repoID, revisionID, commitSHA string, loc Localization, artifactCache *cache.FSCache) (programrepo.Snapshot, string, error) {
