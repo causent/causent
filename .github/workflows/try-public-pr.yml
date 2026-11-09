@@ -29,6 +29,11 @@ on:
         required: true
         default: '3'
         type: string
+      skip_adaptive:
+        description: Publish the preliminary diagnosis without optional deep experiments
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -139,6 +144,9 @@ jobs:
             --base "$MALENIA_BASE" --attempts "$MALENIA_ATTEMPTS"
             --max-probes "$MALENIA_MAX_PROBES" --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
+          if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
+            args+=(--skip-adaptive)
+          fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
           fi
