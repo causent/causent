@@ -70,7 +70,7 @@ on:
         description: Repository that publishes Malenia releases
         type: string
         required: false
-        default: causent/malenia
+        default: Malenia-org/Malenia
       comment:
         description: Post the diagnosis as a pull request comment when the run belongs to a PR
         type: boolean
@@ -206,9 +206,13 @@ jobs:
           else
             base_url="https://github.com/$repository/releases/download/$version"
           fi
-          curl -fsSL "$base_url/malenia_linux_amd64" -o "$RUNNER_TEMP/malenia"
+          asset=malenia_linux_amd64
+          if ! curl -fsSL "$base_url/$asset" -o "$RUNNER_TEMP/malenia"; then
+            asset=causent_linux_amd64
+            curl -fsSL "$base_url/$asset" -o "$RUNNER_TEMP/malenia"
+          fi
           curl -fsSL "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
-          (cd "$RUNNER_TEMP" && grep '  malenia_linux_amd64$' malenia.SHA256SUMS | sed 's/malenia_linux_amd64/malenia/' | sha256sum -c -)
+          (cd "$RUNNER_TEMP" && grep "  $asset\$" malenia.SHA256SUMS | sed "s/$asset/malenia/" | sha256sum -c -)
           chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/malenia" version
@@ -363,9 +367,13 @@ jobs:
           else
             base_url="https://github.com/$repository/releases/download/$version"
           fi
-          curl -fsSL "$base_url/malenia_linux_amd64" -o "$RUNNER_TEMP/malenia"
+          asset=malenia_linux_amd64
+          if ! curl -fsSL "$base_url/$asset" -o "$RUNNER_TEMP/malenia"; then
+            asset=causent_linux_amd64
+            curl -fsSL "$base_url/$asset" -o "$RUNNER_TEMP/malenia"
+          fi
           curl -fsSL "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
-          (cd "$RUNNER_TEMP" && grep '  malenia_linux_amd64$' malenia.SHA256SUMS | sed 's/malenia_linux_amd64/malenia/' | sha256sum -c -)
+          (cd "$RUNNER_TEMP" && grep "  $asset\$" malenia.SHA256SUMS | sed "s/$asset/malenia/" | sha256sum -c -)
           chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/malenia" version
