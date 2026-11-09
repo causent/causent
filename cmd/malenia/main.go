@@ -106,6 +106,7 @@ func runDiagnose(args []string) {
 	command := fs.String("command", "", "failing command to reproduce")
 	attempts := fs.Int("attempts", diagnosis.DefaultAttempts, "reproduction attempts")
 	timeout := fs.Duration("timeout", diagnosis.DefaultTimeout, "timeout per attempt")
+	investigationTimeout := fs.Duration("investigation-timeout", 0, "maximum duration for the complete diagnosis")
 	db := fs.String("db", envOr("MALENIA_DB", dbPath()), "sqlite db path for persisted events")
 	bundle := fs.String("bundle", "", "bundle output directory (default <repo>/.malenia/bundles/<timestamp>)")
 	good := fs.String("good", "", "known-good revision; enables git bisect")
@@ -202,6 +203,7 @@ func runDiagnose(args []string) {
 		Command:               cmd,
 		Attempts:              *attempts,
 		Timeout:               *timeout,
+		InvestigationTimeout:  *investigationTimeout,
 		Executor:              executor,
 		ExecutorName:          strings.ToLower(*executorMode),
 		ExecutorImage:         strings.TrimSpace(*image),
@@ -250,7 +252,15 @@ func runDiagnose(args []string) {
 
 	report, err := diagnosis.Run(context.Background(), cfg)
 	if err != nil {
+		if *jsonOutput {
+			// Preserve partial evidence so timeout and cancellation failures can
+			// still be consumed by CI and persisted as a useful report.
+			writeJSON(report)
+		}
 		fmt.Fprintln(os.Stderr, "diagnosis failed: "+err.Error())
+		if report.Partial || report.Refused {
+			return
+		}
 		os.Exit(1)
 	}
 
