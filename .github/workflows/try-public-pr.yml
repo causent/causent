@@ -198,7 +198,9 @@ jobs:
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
           fi
-          "$RUNNER_TEMP/malenia" "${args[@]}" > "$RUNNER_TEMP/malenia-report.json"
+          outer_timeout=$((MALENIA_INVESTIGATION_TIMEOUT_SECONDS + 30))
+          timeout --signal=TERM --kill-after=15s "${outer_timeout}s" \
+            "$RUNNER_TEMP/malenia" "${args[@]}" > "$RUNNER_TEMP/malenia-report.json"
 
       - name: Write run summary
         env:
