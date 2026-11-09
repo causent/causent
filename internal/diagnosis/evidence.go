@@ -142,6 +142,7 @@ type parserOptions struct{ maxBytes int }
 
 var ciLocation = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|rs|java|py|js|ts|c|cc|cpp|h)):(\d+)(?::(\d+))?`)
 var lintErrorLine = regexp.MustCompile(`^ERROR:\s+([A-Za-z0-9_./-]+\.(?:go|rs|java|py|js|ts|c|cc|cpp|h)):(\d+)(?::(\d+))?:\s+([^:]+):\s+(.+)$`)
+var evidenceGoFailureLine = regexp.MustCompile(`^=== FAIL: ([^ (]+)`)
 var prowJobPattern = regexp.MustCompile(`^\+\+\+\s+Running\s+case:\s+([^\s]+)`)
 var prowWorkdirPattern = regexp.MustCompile(`^\+\+\+\s+working\s+dir:\s+(.+)$`)
 
@@ -312,10 +313,20 @@ func ParseCITextEvidence(content string, provenance EvidenceProvenance) Normaliz
 	if len(lintFailures) > 0 {
 		exec.Tests = lintFailures
 	} else {
-		// Fallback: extract generic file:line locations
-		for _, m := range ciLocation.FindAllStringSubmatch(raw.Content, -1) {
-			line, _ := strconv.Atoi(m[2])
-			exec.Tests = append(exec.Tests, TestObservation{Identity: identity, Name: "observed location", State: state, File: m[1], Line: line, EvidenceID: raw.ID})
+		// Go test failure headers identify actual failed tests. Stack frames are
+		// evidence attached to these failures, not independent observations.
+		for logLineNum, line := range strings.Split(raw.Content, "\n") {
+			if m := evidenceGoFailureLine.FindStringSubmatch(line); m != nil {
+				exec.Tests = append(exec.Tests, TestObservation{Identity: identity, Name: m[1], State: StateFailed, LogLine: logLineNum + 1, EvidenceID: raw.ID})
+			}
+		}
+		// Preserve compiler/linter locations when they are the diagnostic itself,
+		// but never turn arbitrary stack frames into test observations.
+		if len(exec.Tests) == 0 && (strings.Contains(lower, "error:") || strings.Contains(lower, "undefined:")) {
+			for _, m := range ciLocation.FindAllStringSubmatch(raw.Content, -1) {
+				line, _ := strconv.Atoi(m[2])
+				exec.Tests = append(exec.Tests, TestObservation{Identity: identity, Name: "compiler diagnostic", State: state, File: m[1], Line: line, EvidenceID: raw.ID})
+			}
 		}
 	}
 

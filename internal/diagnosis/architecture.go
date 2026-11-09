@@ -17,6 +17,7 @@ var (
 	pythonFrame        = regexp.MustCompile(`File "([^"]+)", line ([0-9]+)`)
 	goFrame            = regexp.MustCompile(`([^\s()]+\.go):([0-9]+)`)
 	failureLine        = regexp.MustCompile(`(?m)^--- FAIL: ([^ (]+)`)
+	goFailureLine      = regexp.MustCompile(`(?m)^=== FAIL: ([^ (]+)`)
 	genericFailureLine = regexp.MustCompile(`(?m)^FAIL\s+([^ (]+)`)
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
@@ -103,6 +104,9 @@ func parseFailureObservations(text string) []failureObservation {
 		}
 	}
 	for _, match := range failureLine.FindAllStringSubmatch(text, -1) {
+		add(match[1], match[1])
+	}
+	for _, match := range goFailureLine.FindAllStringSubmatch(text, -1) {
 		add(match[1], match[1])
 	}
 	for _, match := range genericFailureLine.FindAllStringSubmatch(text, -1) {
@@ -240,26 +244,27 @@ func failureText(b Baseline, evidence []EvidenceItem) string {
 }
 func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence []EvidenceItem) []localization.Frame {
 	var out []localization.Frame
+	seen := map[string]bool{}
 	failureIDs := make([]string, 0, len(failures))
 	for _, failure := range failures {
 		failureIDs = append(failureIDs, failure.ID)
 	}
 	addFrames := func(text string) {
 		for _, m := range pythonFrame.FindAllStringSubmatch(text, -1) {
-			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
 		}
 		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
-			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
 		}
 	}
 	for _, a := range b.Results {
 		text := a.Stderr
 		failureIDs := failureIDsForText(a.Stderr, failures)
 		for _, m := range pythonFrame.FindAllStringSubmatch(text, -1) {
-			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
 		}
 		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
-			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
 		}
 	}
 	for _, item := range evidence {
@@ -268,6 +273,29 @@ func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence [
 		}
 	}
 	return out
+}
+
+func addFrame(out *[]localization.Frame, seen map[string]bool, file string, line int, failureIDs []string) {
+	if file == "" || line <= 0 {
+		return
+	}
+	key := fmt.Sprintf("%s:%d", file, line)
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	*out = append(*out, localization.Frame{File: file, Line: line, FailureIDs: failureIDs})
+}
+
+func normalizeEvidencePath(path string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if strings.HasPrefix(path, "/usr/local/go/") || strings.HasPrefix(path, "/usr/lib/go/") {
+		return ""
+	}
+	if marker := "/kubernetes/"; strings.Contains(path, marker) {
+		path = path[strings.Index(path, marker)+len(marker):]
+	}
+	return strings.TrimPrefix(path, "./")
 }
 
 // observedFilesFromEvidence returns source paths reported by CI diagnostics.

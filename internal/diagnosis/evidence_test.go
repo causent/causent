@@ -54,8 +54,8 @@ func TestParseCITextEvidencePreservesLargeLogSuffixAndRaceFailure(t *testing.T) 
 	if !strings.Contains(got.RawEvidence[0].Content, "WARNING: DATA RACE") {
 		t.Fatal("large-log normalization discarded the terminal race report")
 	}
-	if len(got.Executions[0].Tests) == 0 {
-		t.Fatal("expected race/package failure observations")
+	if len(got.Executions[0].Tests) != 0 {
+		t.Fatalf("stack frames must not become test observations: %#v", got.Executions[0].Tests)
 	}
 }
 
