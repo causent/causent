@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,11 +96,20 @@ type boundedBuffer struct {
 	data      []byte
 	max       int
 	truncated bool
+	firstAt   time.Time
+	total     int
+	mu        sync.Mutex
 }
 
 const defaultOutputLimit = 64 << 10
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.firstAt.IsZero() && len(p) > 0 {
+		b.firstAt = time.Now()
+	}
+	b.total += len(p)
 	if b.max <= 0 {
 		b.data = append(b.data, p...)
 		return len(p), nil
@@ -118,7 +128,17 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) String() string { return string(b.data) }
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
+}
+
+func (b *boundedBuffer) Metadata() (time.Time, int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.firstAt, b.total, b.truncated
+}
 
 // Request is an alias for domain.ExecutionRequest.
 type Request = domain.ExecutionRequest
@@ -270,15 +290,26 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 	case err := <-done:
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		result := domain.ExecutionResult{
-			ExitCode:   c.ProcessState.ExitCode(),
-			Stdout:     stdout,
-			Stderr:     stderr,
-			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:   false,
-			Duration:   time.Since(started),
-			StartedAt:  started,
-			FinishedAt: time.Now(),
+			ExitCode:           c.ProcessState.ExitCode(),
+			Stdout:             stdout,
+			Stderr:             stderr,
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           false,
+			Duration:           time.Since(started),
+			StartedAt:          started,
+			FirstOutputAt:      firstOutput,
+			FinishedAt:         time.Now(),
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    true,
+			TelemetryAvailable: true,
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -300,15 +331,32 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 		if err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL); err != nil {
 			_ = c.Process.Kill()
 		}
+		cleanupComplete := false
+		select {
+		case <-done:
+			cleanupComplete = true
+		case <-time.After(100 * time.Millisecond):
+		}
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		slog.Warn("execution cancelled", "command", req.Command[0], "dir", req.Dir, "after", time.Since(started).String())
 		return domain.ExecutionResult{
-			ExitCode:  -1,
-			Stdout:    stdoutBuf.String(),
-			Stderr:    stderrBuf.String(),
-			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:  true,
-			Duration:  time.Since(started),
-			StartedAt: started,
+			ExitCode:           -1,
+			Stdout:             stdoutBuf.String(),
+			Stderr:             stderrBuf.String(),
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           true,
+			Duration:           time.Since(started),
+			StartedAt:          started,
+			FirstOutputAt:      firstOutput,
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    cleanupComplete,
+			TelemetryAvailable: true,
 		}, ctx.Err()
 	}
 }
@@ -471,15 +519,26 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 	case err := <-done:
 		stdout := stdoutBuf.String()
 		stderr := stderrBuf.String()
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		result := domain.ExecutionResult{
-			ExitCode:   cmd.ProcessState.ExitCode(),
-			Stdout:     stdout,
-			Stderr:     stderr,
-			Truncated:  stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:   false,
-			Duration:   time.Since(startedAt),
-			StartedAt:  startedAt,
-			FinishedAt: time.Now(),
+			ExitCode:           cmd.ProcessState.ExitCode(),
+			Stdout:             stdout,
+			Stderr:             stderr,
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           false,
+			Duration:           time.Since(startedAt),
+			StartedAt:          startedAt,
+			FirstOutputAt:      firstOutput,
+			FinishedAt:         time.Now(),
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			CleanupComplete:    true,
+			TelemetryAvailable: true,
 		}
 		// docker exits 125 for daemon/CLI failures (bad image, no daemon),
 		// which is not a test failure and must not look like one.
@@ -490,18 +549,33 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		}
 		return result, nil
 	case <-ctx.Done():
+		stdoutFirst, stdoutBytes, stdoutTruncated := stdoutBuf.Metadata()
+		stderrFirst, stderrBytes, stderrTruncated := stderrBuf.Metadata()
+		firstOutput := stdoutFirst
+		if firstOutput.IsZero() || !stderrFirst.IsZero() && stderrFirst.Before(firstOutput) {
+			firstOutput = stderrFirst
+		}
 		res := domain.ExecutionResult{
-			ExitCode:  -1,
-			Stdout:    stdoutBuf.String(),
-			Stderr:    stderrBuf.String(),
-			Truncated: stdoutBuf.truncated || stderrBuf.truncated,
-			TimedOut:  true,
-			StartedAt: startedAt,
+			ExitCode:           -1,
+			Stdout:             stdoutBuf.String(),
+			Stderr:             stderrBuf.String(),
+			Truncated:          stdoutTruncated || stderrTruncated,
+			TimedOut:           true,
+			StartedAt:          startedAt,
+			FirstOutputAt:      firstOutput,
+			StdoutBytes:        stdoutBytes,
+			StderrBytes:        stderrBytes,
+			TelemetryAvailable: true,
 		}
 		//Cleanup is best effort; failures are reported, not silently ignored.
-		if cleanupErr := e.cleanupContainer(ctx, name); cleanupErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cleanupErr := e.cleanupContainer(cleanupCtx, name)
+		cancel()
+		if cleanupErr != nil {
 			res.Error = "container cleanup failed: " + cleanupErr.Error()
 			slog.Warn("container cleanup failed", "container", name, "error", cleanupErr)
+		} else {
+			res.CleanupComplete = true
 		}
 		//The docker CLI may still be waiting; --rm plus the explicit rm above
 		//guarantee the container itself is gone.

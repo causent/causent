@@ -79,11 +79,16 @@ func Classify(attempts []Attempt) Classification {
 
 func classifyWithSignals(attempts []Attempt) (Classification, []string) {
 	if len(attempts) == 0 {
-		return ClassNotReproduced, nil
+		return ClassInconclusive, []string{"no attempts were executed"}
 	}
-	failures, passes, timedOut := 0, 0, 0
+	failures, passes, timedOut, executed, unexecuted := 0, 0, 0, 0, 0
 	var output strings.Builder
 	for _, a := range attempts {
+		if a.Executed {
+			executed++
+		} else {
+			unexecuted++
+		}
 		switch {
 		case a.Failed():
 			failures++
@@ -99,33 +104,48 @@ func classifyWithSignals(attempts []Attempt) (Classification, []string) {
 		}
 	}
 
-	if failures == 0 {
-		return ClassNotReproduced, nil
-	}
 	// Mixed outcomes across identical runs are the definition of a flake.
 	if passes > 0 {
-		return ClassFlaky, nil
+		if failures > 0 {
+			return ClassFlaky, nil
+		}
+		if timedOut > 0 || unexecuted > 0 {
+			return ClassInconclusive, []string{"completed pass mixed with incomplete execution"}
+		}
+		return ClassNotReproduced, nil
 	}
-
-	text := strings.ToLower(output.String())
-	// A timeout on every attempt is an environment/limit observation. It can
-	// hide a hang introduced by a regression, which is recorded as uncertainty.
-	if timedOut == failures {
-		return ClassInfrastructure, []string{"all attempts timed out"}
+	// A timeout is neither a failure nor a pass. In particular, do not turn
+	// timeout-only or unexecuted runs into "not reproduced".
+	if failures == 0 {
+		switch {
+		case timedOut > 0:
+			return ClassInconclusive, []string{"all executed attempts timed out"}
+		case unexecuted > 0:
+			return ClassInconclusive, []string{"one or more attempts did not execute"}
+		case executed == 0:
+			return ClassInconclusive, []string{"no attempt produced a process result"}
+		default:
+			return ClassNotReproduced, nil
+		}
 	}
-
-	infra := matchSignals(text, infrastructureSignals)
-	deps := matchSignals(text, dependencySignals)
-	switch {
-	case len(infra) > 0 && len(deps) > len(infra):
-		return ClassDependencyDrift, deps
-	case len(infra) > 0:
-		return ClassInfrastructure, infra
-	case len(deps) > 0:
-		return ClassDependencyDrift, deps
-	default:
-		return ClassRealRegression, nil
+	// A completed failure remains a failure even when another attempt timed out.
+	// Only a run made entirely of timeouts is classified as inconclusive.
+	if failures > 0 {
+		text := strings.ToLower(output.String())
+		infra := matchSignals(text, infrastructureSignals)
+		deps := matchSignals(text, dependencySignals)
+		switch {
+		case len(infra) > 0 && len(deps) > len(infra):
+			return ClassDependencyDrift, deps
+		case len(infra) > 0:
+			return ClassInfrastructure, infra
+		case len(deps) > 0:
+			return ClassDependencyDrift, deps
+		default:
+			return ClassRealRegression, nil
+		}
 	}
+	return ClassInconclusive, []string{"execution outcome was inconclusive"}
 }
 
 func matchSignals(text string, signals []string) []string {
@@ -266,6 +286,7 @@ func confidence(class Classification, loc Localization, uncertainty []string) fl
 		ClassFlaky:           0.8,
 		ClassDependencyDrift: 0.65,
 		ClassInfrastructure:  0.55,
+		ClassInconclusive:    0.0,
 		ClassNotReproduced:   0.0,
 	}[class]
 
@@ -303,6 +324,8 @@ func defaultUncertainty(class Classification, loc Localization) []string {
 		items = append(items, "an environment fault can mask an underlying regression, so the cause may be conflated")
 	case ClassDependencyDrift:
 		items = append(items, "matching dependency error text does not prove the dependency is the only difference between revisions")
+	case ClassInconclusive:
+		items = append(items, "timeouts or incomplete execution do not establish failure, success, compilation, or test behavior")
 	}
 	if loc.BisectResult == "" {
 		items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")

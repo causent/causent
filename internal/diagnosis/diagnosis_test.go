@@ -218,6 +218,44 @@ func TestDiagnoseRefusesWithoutReproduction(t *testing.T) {
 	}
 }
 
+func TestDiagnoseInconclusiveFastPathSkipsRepositoryIndexing(t *testing.T) {
+	dir := newRepo(t)
+	commit(t, dir, "timeout", map[string]string{
+		"run.sh": "#!/bin/sh\necho 'pkg/handler.go:42: blocked' >&2\nsleep 1\n",
+	})
+	report, err := Run(context.Background(), Config{
+		RepoPath:             dir,
+		Command:              []string{"sh", "run.sh"},
+		Attempts:             1,
+		Timeout:              20 * time.Millisecond,
+		InvestigationTimeout: 2 * time.Second,
+		FastPath:             true,
+		Executor:             testExecutor(t),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.Classification != ClassInconclusive {
+		t.Fatalf("classification = %s, want %s", report.Classification, ClassInconclusive)
+	}
+	if report.IndexingMode != "skipped_evidence_only" {
+		t.Fatalf("indexing mode = %q, want skipped_evidence_only", report.IndexingMode)
+	}
+	if report.Overview != nil {
+		t.Fatal("expected repository overview to remain deferred")
+	}
+
+	if !report.Partial || report.Preliminary == nil {
+		t.Fatalf("expected partial preliminary report: %#v", report)
+	}
+	if len(report.FailureEpisodes) != 0 {
+		t.Fatalf("timeout must not fabricate failure episodes: %#v", report.FailureEpisodes)
+	}
+	if len(report.Candidates) != 1 || report.Candidates[0].Location.LocationType != "observed_frame" {
+		t.Fatalf("expected one observed stack-frame candidate: %#v", report.Candidates)
+	}
+}
+
 func TestDiagnoseBisectLocalization(t *testing.T) {
 	dir := newRepo(t)
 	good := commit(t, dir, "good", map[string]string{

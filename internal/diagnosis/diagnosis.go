@@ -32,6 +32,7 @@ const (
 	ClassFlaky           Classification = "flaky"
 	ClassDependencyDrift Classification = "dependency_or_toolchain_drift"
 	ClassInfrastructure  Classification = "infrastructure_or_environment"
+	ClassInconclusive    Classification = "inconclusive"
 	ClassNotReproduced   Classification = "not_reproduced"
 	ClassPreExisting     Classification = "pre_existing_failure"
 )
@@ -63,15 +64,21 @@ const (
 
 // Attempt is one reproduction run. It is an observation, never an inference.
 type Attempt struct {
-	Index        int           `json:"index"`
-	ExitCode     int           `json:"exit_code"`
-	TimedOut     bool          `json:"timed_out"`
-	Executed     bool          `json:"executed"`
-	Duration     time.Duration `json:"duration"`
-	StdoutDigest string        `json:"stdout_digest"`
-	StderrDigest string        `json:"stderr_digest"`
-	Stderr       string        `json:"stderr_excerpt,omitempty"`
-	Error        string        `json:"error,omitempty"`
+	Index              int           `json:"index"`
+	ExitCode           int           `json:"exit_code"`
+	TimedOut           bool          `json:"timed_out"`
+	Executed           bool          `json:"executed"`
+	Duration           time.Duration `json:"duration"`
+	StdoutDigest       string        `json:"stdout_digest"`
+	StderrDigest       string        `json:"stderr_digest"`
+	Stderr             string        `json:"stderr_excerpt,omitempty"`
+	Error              string        `json:"error,omitempty"`
+	FirstOutputAt      time.Time     `json:"first_output_at,omitempty"`
+	StdoutBytes        int           `json:"stdout_bytes,omitempty"`
+	StderrBytes        int           `json:"stderr_bytes,omitempty"`
+	CleanupComplete    bool          `json:"cleanup_complete"`
+	Truncated          bool          `json:"output_truncated,omitempty"`
+	TelemetryAvailable bool          `json:"telemetry_available"`
 }
 
 // Failed reports whether this attempt observed the failing behaviour.
@@ -445,7 +452,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			}
 		} else {
 			report.Comparison = &comparison
-			report.Classification = comparison.Verdict
+			if comparison.Verdict == ClassInconclusive {
+				report.Uncertainty = append(report.Uncertainty, "base/head comparison was inconclusive; preserving the head reproduction classification")
+				report.Partial = true
+			} else {
+				report.Classification = comparison.Verdict
+			}
 			cmpStage.Done("completed", nil)
 		}
 	}
@@ -460,14 +472,16 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
 	}
 
-	// Refuse before localization when the failure itself is not established.
+	// Preserve a lightweight report when the failure is not established. The
+	// evidence-only path must not trigger repository-wide analysis.
 	if reason, ok := refusalReason(report.Classification, baseline); ok && !artifactOnly {
 		report.Refused = true
 		report.RefusalReason = reason
 		report.Localization = Localization{HeadCommit: env.HeadCommit, BisectStatus: "skipped: diagnosis refused"}
 		report.Uncertainty = append(report.Uncertainty, reason)
 		report.Confidence = 0
-		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization); err != nil {
+		report.Partial = true
+		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization, true); err != nil {
 			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 			report.Partial = true
 		}
@@ -485,16 +499,17 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	var localization Localization
 	var locEvidence []EvidenceItem
 	var locErr error
+	evidenceOnly := artifactOnly || report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
 	if artifactOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
 		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
-	} else if cfg.FastPath && reproductionInconclusive(baseline, report.Comparison) {
+	} else if evidenceOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
-			BisectStatus: "skipped: fast-path reproduction inconclusive",
+			BisectStatus: "skipped: evidence-only diagnosis",
 		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because the fast-path reproduction was inconclusive")
 		report.Partial = true
@@ -513,7 +528,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	} else {
 		locStage.Done("completed", nil)
 	}
-	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization); err != nil {
+	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization, evidenceOnly); err != nil {
 		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 		report.Partial = true
 	}
@@ -541,7 +556,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.RefusalReason = "generated diagnosis contained unsupported evidence references"
 		report.Claims = nil
 	}
-	if cfg.Agent != nil {
+	if cfg.Agent != nil && !evidenceOnly {
 		report.AgentStatus = "enabled"
 		input := agent.Input{
 			Classification: string(report.Classification),
@@ -571,7 +586,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.RefusalReason = fmt.Sprintf("confidence %.2f is below the %.2f threshold; evidence is insufficient for a diagnosis", report.Confidence, RefusalConfidence)
 	}
 
-	if len(cfg.Probes) > 0 && ctx.Err() == nil {
+	if len(cfg.Probes) > 0 && !evidenceOnly && ctx.Err() == nil {
 		report.Probes = d.runProbes(ctx, workspace)
 	}
 
@@ -583,19 +598,13 @@ func isTimeoutOrCancel(err error) bool {
 }
 
 func reproductionInconclusive(baseline Baseline, comparison *Comparison) bool {
-	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
+	if baselineInconclusive(baseline) {
 		return true
 	}
 	if comparison == nil {
 		return false
 	}
-	if comparison.Base.TimedOut > 0 && comparison.Base.Failures == 0 && comparison.Base.Passes == 0 {
-		return true
-	}
-	if comparison.Head.TimedOut > 0 && comparison.Head.Failures == 0 && comparison.Head.Passes == 0 {
-		return true
-	}
-	return false
+	return baselineInconclusive(comparison.Base) || baselineInconclusive(comparison.Head)
 }
 
 func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, headCommit string) (Comparison, error) {
@@ -627,6 +636,9 @@ func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, 
 }
 
 func compareVerdict(base, head Baseline) Classification {
+	if baselineInconclusive(base) || baselineInconclusive(head) {
+		return ClassInconclusive
+	}
 	if (base.Failures > 0 && base.Passes > 0) || (head.Failures > 0 && head.Passes > 0) {
 		return ClassFlaky
 	}
@@ -643,6 +655,18 @@ func compareVerdict(base, head Baseline) Classification {
 		return ClassFlaky
 	}
 	return ClassNotReproduced
+}
+
+func baselineInconclusive(baseline Baseline) bool {
+	for _, attempt := range baseline.Results {
+		if !attempt.Executed {
+			return true
+		}
+	}
+	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
+		return true
+	}
+	return baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes > 0
 }
 
 // finish writes the bundle, emits the terminal events, and persists the final
@@ -765,14 +789,20 @@ func (d *Diagnoser) runOnce(ctx context.Context, dir string, index int) Attempt 
 		MaxOutput: 64 << 10,
 	})
 	attempt := Attempt{
-		Index:        index,
-		ExitCode:     res.ExitCode,
-		TimedOut:     res.TimedOut,
-		Executed:     res.StartedAt != (time.Time{}) || res.TimedOut,
-		Duration:     res.Duration,
-		StdoutDigest: digestString(res.Stdout),
-		StderrDigest: digestString(res.Stderr),
-		Stderr:       bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
+		Index:              index,
+		ExitCode:           res.ExitCode,
+		TimedOut:           res.TimedOut,
+		Executed:           res.StartedAt != (time.Time{}) || res.TimedOut,
+		Duration:           res.Duration,
+		StdoutDigest:       digestString(res.Stdout),
+		StderrDigest:       digestString(res.Stderr),
+		Stderr:             bound(res.Stderr+"\n"+res.Stdout, MaxEvidenceExcerpt),
+		FirstOutputAt:      res.FirstOutputAt,
+		StdoutBytes:        res.StdoutBytes,
+		StderrBytes:        res.StderrBytes,
+		CleanupComplete:    res.CleanupComplete,
+		Truncated:          res.Truncated,
+		TelemetryAvailable: res.TelemetryAvailable,
 	}
 	if err != nil {
 		attempt.Error = err.Error()

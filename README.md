@@ -152,6 +152,15 @@ baseline source as `ci_artifact` and states when localization or reproduction
 was deferred. Evidence is not proof of root cause; candidates, hypotheses, and
 verified causes remain separate.
 
+Evidence-only execution also applies when reproduction is inconclusive or a
+failure is not reproduced. It preserves failure evidence and publishes a
+partial report without repository-wide overview, indexing, cache lookup, or
+historical graph expansion. Stack frames may appear as `observed_frame`
+locations; they are execution observations, not inspected source symbols or
+verified root causes. Timeout-only and pass-plus-timeout executions are
+classified as `inconclusive`, never as successful reproduction or proof that
+the failure is absent.
+
 Supported environment adapters currently include Go, Node.js, Python, Rust,
 and Bazel. Repository-specific commands should still be reviewed explicitly.
 

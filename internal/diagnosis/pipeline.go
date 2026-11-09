@@ -21,19 +21,17 @@ import (
 // persistArchitecture runs the staged repository-intelligence and diagnosis path.
 // Stages publish a preliminary finding as soon as candidates and hypotheses exist,
 // then optionally continue into adaptive deep investigation.
-func (d *Diagnoser) persistArchitecture(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization) error {
+func (d *Diagnoser) persistArchitecture(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, evidenceOnly bool) error {
 	if d.metrics == nil {
 		d.metrics = observability.NewMetrics(report.InvestigationID)
 	}
 	if d.cfg.Store == nil {
-		// Architecture persistence requires a store, but overview/indexing still
-		// run so reports can carry structural context without SQLite.
-		return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, false)
+		return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, false, evidenceOnly)
 	}
-	return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, true)
+	return d.runStagedIntelligence(ctx, report, workspace, baseline, env, loc, true, evidenceOnly)
 }
 
-func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, persist bool) error {
+func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, persist, evidenceOnly bool) error {
 	repoID := "local:" + d.cfg.RepoPath
 	revisionID := "revision:" + env.HeadCommit
 	if persist {
@@ -48,16 +46,27 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		}
 	}
 
-	artifactCache, err := d.openArtifactCache()
-	if err != nil {
-		report.Uncertainty = append(report.Uncertainty, "artifact cache unavailable: "+err.Error())
-	}
+	var artifactCache *cache.FSCache
+	var err error
+	if !evidenceOnly {
+		artifactCache, err = d.openArtifactCache()
+		if err != nil {
+			report.Uncertainty = append(report.Uncertainty, "artifact cache unavailable: "+err.Error())
+		}
 
-	overview, err := d.stageOverview(ctx, report, workspace, repoID, revisionID, env.HeadCommit, artifactCache)
-	if err != nil {
-		return err
+		overview, overviewErr := d.stageOverview(ctx, report, workspace, repoID, revisionID, env.HeadCommit, artifactCache)
+		if overviewErr != nil {
+			return overviewErr
+		}
+		report.Overview = &overview
+	} else {
+		overviewStage := d.metrics.Begin(observability.StageRepositoryOverview)
+		overviewStage.Meta("mode", "skipped")
+		overviewStage.Meta("reason", "evidence_only")
+		overviewStage.Done("skipped", nil)
+		report.IndexingMode = "skipped_evidence_only"
+		report.Uncertainty = append(report.Uncertainty, "repository overview and indexing were deferred because source-level analysis was not justified")
 	}
-	report.Overview = &overview
 
 	executionID := "execution:" + report.InvestigationID
 	if persist {
@@ -76,12 +85,21 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	stage.Count("episodes", len(failures))
 	stage.Done("completed", nil)
 
-	snapshot, indexMode, err := d.stageIndex(ctx, report, workspace, repoID, revisionID, env.HeadCommit, loc, artifactCache)
-	if err != nil {
-		return err
+	var snapshot programrepo.Snapshot
+	if !evidenceOnly {
+		var indexMode string
+		snapshot, indexMode, err = d.stageIndex(ctx, report, workspace, repoID, revisionID, env.HeadCommit, loc, artifactCache)
+		if err != nil {
+			return err
+		}
+		d.snapshot = &snapshot
+		report.IndexingMode = indexMode
+	} else {
+		indexStage := d.metrics.Begin(observability.StageIndexing)
+		indexStage.Meta("mode", "skipped")
+		indexStage.Meta("reason", "evidence_only")
+		indexStage.Done("skipped", nil)
 	}
-	d.snapshot = &snapshot
-	report.IndexingMode = indexMode
 	if persist {
 		for _, n := range snapshot.Nodes {
 			if err := d.cfg.Store.SaveProgramNode(n); err != nil {
@@ -115,7 +133,14 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	}
 
 	candStage := d.metrics.Begin(observability.StageCandidateGeneration)
-	candidates, relations := localization.Generate(snapshot, localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100})
+	var candidates []domain.CandidateLocation
+	var relations []domain.Relationship
+	input := localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100}
+	if evidenceOnly {
+		candidates, relations = localization.GenerateObserved(frames, input)
+	} else {
+		candidates, relations = localization.Generate(snapshot, input)
+	}
 	report.Candidates = candidates
 	report.Relationships = relations
 	candStage.Count("candidates", len(candidates))
@@ -158,37 +183,39 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	}
 
 	if persist {
-		historical, histErr := history.Discover(d.cfg.Store, history.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, Failures: failures, Candidates: candidates, EvidenceIDs: evidenceIDs})
-		if histErr != nil {
-			return histErr
-		}
-		report.HistoricalContext = historical.References
-		if len(historical.Evidence) > 0 {
-			for _, evidence := range historical.Evidence {
-				if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
+		if !evidenceOnly {
+			historical, histErr := history.Discover(d.cfg.Store, history.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, Failures: failures, Candidates: candidates, EvidenceIDs: evidenceIDs})
+			if histErr != nil {
+				return histErr
+			}
+			report.HistoricalContext = historical.References
+			if len(historical.Evidence) > 0 {
+				for _, evidence := range historical.Evidence {
+					if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
+						return err
+					}
+					report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload})
+				}
+				report.Candidates = localization.ApplyHistoricalEvidence(report.Candidates, evidenceIDsOfHistorical(historical.Evidence))
+				for _, candidate := range report.Candidates {
+					if err := d.cfg.Store.SaveCandidate(candidate); err != nil {
+						return err
+					}
+				}
+				candidates = report.Candidates
+			}
+			for _, rel := range historical.Relationships {
+				if err := d.cfg.Store.SaveRelationship(rel); err != nil {
 					return err
 				}
-				report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload})
+				report.Relationships = append(report.Relationships, rel)
 			}
-			report.Candidates = localization.ApplyHistoricalEvidence(report.Candidates, evidenceIDsOfHistorical(historical.Evidence))
-			for _, candidate := range report.Candidates {
-				if err := d.cfg.Store.SaveCandidate(candidate); err != nil {
+			for _, stageName := range []string{"AnalyzeRepository", "GenerateCandidates", "DiscoverRelationships"} {
+				activity := investigation.NewActivity(domain.ID(report.InvestigationID), "activity:"+report.InvestigationID+":"+stageName, stageName, nil, evidenceIDsToStrings(evidenceIDs))
+				activity = investigation.Complete(activity, []string{"report:" + report.InvestigationID + ":" + stageName})
+				if err := d.cfg.Store.SaveActivity(activity); err != nil {
 					return err
 				}
-			}
-			candidates = report.Candidates
-		}
-		for _, rel := range historical.Relationships {
-			if err := d.cfg.Store.SaveRelationship(rel); err != nil {
-				return err
-			}
-			report.Relationships = append(report.Relationships, rel)
-		}
-		for _, stageName := range []string{"AnalyzeRepository", "GenerateCandidates", "DiscoverRelationships"} {
-			activity := investigation.NewActivity(domain.ID(report.InvestigationID), "activity:"+report.InvestigationID+":"+stageName, stageName, nil, evidenceIDsToStrings(evidenceIDs))
-			activity = investigation.Complete(activity, []string{"report:" + report.InvestigationID + ":" + stageName})
-			if err := d.cfg.Store.SaveActivity(activity); err != nil {
-				return err
 			}
 		}
 	}
@@ -242,7 +269,17 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		}
 	}
 	if len(candidates) > 0 {
-		finding := domain.DiagnosticFinding{ID: "finding:" + report.InvestigationID, InvestigationID: domain.ID(report.InvestigationID), Kind: "candidate_localization", Statement: fmt.Sprintf("Candidate locations were ranked from execution and repository evidence; top candidate is %s", candidates[0].Location.SymbolIdentity), EvidenceIDs: candidates[0].SupportingEvidenceIDs, CandidateIDs: []string{candidates[0].ID}, Status: "potential", Uncertainty: []string{"candidate ranking is not a causal proof"}, CreatedAt: time.Now().UTC()}
+		statement := fmt.Sprintf("Candidate locations were ranked from execution and repository evidence; top candidate is %s", candidates[0].Location.SymbolIdentity)
+		kind := "candidate_localization"
+		status := "potential"
+		uncertainty := []string{"candidate ranking is not a causal proof"}
+		if evidenceOnly {
+			statement = fmt.Sprintf("An observed location was extracted from execution output: %s. Its relationship to the underlying failure has not been verified against source code.", candidates[0].Location.FilePath)
+			kind = "observed_location"
+			status = "observed"
+			uncertainty = []string{"source code was not inspected", "the observed location is not a verified fault site"}
+		}
+		finding := domain.DiagnosticFinding{ID: "finding:" + report.InvestigationID, InvestigationID: domain.ID(report.InvestigationID), Kind: kind, Statement: statement, EvidenceIDs: candidates[0].SupportingEvidenceIDs, CandidateIDs: []string{candidates[0].ID}, Status: status, Uncertainty: uncertainty, CreatedAt: time.Now().UTC()}
 		report.Findings = append(report.Findings, finding)
 		if persist {
 			if err := d.cfg.Store.SaveFinding(finding); err != nil {

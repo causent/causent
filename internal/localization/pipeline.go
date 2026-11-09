@@ -1,7 +1,10 @@
 package localization
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/causent/malenia/internal/domain"
@@ -28,6 +31,76 @@ type Input struct {
 	HistoricalEvidenceIDs []domain.ID
 	MaxDepth              int
 	MaxCandidates         int
+}
+
+// GenerateObserved creates conservative candidates directly from stack-frame
+// observations. These are locations mentioned by execution evidence, not
+// indexed symbols and not causal conclusions.
+func GenerateObserved(frames []Frame, input Input) ([]domain.CandidateLocation, []domain.Relationship) {
+	candidates := map[string]domain.CandidateLocation{}
+	var relations []domain.Relationship
+	for _, frame := range frames {
+		path := cleanPath(frame.File)
+		if path == "" {
+			continue
+		}
+		identity := "observed:" + string(input.InvestigationID) + ":" + string(input.RepositoryID) + ":" + string(input.RevisionID) + ":" + path
+		if frame.Line > 0 {
+			identity += ":" + strconv.Itoa(frame.Line)
+		}
+		id := "candidate:observed:" + digest(identity)
+		candidate, ok := candidates[id]
+		if !ok {
+			candidate = domain.CandidateLocation{
+				ID:              id,
+				InvestigationID: input.InvestigationID,
+				Location: domain.CodeLocation{
+					ID:             "location:" + id,
+					RepositoryID:   input.RepositoryID,
+					RevisionID:     input.RevisionID,
+					FilePath:       path,
+					SymbolIdentity: identity,
+					StartLine:      frame.Line,
+					EndLine:        frame.Line,
+					LocationType:   "observed_frame",
+				},
+				Status: "observed",
+			}
+			candidate.Score = evaluateSignals(CandidateContext{Execution: true, Evidence: input.EvidenceIDs})
+			candidate.Score.ScoringPolicyVersion = PolicyVersion
+			candidates[id] = candidate
+		}
+		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, input.EvidenceIDs...)
+		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, frame.EvidenceIDs...)
+		candidates[id] = candidate
+		for _, failureID := range frame.FailureIDs {
+			relations = append(relations, domain.Relationship{
+				ID:              "failure:" + failureID + ":" + id + ":MANIFESTED_AT",
+				InvestigationID: input.InvestigationID,
+				SourceType:      "failure_episode",
+				SourceID:        failureID,
+				TargetType:      "candidate_location",
+				TargetID:        id,
+				Type:            "MANIFESTED_AT",
+				RevisionID:      input.RevisionID,
+				EvidenceIDs:     appendUnique(append([]domain.ID{}, input.EvidenceIDs...), frame.EvidenceIDs...),
+			})
+		}
+	}
+	result := make([]domain.CandidateLocation, 0, len(candidates))
+	for _, candidate := range candidates {
+		result = append(result, candidate)
+	}
+	result = Rank(result, DefaultWeights)
+	if input.MaxCandidates > 0 && len(result) > input.MaxCandidates {
+		result = result[:input.MaxCandidates]
+	}
+	return result, uniqueRelationships(relations)
+}
+
+func digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
 }
 
 // Generate creates candidates from execution evidence and then expands them

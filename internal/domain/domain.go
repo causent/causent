@@ -517,17 +517,22 @@ func (e *CancellationError) Error() string {
 
 // ExecutionResult represents the result of executing a command.
 type ExecutionResult struct {
-	ExitCode   int
-	Stdout     string
-	Stderr     string
-	Error      string
-	TimedOut   bool
-	OOMKilled  bool
-	Truncated  bool
-	Violations []string
-	Duration   time.Duration
-	StartedAt  time.Time
-	FinishedAt time.Time
+	ExitCode           int
+	Stdout             string
+	Stderr             string
+	Error              string
+	TimedOut           bool
+	OOMKilled          bool
+	Truncated          bool
+	Violations         []string
+	Duration           time.Duration
+	StartedAt          time.Time
+	FirstOutputAt      time.Time
+	FinishedAt         time.Time
+	StdoutBytes        int
+	StderrBytes        int
+	CleanupComplete    bool
+	TelemetryAvailable bool
 }
 
 // DiagnosisResult represents the result of an investigation.

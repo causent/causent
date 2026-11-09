@@ -40,6 +40,9 @@ func TestLocalExecutorRunsAllowedCommand(t *testing.T) {
 	if res.Stdout != "hello\n" {
 		t.Fatalf("stdout = %q", res.Stdout)
 	}
+	if res.FirstOutputAt.IsZero() || res.StdoutBytes != len(res.Stdout) || !res.CleanupComplete {
+		t.Fatalf("missing execution timing metadata: %#v", res)
+	}
 }
 
 func TestLocalExecutorRejectsUnauthorizedCommand(t *testing.T) {
@@ -148,6 +151,9 @@ func TestLocalExecutorTimeout(t *testing.T) {
 	}
 	if !res.TimedOut {
 		t.Fatal("expected TimedOut to be set")
+	}
+	if !res.CleanupComplete {
+		t.Fatal("expected timed-out process cleanup to complete")
 	}
 }
 
