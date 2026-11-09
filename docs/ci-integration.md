@@ -86,9 +86,17 @@ That is the whole integration. On the next failing run Malenia will:
 1. check out the exact failing commit (`head_sha`, not the default branch);
 2. download the failed jobs' logs with `gh run view --log-failed`;
 3. include a bounded copy of the original log as separate evidence;
-4. run the configured command against the failing commit and the exact PR base;
-5. write a replayable bundle and a job summary;
-6. publish a bounded PR comment from a separate job when the run belongs to one.
+4. download available CI artifacts and use logs/reports as the primary evidence;
+5. run the configured command against the failing commit and the exact PR base
+   only when artifact evidence is insufficient;
+6. write a replayable bundle and a job summary;
+7. publish a bounded PR comment from a separate job when the run belongs to one.
+
+The reusable workflow installs a pinned prebuilt Linux binary; it does not
+compile Malenia. The target repository's own toolchain is only needed when a
+targeted reproduction is justified. Artifact-only investigations set the
+baseline source to `ci_artifact`, preserve provenance, and explicitly report
+that local reproduction and revision localization were deferred.
 
 ## Inputs
 
@@ -148,6 +156,11 @@ explicit `repair --model-proposals` capability.
   bounded result is exposed to the publication job.
 - **The PR comment step is best-effort.** Without `pull-requests: write` the job
   summary and artifact still work.
+- **Artifact-first behavior.** Failed workflow logs and downloadable artifacts
+  are bounded, redacted, and parsed before reproduction. Incomplete or missing
+  artifacts are recorded as limitations; they are never treated as negative
+  evidence. A targeted rerun is used only when it can answer an unresolved
+  question.
 
 ## Local reproduction
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/execution"
 )
 
@@ -25,7 +26,14 @@ func testExecutor(t *testing.T) execution.Executor {
 		MaxOutput:          64 << 10,
 		Timeout:            30 * time.Second,
 	}
+
 	return execution.NewLocalExecutor(policy, execution.NewArtifactFactory(t.TempDir()))
+}
+
+type unexpectedExecutor struct{}
+
+func (unexpectedExecutor) Run(context.Context, domain.ExecutionRequest) (domain.ExecutionResult, error) {
+	return domain.ExecutionResult{}, errors.New("reproduction should not run in artifact-first mode")
 }
 
 func newRepo(t *testing.T) string {
@@ -88,6 +96,7 @@ func TestDiagnoseReproducibleFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
+
 	if report.Classification != ClassRealRegression {
 		t.Fatalf("classification = %s, want %s", report.Classification, ClassRealRegression)
 	}
@@ -110,6 +119,46 @@ func TestDiagnoseReproducibleFailure(t *testing.T) {
 	}
 	if report.Confidence < RefusalConfidence {
 		t.Fatalf("confidence %.2f below refusal threshold for a deterministic failure", report.Confidence)
+	}
+}
+
+func TestDiagnoseUsesCIArtifactsBeforeReproduction(t *testing.T) {
+	dir, _, _ := failingRepo(t)
+	report, err := Run(context.Background(), Config{
+		RepoPath:      dir,
+		Command:       []string{"sh", "run.sh"},
+		Executor:      unexpectedExecutor{},
+		ArtifactFirst: true,
+		SkipAdaptive:  true,
+		ExternalEvidence: []EvidenceItem{{
+			ID:         "E-ci",
+			Kind:       "original_ci_log",
+			Source:     "workflow/job.log",
+			Digest:     "digest",
+			Detail:     "--- FAIL: TestBroken (0.01s)\nrun.go:12: expected value",
+			Provenance: "workflow run 42/job test",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.Baseline.Source != "ci_artifact" {
+		t.Fatalf("expected artifact-backed baseline, got %q", report.Baseline.Source)
+	}
+	if len(report.FailureEpisodes) != 1 {
+		t.Fatalf("expected one artifact failure episode, got %d", len(report.FailureEpisodes))
+	}
+	if report.Classification == ClassNotReproduced || report.Refused {
+		t.Fatalf("artifact failure should produce a preliminary diagnosis: %#v", report)
+	}
+	foundProvenance := false
+	for _, evidence := range report.Evidence {
+		if evidence.ID == "E-ci" && evidence.Provenance != "" {
+			foundProvenance = true
+		}
+	}
+	if !foundProvenance {
+		t.Fatalf("expected evidence provenance to survive report: %#v", report.Evidence)
 	}
 }
 
