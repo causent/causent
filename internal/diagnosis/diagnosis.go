@@ -722,15 +722,21 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.ReproductionDecision = DecideReproduction(evidence, cfg.Command)
 	report.Classification = classifyNormalizedEvidence(evidence, report.Baseline)
 	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, report.Baseline))
-	report.Environment = Environment{RepoPath: cfg.RepoPath, Isolation: "external CI evidence"}
+	report.Environment = captureEnvironment(cfg.RepoPath)
+	report.Environment.Isolation = "external CI evidence"
 	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
 	report.Partial = true
 	report.Localization = Localization{BisectStatus: "deferred: evidence-first diagnosis"}
 	d.emit(EventDiagnosisStarted, domain.StatusCollectingEvidence, "evidence-first diagnosis started")
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence, "local reproduction deferred")
-	if err := d.persistArchitecture(ctx, &report, "", report.Baseline, report.Environment, report.Localization, true); err != nil {
-		report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
+	// Normalized CI evidence is still an input to the full investigation path.
+	// It defers reproduction, but it must inspect the checked-out repository so
+	// failures can produce source candidates, relationships, and hypotheses.
+	if cfg.RepoPath != "" {
+		if err := d.persistArchitecture(ctx, &report, cfg.RepoPath, report.Baseline, report.Environment, report.Localization, false); err != nil {
+			report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
+		}
 	}
 	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)
 	report.Confidence = confidence(report.Classification, report.Localization, report.Uncertainty)
@@ -763,7 +769,8 @@ func normalizedReportEvidence(input NormalizedEvidence) []EvidenceItem {
 			continue
 		}
 		seen[raw.ID] = true
-		out = append(out, EvidenceItem{ID: raw.ID, Kind: raw.Kind, Source: raw.Provenance.Provider, Digest: digestString(raw.Content), Detail: bound(raw.Content, MaxEvidenceExcerpt), Provenance: raw.Provenance.URI, Limitations: raw.Limitations})
+		excerpt, limits := boundedCIEvidence(raw.Kind, raw.Content, MaxEvidenceExcerpt)
+		out = append(out, EvidenceItem{ID: raw.ID, Kind: raw.Kind, Source: raw.Provenance.Provider, Digest: digestString(raw.Content), Detail: excerpt.Content, Provenance: raw.Provenance.URI, Limitations: append(raw.Limitations, limits...)})
 	}
 	return out
 }

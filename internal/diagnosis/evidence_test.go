@@ -59,6 +59,13 @@ func TestParseCITextEvidencePreservesLargeLogSuffixAndRaceFailure(t *testing.T) 
 	}
 }
 
+func TestParseCITextEvidenceDoesNotTreatGoTestTimeoutFlagAsExecutionTimeout(t *testing.T) {
+	got := ParseCITextEvidence("go test -race -timeout=180s pkg\nFAIL\tpkg\t1.2s\n", EvidenceProvenance{Provider: "prow"})
+	if got.Executions[0].State != StateFailed {
+		t.Fatalf("state=%s, want failed", got.Executions[0].State)
+	}
+}
+
 func TestNormalizedStatesDoNotBecomePass(t *testing.T) {
 	for _, state := range []ObservationState{StateCancelled, StateTimedOut, StateNotExecuted, StateSkipped, StateUnknown} {
 		b := normalizedBaseline(NormalizedEvidence{Executions: []CIExecution{{State: state}}}, nil)
