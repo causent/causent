@@ -92,3 +92,85 @@ func TestDiagnoseEvidenceDoesNotCallExecutorOrClaimRegression(t *testing.T) {
 		t.Fatalf("complete failure evidence should defer reproduction: %#v", got.ReproductionDecision)
 	}
 }
+
+func TestRealCIEvidenceAcceptanceScenarios(t *testing.T) {
+	tests := []struct {
+		name             string
+		evidence         NormalizedEvidence
+		wantClass        Classification
+		wantReproduction bool
+		wantReason       ReproductionReason
+	}{
+		{
+			name:       "deterministic junit assertion",
+			evidence:   mustJUnitEvidence(t, `<testsuites><testsuite name="unit"><testcase classname="pkg.Test" name="broken"><failure message="want 1 got 2">trace</failure></testcase></testsuite></testsuites>`),
+			wantClass:  ClassTestFailureObserved,
+			wantReason: ReasonEvidenceSufficient,
+		},
+		{
+			name:       "compiler failure",
+			evidence:   ParseCITextEvidence("src/main.go:42:7: undefined: missing\nerror: build failed", EvidenceProvenance{Provider: "github-actions"}),
+			wantClass:  ClassTestFailureObserved,
+			wantReason: ReasonEvidenceSufficient,
+		},
+		{
+			name:       "infrastructure failure",
+			evidence:   ParseCITextEvidence("error: connection refused while contacting the test service", EvidenceProvenance{Provider: "github-actions"}),
+			wantClass:  ClassInfrastructure,
+			wantReason: ReasonEvidenceSufficient,
+		},
+		{
+			name: "flaky test requires verification",
+			evidence: NormalizedEvidence{Executions: []CIExecution{
+				{ID: "run-1", State: StateFailed},
+				{ID: "run-2", State: StatePassed},
+			}},
+			wantClass:        ClassFlaky,
+			wantReproduction: true,
+			wantReason:       ReasonFlakyTestVerification,
+		},
+		{
+			name:             "missing report is inconclusive",
+			evidence:         NormalizedEvidence{},
+			wantClass:        ClassInconclusive,
+			wantReproduction: true,
+			wantReason:       ReasonNoExecutionEvidence,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report, err := DiagnoseEvidence(context.Background(), Config{
+				RepoPath: "/not-checked-out",
+				Command:  []string{"go", "test", "./..."},
+			}, tt.evidence)
+			if err != nil {
+				t.Fatalf("diagnose evidence: %v", err)
+			}
+			if report.Classification != tt.wantClass {
+				t.Fatalf("classification=%s, want %s", report.Classification, tt.wantClass)
+			}
+			if report.ReproductionDecision.Required != tt.wantReproduction {
+				t.Fatalf("reproduction required=%t, want %t (%#v)", report.ReproductionDecision.Required, tt.wantReproduction, report.ReproductionDecision)
+			}
+			if report.ReproductionDecision.Reason != tt.wantReason {
+				t.Fatalf("reproduction reason=%s, want %s", report.ReproductionDecision.Reason, tt.wantReason)
+			}
+			if report.Environment.Isolation != "external CI evidence" {
+				t.Fatalf("evidence-first path used unexpected environment: %#v", report.Environment)
+			}
+			if !tt.wantReproduction && len(report.Evidence) == 0 {
+				t.Fatal("expected an evidence-backed useful diagnosis")
+			}
+		})
+	}
+}
+
+func mustJUnitEvidence(t *testing.T, content string) NormalizedEvidence {
+	t.Helper()
+	evidence, err := ParseJUnitXML(content, EvidenceProvenance{Provider: "github-actions"})
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	return evidence
+}
