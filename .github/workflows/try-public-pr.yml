@@ -29,6 +29,26 @@ on:
         required: true
         default: '3'
         type: string
+      skip_adaptive:
+        description: Publish the preliminary diagnosis without optional deep experiments
+        required: false
+        default: false
+        type: boolean
+      timeout_seconds:
+        description: Maximum seconds for each test command
+        required: false
+        default: '120'
+        type: string
+      investigation_timeout_seconds:
+        description: Maximum seconds for the complete diagnosis
+        required: false
+        default: '600'
+        type: string
+      malenia_version:
+        description: Pinned Malenia release tag
+        required: false
+        default: v3
+        type: string
 
 permissions:
   contents: read
@@ -103,8 +123,20 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Build Malenia
-        run: go build -trimpath -o "$RUNNER_TEMP/malenia" ./cmd/malenia
+      - name: Install Malenia binary
+        env:
+          MALENIA_VERSION: ${{ inputs.malenia_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$MALENIA_VERSION" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo 'malenia_version must be a release tag such as v3' >&2
+            exit 2
+          fi
+          curl --fail --silent --show-error --location \
+            "https://github.com/causent/malenia/releases/download/${MALENIA_VERSION}/malenia_linux_amd64" \
+            -o "$RUNNER_TEMP/malenia"
+          chmod +x "$RUNNER_TEMP/malenia"
+          "$RUNNER_TEMP/malenia" version
 
       - name: Diagnose PR
         id: diagnose
@@ -114,6 +146,8 @@ jobs:
           MALENIA_ATTEMPTS: ${{ inputs.attempts }}
           MALENIA_MAX_PROBES: ${{ inputs.max_probes }}
           MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
+          MALENIA_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
+          MALENIA_INVESTIGATION_TIMEOUT_SECONDS: ${{ inputs.investigation_timeout_seconds }}
         run: |
           set -euo pipefail
           if [[ ! "$MALENIA_ATTEMPTS" =~ ^[1-5]$ ]]; then
@@ -124,10 +158,24 @@ jobs:
             echo 'max_probes must be between 1 and 6' >&2
             exit 2
           fi
+          if [[ ! "$MALENIA_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'timeout_seconds must be a positive integer' >&2
+            exit 2
+          fi
+          if [[ ! "$MALENIA_INVESTIGATION_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'investigation_timeout_seconds must be a positive integer' >&2
+            exit 2
+          fi
           args=(diagnose --repo "$RUNNER_TEMP/target" --command "$MALENIA_COMMAND"
             --base "$MALENIA_BASE" --attempts "$MALENIA_ATTEMPTS"
-            --max-probes "$MALENIA_MAX_PROBES" --json
+            --max-probes "$MALENIA_MAX_PROBES"
+            --timeout "${MALENIA_TIMEOUT_SECONDS}s"
+            --investigation-timeout "${MALENIA_INVESTIGATION_TIMEOUT_SECONDS}s"
+            --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
+          if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
+            args+=(--skip-adaptive)
+          fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
           fi
