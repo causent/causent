@@ -111,6 +111,7 @@ jobs:
           PULL_NUMBER: ${{ inputs.pull_request }}
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          FAST_PATH: ${{ inputs.fast_path }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/target"
@@ -118,9 +119,11 @@ jobs:
           git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
             "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/malenia-pr"
-          git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
-            "refs/pull/$PULL_NUMBER/head"
-          git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if [[ "$FAST_PATH" != "true" ]]; then
+            git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
+              "refs/pull/$PULL_NUMBER/head"
+            git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
           actual_head="$(git -C "$RUNNER_TEMP/target" rev-parse refs/remotes/origin/malenia-pr)"
           if [ "$actual_head" != "$HEAD_SHA" ]; then
             echo 'PR head changed while preparing the run; restart with the updated PR revision' >&2
@@ -139,6 +142,26 @@ jobs:
           set -euo pipefail
           go build -o "$RUNNER_TEMP/malenia" ./cmd/malenia
           "$RUNNER_TEMP/malenia" version
+
+      - name: Resolve target Go version
+        id: target-go
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/target/go.mod" ]]; then
+            version="$(sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' \
+              "$RUNNER_TEMP/target/go.mod" | head -n 1)"
+            if [[ -n "$version" ]]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Set up Go for target repository
+        if: steps.target-go.outputs.version != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.target-go.outputs.version }}
+          cache: true
+          cache-dependency-path: ${{ runner.temp }}/target/go.sum
 
       - name: Diagnose PR
         id: diagnose
