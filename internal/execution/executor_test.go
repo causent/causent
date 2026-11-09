@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -209,9 +210,25 @@ func TestLocalExecutorTerminatesChildProcessGroup(t *testing.T) {
 	if parseErr != nil {
 		t.Fatalf("parse child pid: %v", parseErr)
 	}
-	if err := syscall.Kill(pid, 0); err == nil {
+	if err := syscall.Kill(pid, 0); err == nil && processIsAlive(pid) {
 		t.Fatalf("child process %d survived process-group cleanup", pid)
 	}
+}
+
+func processIsAlive(pid int) bool {
+	// On Linux, a killed child can remain as a zombie until its parent is
+	// reaped. kill(pid, 0) still succeeds for that state, but the process is no
+	// longer executing and therefore did not survive cleanup.
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return true
+	}
+	closeParen := strings.LastIndex(string(stat), ")")
+	if closeParen < 0 {
+		return true
+	}
+	fields := strings.Fields(string(stat)[closeParen+1:])
+	return len(fields) == 0 || fields[0] != "Z"
 }
 
 func TestPolicyValidate(t *testing.T) {
