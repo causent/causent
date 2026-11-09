@@ -143,9 +143,17 @@ jobs:
             echo 'malenia_version must be a release tag such as v3' >&2
             exit 2
           fi
+          base_url="https://github.com/Malenia-org/Malenia/releases/download/${MALENIA_VERSION}"
+          asset=malenia_linux_amd64
+          if ! curl --fail --silent --show-error --location \
+            "$base_url/$asset" -o "$RUNNER_TEMP/malenia"; then
+            asset=causent_linux_amd64
+            curl --fail --silent --show-error --location \
+              "$base_url/$asset" -o "$RUNNER_TEMP/malenia"
+          fi
           curl --fail --silent --show-error --location \
-            "https://github.com/causent/malenia/releases/download/${MALENIA_VERSION}/malenia_linux_amd64" \
-            -o "$RUNNER_TEMP/malenia"
+            "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
+          (cd "$RUNNER_TEMP" && grep "  $asset\$" malenia.SHA256SUMS | sed "s/$asset/malenia/" | sha256sum -c -)
           chmod +x "$RUNNER_TEMP/malenia"
           "$RUNNER_TEMP/malenia" version
 
