@@ -323,6 +323,13 @@ jobs:
               echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
             fi
             echo
+            # Extract and display specific lint/test failures from normalized evidence
+            findings="$(jq -r '.normalized_evidence.executions[0].tests[]? | "- **" + .name + "**: `" + .file + ":" + (.line|tostring) + "` - " + .message' "$report" 2>/dev/null || true)"
+            if [ -n "$findings" ]; then
+              echo '**Findings:**'
+              echo "$findings"
+              echo
+            fi
             files="$(jq -r '.localization.likely_files[]? | "- `" + . + "`"' "$report")"
             if [ -n "$files" ]; then
               echo '**Likely files:**'
