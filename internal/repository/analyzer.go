@@ -30,6 +30,55 @@ type Analyzer struct {
 	MaxBytes int
 }
 
+// AnalyzePaths builds a focused snapshot for evidence-selected files. It is
+// used before broad indexing so a large repository cannot starve the actual
+// investigation. Relationships are complete for the selected files, not for
+// the whole repository; callers must preserve that coverage limitation.
+func (a Analyzer) AnalyzePaths(ctx context.Context, root, repositoryID, revisionID, commitSHA string, paths []string) (Snapshot, error) {
+	if root == "" || repositoryID == "" || revisionID == "" {
+		return Snapshot{}, fmt.Errorf("repository root, repository id, and revision id are required")
+	}
+	if a.MaxFiles <= 0 {
+		a.MaxFiles = 80
+	}
+	if a.MaxBytes <= 0 {
+		a.MaxBytes = 2 << 20
+	}
+	s := Snapshot{RepositoryID: repositoryID, RevisionID: revisionID, CommitSHA: commitSHA}
+	contents := map[string]string{}
+	seen := map[string]bool{}
+	for _, raw := range paths {
+		if ctx.Err() != nil {
+			return s, ctx.Err()
+		}
+		rel := filepath.ToSlash(filepath.Clean(raw))
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(raw) || seen[rel] || language(filepath.Ext(rel)) == "" {
+			continue
+		}
+		seen[rel] = true
+		if len(seen) > a.MaxFiles {
+			break
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if len(data) > a.MaxBytes {
+			continue
+		}
+		text := string(data)
+		contents[rel] = text
+		lang := language(filepath.Ext(rel))
+		digest := sha256.Sum256(data)
+		fileID := nodeID(repositoryID, revisionID, "file", rel)
+		s.Nodes = append(s.Nodes, domain.ProgramNode{ID: fileID, RepositoryID: repositoryID, RevisionID: revisionID, Type: "File", Name: rel, Identity: lang + ":" + rel, FilePath: rel, Language: lang, StartLine: 1, EndLine: strings.Count(text, "\n") + 1, ContentDigest: hex.EncodeToString(digest[:])})
+		a.extractFile(text, rel, lang, fileID, &s)
+	}
+	a.buildReferences(contents, &s)
+	return s, nil
+}
+
 func (a Analyzer) Analyze(ctx context.Context, root, repositoryID, revisionID, commitSHA string) (Snapshot, error) {
 	if root == "" || repositoryID == "" || revisionID == "" {
 		return Snapshot{}, fmt.Errorf("repository root, repository id, and revision id are required")

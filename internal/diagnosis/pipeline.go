@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -135,7 +136,8 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
-	if !evidenceOnly && d.cfg.BaseRef != "" {
+	targetedEvidence := report.NormalizedEvidence != nil
+	if !evidenceOnly && d.cfg.BaseRef != "" && !targetedEvidence {
 		deltas, deltaEvidence, deltaErr := d.stageDeltas(ctx, workspace, repoID, revisionID, snapshot)
 		if deltaErr != nil {
 			report.Uncertainty = append(report.Uncertainty, "revision delta analysis incomplete: "+deltaErr.Error())
@@ -436,6 +438,28 @@ func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, r
 	}
 
 	analyzer := programrepo.Analyzer{}
+	// Targeted indexing is for externally observed CI failures. Ordinary local
+	// reproduction still uses the complete snapshot because its localization
+	// and adaptive stages already provide an explicit repository scope.
+	if report.NormalizedEvidence != nil || report.Baseline.Source == "ci_artifact" {
+		if targeted := expandTargetPaths(workspace, loc.LikelyFiles, 80); len(targeted) > 0 {
+			stage := d.metrics.Begin(observability.StageIndexing)
+			stage.Meta("mode", "targeted")
+			snapshot, err := analyzer.AnalyzePaths(ctx, workspace, repoID, revisionID, commitSHA, targeted)
+			if err != nil {
+				stage.Done("failed", err)
+				return snapshot, "", err
+			}
+			stage.Count("files", countSnapshotFiles(snapshot))
+			stage.Count("symbols", countSnapshotSymbols(snapshot))
+			stage.Count("requested_files", len(targeted))
+			stage.Done("completed", nil)
+			report.CoverageNotes = append(report.CoverageNotes,
+				"targeted indexing selected CI-reported and PR-relevant files before broader expansion",
+				"snapshot coverage is intentionally bounded; absent files are unresolved, not negative evidence")
+			return snapshot, "targeted", nil
+		}
+	}
 	baseRef := d.cfg.BaseRef
 	if baseRef != "" && artifactCache != nil {
 		baseSHA := stringsTrim(gitOutput(d.cfg.RepoPath, "rev-parse", baseRef))
@@ -483,6 +507,62 @@ func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, r
 		_ = artifactCache.Put(key, snapshot)
 	}
 	return snapshot, "full", nil
+}
+
+func boundedTargetPaths(paths []string, max int) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, path := range paths {
+		path = strings.TrimSpace(filepath.ToSlash(path))
+		if path == "" || seen[path] || len(out) >= max {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+func expandTargetPaths(root string, paths []string, max int) []string {
+	out := boundedTargetPaths(paths, max)
+	seen := map[string]bool{}
+	for _, path := range out {
+		seen[path] = true
+	}
+	for _, path := range append([]string(nil), out...) {
+		if len(out) >= max {
+			break
+		}
+		dir := filepath.Dir(filepath.Join(root, filepath.FromSlash(path)))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !isSourcePath(entry.Name()) {
+				continue
+			}
+			rel, err := filepath.Rel(root, filepath.Join(dir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			rel = filepath.ToSlash(rel)
+			if !seen[rel] && len(out) < max {
+				seen[rel] = true
+				out = append(out, rel)
+			}
+		}
+	}
+	return out
+}
+
+func isSourcePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go", ".py", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".rs":
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *Diagnoser) stageDeltas(ctx context.Context, workspace, repoID, headRevisionID string, head programrepo.Snapshot) ([]domain.CodeDelta, EvidenceItem, error) {

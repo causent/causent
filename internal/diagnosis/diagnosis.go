@@ -737,6 +737,20 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
 	report.Partial = true
 	report.Localization = Localization{BisectStatus: "deferred: evidence-first diagnosis"}
+	// Seed the focused index from locations observed in the original CI
+	// evidence. This avoids a repository-wide scan before the first finding.
+	report.Localization.LikelyFiles = observedFilesFromEvidence(report.Baseline, report.Evidence)
+	if cfg.BaseRef != "" && cfg.RepoPath != "" {
+		base := strings.TrimSpace(gitOutput(cfg.RepoPath, "rev-parse", cfg.BaseRef))
+		if base != "" && report.Environment.HeadCommit != "" {
+			for _, path := range strings.Split(gitOutput(cfg.RepoPath, "diff", "--name-only", base+"..."+report.Environment.HeadCommit), "\n") {
+				path = strings.TrimSpace(path)
+				if path != "" && !containsPath(report.Localization.LikelyFiles, path) {
+					report.Localization.LikelyFiles = append(report.Localization.LikelyFiles, path)
+				}
+			}
+		}
+	}
 	d.emit(EventDiagnosisStarted, domain.StatusCollectingEvidence, "evidence-first diagnosis started")
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence, "local reproduction deferred")
 	// Normalized CI evidence is still an input to the full investigation path.
