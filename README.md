@@ -4,8 +4,9 @@ Malenia investigates failed CI runs and produces bounded, replayable,
 evidence-backed diagnosis reports. It consumes logs, JUnit reports, stack
 traces, and CI artifacts before considering targeted reproduction.
 
-It reproduces a failure, compares revisions when possible, localizes relevant
-changes, records evidence, and classifies the result deterministically.
+When evidence is insufficient, it reproduces a failure, compares revisions
+when possible, localizes relevant changes, records evidence, and classifies the
+result deterministically.
 Optional model-assisted analysis and repair can assist after deterministic
 diagnosis, but the model never becomes the source of truth for diagnosis or
 verification.
