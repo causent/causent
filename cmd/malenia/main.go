@@ -115,6 +115,7 @@ func runDiagnose(args []string) {
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
 	maxProbes := fs.Int("max-probes", diagnosis.DefaultMaxLocalizationProbes, "maximum test executions used to locate a revision boundary")
 	skipAdaptive := fs.Bool("skip-adaptive", false, "publish the preliminary diagnosis without optional adaptive investigation")
+	fastPath := fs.Bool("fast-path", false, "publish after inconclusive reproduction without base comparison or repository localization")
 	artifactFirst := fs.Bool("artifact-first", false, "use CI artifact evidence before considering reproduction")
 	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
@@ -217,6 +218,7 @@ func runDiagnose(args []string) {
 		MaxCommits:            *maxCommits,
 		MaxLocalizationProbes: *maxProbes,
 		SkipAdaptive:          *skipAdaptive,
+		FastPath:              *fastPath,
 		ArtifactFirst:         *artifactFirst,
 	}
 	if strings.TrimSpace(*ciLog) != "" {
