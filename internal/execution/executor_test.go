@@ -299,7 +299,10 @@ func TestDockerExecutorTimeoutCleansUpWithBoundedResult(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	dockerPath := filepath.Join(dir, "docker")
-	script := "#!/bin/sh\nif [ \"$1\" = run ]; then sleep 30; exit 0; fi\nif [ \"$1\" = rm ]; then printf rm > " + logPath + "; exit 0; fi\nexit 1\n"
+	// Keep the fake Docker command self-contained: the test deliberately
+	// restricts PATH to the temporary directory, so relying on an external
+	// `sleep` binary makes the timeout assertion fail on minimal CI images.
+	script := "#!/bin/sh\nif [ \"$1\" = run ]; then while :; do :; done; fi\nif [ \"$1\" = rm ]; then printf rm > " + logPath + "; exit 0; fi\nexit 1\n"
 	if err := os.WriteFile(dockerPath, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
