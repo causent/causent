@@ -260,6 +260,9 @@ type Config struct {
 	// ArtifactFirst uses existing CI evidence before considering any reproduction.
 	// When decisive failure evidence is present, no command is executed.
 	ArtifactFirst bool
+	// FastPath publishes the preliminary result without base comparison or
+	// repository localization when reproduction is inconclusive.
+	FastPath bool
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -430,7 +433,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	} else {
 		report.Classification = Classify(baseline.Results)
 	}
-	if cfg.BaseRef != "" && !artifactOnly {
+	if cfg.BaseRef != "" && !artifactOnly && !(cfg.FastPath && reproductionInconclusive(baseline, nil)) {
 		cmpStage := d.metrics.Begin(observability.StageBaseComparison)
 		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
 		if cmpErr != nil {
@@ -488,6 +491,13 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
 		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
+	} else if cfg.FastPath && reproductionInconclusive(baseline, report.Comparison) {
+		localization = Localization{
+			HeadCommit:   env.HeadCommit,
+			BisectStatus: "skipped: fast-path reproduction inconclusive",
+		}
+		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because the fast-path reproduction was inconclusive")
+		report.Partial = true
 	} else {
 		localization, locEvidence, locErr = d.localize(ctx, workspace, baseline, report.Comparison)
 	}

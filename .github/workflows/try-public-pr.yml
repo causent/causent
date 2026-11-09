@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      fast_path:
+        description: Publish after inconclusive reproduction without expensive comparison/localization
+        required: false
+        default: true
+        type: boolean
       timeout_seconds:
         description: Maximum seconds for each test command
         required: false
@@ -175,6 +180,9 @@ jobs:
             --bundle "$RUNNER_TEMP/malenia-bundle")
           if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
             args+=(--skip-adaptive)
+          fi
+          if [ "${{ inputs.fast_path }}" = "true" ]; then
+            args+=(--fast-path)
           fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
