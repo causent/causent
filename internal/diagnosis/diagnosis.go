@@ -724,6 +724,15 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, report.Baseline))
 	report.Environment = captureEnvironment(cfg.RepoPath)
 	report.Environment.Isolation = "external CI evidence"
+	if cfg.Store != nil {
+		if err := cfg.Store.SaveInvestigation(domain.Investigation{
+			ID: domain.ID(report.InvestigationID), RepoPath: cfg.RepoPath,
+			Command: cfg.Command, Status: domain.StatusCreated,
+			CreatedAt: report.CreatedAt, UpdatedAt: report.CreatedAt,
+		}); err != nil {
+			report.Uncertainty = append(report.Uncertainty, "investigation persistence incomplete: "+err.Error())
+		}
+	}
 	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
 	report.Partial = true

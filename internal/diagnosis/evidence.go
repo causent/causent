@@ -290,14 +290,14 @@ func ParseCITextEvidence(content string, provenance EvidenceProvenance) Normaliz
 		state = StateCancelled
 	case strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout exceeded") || strings.Contains(lower, "deadline exceeded"):
 		state = StateTimedOut
-	case strings.Contains(lower, "not executed"):
-		state = StateNotExecuted
-	case strings.Contains(lower, "skipped"):
-		state = StateSkipped
 	case strings.Contains(lower, "fail") || strings.Contains(lower, "error:") || strings.Contains(lower, "data race"):
 		state = StateFailed
 	case strings.Contains(lower, "passed") || strings.Contains(lower, "tests passed"):
 		state = StatePassed
+	case strings.Contains(lower, "not executed"):
+		state = StateNotExecuted
+	case strings.Contains(lower, "skipped"):
+		state = StateSkipped
 	}
 
 	// Detect Prow job identity from log header
