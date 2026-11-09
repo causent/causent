@@ -771,6 +771,7 @@ func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosi
 		return nil, fmt.Errorf("artifact path is not a directory")
 	}
 	var evidence []diagnosis.EvidenceItem
+	var limitations []string
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -792,6 +793,7 @@ func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosi
 		}
 		data, readErr := readBoundedFile(path, maxBytes)
 		if readErr != nil {
+			limitations = append(limitations, fmt.Sprintf("%s: %v", path, readErr))
 			return nil
 		}
 		redacted := sensitiveArtifactValue.ReplaceAll(data, []byte(`${1}[REDACTED]`))
@@ -811,6 +813,19 @@ func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosi
 		})
 		return nil
 	})
+	if len(evidence) >= maxFiles {
+		limitations = append(limitations, fmt.Sprintf("artifact file limit reached (%d); additional files were not ingested", maxFiles))
+	}
+	if len(limitations) > 0 {
+		evidence = append(evidence, diagnosis.EvidenceItem{
+			ID:          fmt.Sprintf("E-artifact-limitations-%d", len(evidence)+1),
+			Kind:        "ci_artifact_manifest",
+			Source:      root,
+			Detail:      strings.Join(limitations, "\n"),
+			Provenance:  "bounded CI artifact ingestion",
+			Limitations: limitations,
+		})
+	}
 	return evidence, err
 }
 

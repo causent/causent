@@ -60,7 +60,7 @@ func TestReusableWorkflowContract(t *testing.T) {
 		"run_id input":                                strings.Contains(content, "run_id:"),
 		"checks out failing commit":                   strings.Contains(content, "github.event.workflow_run.head_sha"),
 		"fetches failed logs":                         strings.Contains(content, "--log-failed"),
-		"installs released binary":                    strings.Contains(content, "releases/latest/download/malenia_linux_amd64"),
+		"installs and verifies released binary":       strings.Contains(content, "malenia_linux_amd64") && strings.Contains(content, "SHA256SUMS"),
 		"passes base revision":                        strings.Contains(content, "--base"),
 		"passes docker executor":                      strings.Contains(content, "--executor docker"),
 		"passes attempts":                             strings.Contains(content, "--attempts"),
