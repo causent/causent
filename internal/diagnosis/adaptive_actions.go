@@ -40,9 +40,15 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 	if commit == "" {
 		commit = "unknown"
 	}
-	snapshot, err := (programrepo.Analyzer{}).Analyze(ctx, a.workspace, repoID, "adaptive:"+commit, commit)
-	if err != nil {
-		return investigation.ActionOutput{}, err
+	var snapshot programrepo.Snapshot
+	if a.diagnoser.snapshot != nil {
+		snapshot = *a.diagnoser.snapshot
+	} else {
+		var err error
+		snapshot, err = (programrepo.Analyzer{}).Analyze(ctx, a.workspace, repoID, "adaptive:"+commit, commit)
+		if err != nil {
+			return investigation.ActionOutput{}, err
+		}
 	}
 	selected := make([]domain.ProgramNode, 0, 16)
 	for _, node := range snapshot.Nodes {

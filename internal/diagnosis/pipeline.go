@@ -80,6 +80,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	if err != nil {
 		return err
 	}
+	d.snapshot = &snapshot
 	report.IndexingMode = indexMode
 	if persist {
 		for _, n := range snapshot.Nodes {
