@@ -266,11 +266,17 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 	}
 
 	if len(loc.LikelyFiles) > 0 {
+		support := []string{}
+		for _, item := range evidence {
+			if item.ID == "E-git-diff" || item.Kind == "observed_source_location" {
+				support = append(support, item.ID)
+			}
+		}
 		claims = append(claims, Claim{
 			ID:         "H-affected-files",
 			Statement:  "The most likely affected files are " + strings.Join(loc.LikelyFiles, ", "),
 			Confidence: 0.5,
-			Supporting: []string{"E-git-diff"},
+			Supporting: support,
 		})
 	}
 

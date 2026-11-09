@@ -189,6 +189,7 @@ jobs:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           FAST_PATH: ${{ inputs.fast_path }}
+          EVIDENCE_AVAILABLE: ${{ steps.evidence.outputs.available }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/target"
@@ -196,7 +197,7 @@ jobs:
           git -C "$RUNNER_TEMP/target" remote add origin "$CLONE_URL"
           git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin \
             "refs/pull/$PULL_NUMBER/head:refs/remotes/origin/malenia-pr"
-          if [[ "$FAST_PATH" != "true" ]]; then
+          if [[ "$FAST_PATH" != "true" || "$EVIDENCE_AVAILABLE" == "true" ]]; then
             git -C "$RUNNER_TEMP/target" fetch --no-tags --deepen=64 origin \
               "refs/pull/$PULL_NUMBER/head"
             git -C "$RUNNER_TEMP/target" fetch --no-tags --depth=1 origin "$BASE_SHA"
@@ -250,6 +251,10 @@ jobs:
           MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
           MALENIA_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
           MALENIA_INVESTIGATION_TIMEOUT_SECONDS: ${{ inputs.investigation_timeout_seconds }}
+          MALENIA_CI_PROVIDER: github-actions
+          MALENIA_CI_RUN_ID: ${{ steps.evidence.outputs.run_id }}
+          MALENIA_CI_PR_NUMBER: ${{ inputs.pull_request }}
+          MALENIA_CI_SOURCE_URL: ${{ steps.evidence.outputs.source_url }}
         run: |
           set -euo pipefail
           if [[ ! "$MALENIA_ATTEMPTS" =~ ^[1-5]$ ]]; then
@@ -278,7 +283,8 @@ jobs:
           evidence_mode=false
           if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
             evidence_mode=true
-            args=(evidence --ci-log "$RUNNER_TEMP/source-ci-bounded.log" --command "$MALENIA_COMMAND")
+            args+=(--ci-log "$RUNNER_TEMP/source-ci-bounded.log" \
+              --artifact-dir "$RUNNER_TEMP/source-artifacts" --artifact-first)
             junit="$(find "$RUNNER_TEMP/source-artifacts" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
             if [ -n "$junit" ]; then
               args+=(--junit "$junit")

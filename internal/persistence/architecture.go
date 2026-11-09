@@ -43,6 +43,12 @@ func (s *Store) SaveCodeLocation(v domain.CodeLocation) error {
 func (s *Store) SaveProgramNode(v domain.ProgramNode) error {
 	return s.saveArchitecture("program_node", v.ID, "", v)
 }
+func (s *Store) SaveCodeDelta(v domain.CodeDelta) error {
+	return s.saveArchitecture("code_delta", v.ID, "", v)
+}
+func (s *Store) SaveExecutionPath(v domain.ExecutionPath) error {
+	return s.saveArchitecture("execution_path", v.ID, v.InvestigationID, v)
+}
 func (s *Store) SaveCandidate(v domain.CandidateLocation) error {
 	return s.saveArchitecture("candidate", v.ID, v.InvestigationID, v)
 }

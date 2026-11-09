@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/causent/malenia/internal/cache"
@@ -34,12 +35,34 @@ func (d *Diagnoser) persistArchitecture(ctx context.Context, report *Report, wor
 func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, workspace string, baseline Baseline, env Environment, loc Localization, persist, evidenceOnly bool) error {
 	repoID := "local:" + d.cfg.RepoPath
 	revisionID := "revision:" + env.HeadCommit
+	provider := d.cfg.CIProvider
+	if provider == "" {
+		provider = "local"
+	}
+	externalExecutionID := d.cfg.ExternalExecutionID
+	if externalExecutionID == "" {
+		externalExecutionID = report.InvestigationID
+	}
+	pullRequestID := ""
 	if persist {
-		if err := d.cfg.Store.SaveRepository(domain.Repository{ID: repoID, Provider: "local", CanonicalID: d.cfg.RepoPath, Name: d.cfg.RepoPath}); err != nil {
+		if err := d.cfg.Store.SaveRepository(domain.Repository{ID: repoID, Provider: provider, CanonicalID: d.cfg.RepoPath, Name: d.cfg.RepoPath}); err != nil {
 			return err
 		}
 		if err := d.cfg.Store.SaveRevision(domain.Revision{ID: revisionID, RepositoryID: repoID, CommitSHA: env.HeadCommit, CreatedAt: report.CreatedAt}); err != nil {
 			return err
+		}
+		if d.cfg.PullRequestID != "" {
+			pullRequestID = "pr:" + d.cfg.PullRequestID
+			baseRevisionID := ""
+			if d.cfg.BaseRef != "" {
+				if base := stringsTrim(gitOutput(d.cfg.RepoPath, "rev-parse", d.cfg.BaseRef)); base != "" {
+					baseRevisionID = "revision:" + base
+					_ = d.cfg.Store.SaveRevision(domain.Revision{ID: baseRevisionID, RepositoryID: repoID, CommitSHA: base, CreatedAt: report.CreatedAt})
+				}
+			}
+			if err := d.cfg.Store.SavePullRequest(domain.PullRequest{ID: pullRequestID, RepositoryID: repoID, ExternalPRID: d.cfg.PullRequestID, BaseRevisionID: baseRevisionID, HeadRevisionID: revisionID, Status: "open", Metadata: map[string]string{"source_url": d.cfg.SourceURL}}); err != nil {
+				return err
+			}
 		}
 		if err := d.persistReportEvidence(report); err != nil {
 			return err
@@ -70,7 +93,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 
 	executionID := "execution:" + report.InvestigationID
 	if persist {
-		if err := d.cfg.Store.SaveCIExecution(domain.CIExecution{ID: executionID, RepositoryID: repoID, HeadRevisionID: revisionID, Provider: "local", ExternalExecutionID: report.InvestigationID, Status: string(report.Classification), StartedAt: &baseline.StartedAt, CompletedAt: &baseline.FinishedAt}); err != nil {
+		if err := d.cfg.Store.SaveCIExecution(domain.CIExecution{ID: executionID, RepositoryID: repoID, PullRequestID: pullRequestID, HeadRevisionID: revisionID, Provider: provider, ExternalExecutionID: externalExecutionID, Status: string(report.Classification), StartedAt: &baseline.StartedAt, CompletedAt: &baseline.FinishedAt, RawMetadata: map[string]string{"source_url": d.cfg.SourceURL}}); err != nil {
 			return err
 		}
 	}
@@ -112,6 +135,26 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
+	if !evidenceOnly && d.cfg.BaseRef != "" {
+		deltas, deltaEvidence, deltaErr := d.stageDeltas(ctx, workspace, repoID, revisionID, snapshot)
+		if deltaErr != nil {
+			report.Uncertainty = append(report.Uncertainty, "revision delta analysis incomplete: "+deltaErr.Error())
+			report.Partial = true
+		} else if len(deltas) > 0 {
+			report.Deltas = deltas
+			report.Evidence = append(report.Evidence, deltaEvidence)
+			if persist {
+				if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(deltaEvidence.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(deltaEvidence.Kind), Source: deltaEvidence.Source, Timestamp: report.CreatedAt, ContentRef: deltaEvidence.Kind, Digest: deltaEvidence.Digest, Payload: deltaEvidence.Detail, Provenance: deltaEvidence.Provenance}); err != nil {
+					return err
+				}
+				for _, delta := range deltas {
+					if err := d.cfg.Store.SaveCodeDelta(delta); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 
 	frames := architectureFrames(baseline, failures, report.Evidence)
 	var evidenceIDs []domain.ID
@@ -131,6 +174,9 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
+	for _, delta := range report.Deltas {
+		changed[delta.SymbolIdentity] = true
+	}
 
 	candStage := d.metrics.Begin(observability.StageCandidateGeneration)
 	var candidates []domain.CandidateLocation
@@ -140,6 +186,45 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		candidates, relations = localization.GenerateObserved(frames, input)
 	} else {
 		candidates, relations = localization.Generate(snapshot, input)
+	}
+	if !evidenceOnly {
+		var sourceEvidence []EvidenceItem
+		candidates, sourceEvidence = sourceEvidenceForCandidates(workspace, env.HeadCommit, candidates)
+		report.Evidence = append(report.Evidence, sourceEvidence...)
+		if persist {
+			for _, item := range sourceEvidence {
+				if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: item.Provenance}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		for _, delta := range report.Deltas {
+			if candidate.Location.SymbolIdentity != delta.SymbolIdentity && candidate.Location.FilePath != delta.FilePath {
+				continue
+			}
+			relations = append(relations, domain.Relationship{
+				ID: "candidate:" + candidate.ID + ":delta:" + delta.ID, InvestigationID: domain.ID(report.InvestigationID),
+				SourceType: "candidate_location", SourceID: candidate.ID, TargetType: "code_delta", TargetID: delta.ID,
+				Type: "CHANGED_BY_PR", RevisionID: delta.HeadRevisionID, EvidenceIDs: []domain.ID{delta.EvidenceID},
+			})
+		}
+	}
+	paths, pathEvidence := buildExecutionPaths(domain.ID(report.InvestigationID), snapshot, candidates, failureText(baseline, report.Evidence), failureIDs, evidenceIDs)
+	report.ExecutionPaths = paths
+	report.Evidence = append(report.Evidence, pathEvidence...)
+	if persist {
+		for _, path := range paths {
+			if err := d.cfg.Store.SaveExecutionPath(path); err != nil {
+				return err
+			}
+		}
+		for _, item := range pathEvidence {
+			if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: item.Provenance}); err != nil {
+				return err
+			}
+		}
 	}
 	report.Candidates = candidates
 	report.Relationships = relations
@@ -398,6 +483,152 @@ func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, r
 		_ = artifactCache.Put(key, snapshot)
 	}
 	return snapshot, "full", nil
+}
+
+func (d *Diagnoser) stageDeltas(ctx context.Context, workspace, repoID, headRevisionID string, head programrepo.Snapshot) ([]domain.CodeDelta, EvidenceItem, error) {
+	baseSHA := stringsTrim(gitOutput(d.cfg.RepoPath, "rev-parse", d.cfg.BaseRef))
+	if baseSHA == "" {
+		return nil, EvidenceItem{}, fmt.Errorf("base revision %q could not be resolved", d.cfg.BaseRef)
+	}
+	var base programrepo.Snapshot
+	err := d.workspaceAt(ctx, baseSHA, func(dir string) error {
+		var analyzeErr error
+		base, analyzeErr = (programrepo.Analyzer{}).Analyze(ctx, dir, repoID, "revision:"+baseSHA, baseSHA)
+		return analyzeErr
+	})
+	if err != nil {
+		return nil, EvidenceItem{}, err
+	}
+	added, removed, changed := programrepo.Compare(base, head)
+	baseNodes := map[string]domain.ProgramNode{}
+	headNodes := map[string]domain.ProgramNode{}
+	for _, node := range base.Nodes {
+		if node.Type != "File" {
+			baseNodes[node.Identity] = node
+		}
+	}
+	for _, node := range head.Nodes {
+		if node.Type != "File" {
+			headNodes[node.Identity] = node
+		}
+	}
+	const evidenceID = "E-pr-delta"
+	var deltas []domain.CodeDelta
+	addDelta := func(identity, kind string) {
+		node := headNodes[identity]
+		baseNode := baseNodes[identity]
+		if node.Identity == "" {
+			node = baseNode
+		}
+		line := node.StartLine
+		if kind == "removed" {
+			line = baseNode.StartLine
+		}
+		deltas = append(deltas, domain.CodeDelta{
+			ID: "delta:" + digestString(baseSHA+"\x00"+head.CommitSHA+"\x00"+kind+"\x00"+identity), RepositoryID: repoID,
+			BaseRevisionID: "revision:" + baseSHA, HeadRevisionID: headRevisionID, Kind: kind,
+			SymbolIdentity: identity, FilePath: node.FilePath, BaseStartLine: baseNode.StartLine, HeadStartLine: headNodes[identity].StartLine,
+			EvidenceID: evidenceID, Summary: fmt.Sprintf("%s symbol %s (%s:%d)", kind, identity, node.FilePath, line),
+		})
+	}
+	for _, identity := range added {
+		addDelta(identity, "added")
+	}
+	for _, identity := range removed {
+		addDelta(identity, "removed")
+	}
+	for _, identity := range changed {
+		addDelta(identity, "modified")
+	}
+	if len(deltas) == 0 {
+		return nil, EvidenceItem{}, nil
+	}
+	var detail strings.Builder
+	for _, delta := range deltas {
+		detail.WriteString(delta.Summary)
+		detail.WriteByte('\n')
+	}
+	evidence := EvidenceItem{ID: evidenceID, Kind: "pr_delta", Source: "base/head repository graph comparison", Digest: digestString(detail.String()), Detail: detail.String(), Provenance: "deterministic comparison of indexed base and head revisions"}
+	return deltas, evidence, nil
+}
+
+type graphPathState struct {
+	nodeIDs []string
+	relIDs  []string
+}
+
+func buildExecutionPaths(investigationID domain.ID, snapshot programrepo.Snapshot, candidates []domain.CandidateLocation, failureText string, failureIDs []string, evidenceIDs []domain.ID) ([]domain.ExecutionPath, []EvidenceItem) {
+	nodes := map[string]domain.ProgramNode{}
+	for _, node := range snapshot.Nodes {
+		nodes[node.ID] = node
+	}
+	edges := map[string][]domain.Relationship{}
+	for _, relation := range snapshot.Relationships {
+		edges[relation.SourceID] = append(edges[relation.SourceID], relation)
+	}
+	targets := map[string]bool{}
+	for _, candidate := range candidates {
+		const prefix = "candidate:"
+		if strings.HasPrefix(candidate.ID, prefix) {
+			targets[strings.TrimPrefix(candidate.ID, prefix)] = true
+		}
+	}
+	var tests []domain.ProgramNode
+	for _, node := range snapshot.Nodes {
+		if node.Type == "Test" && (strings.Contains(failureText, node.Name) || strings.Contains(failureText, node.FilePath)) {
+			tests = append(tests, node)
+		}
+	}
+	var paths []domain.ExecutionPath
+	seen := map[string]bool{}
+	for _, test := range tests {
+		queue := []graphPathState{{nodeIDs: []string{test.ID}}}
+		for len(queue) > 0 && len(paths) < 20 {
+			state := queue[0]
+			queue = queue[1:]
+			current := state.nodeIDs[len(state.nodeIDs)-1]
+			if len(state.nodeIDs) > 1 && targets[current] {
+				locations := make([]domain.CodeLocation, 0, len(state.nodeIDs))
+				parts := make([]string, 0, len(state.nodeIDs))
+				for _, nodeID := range state.nodeIDs {
+					node := nodes[nodeID]
+					locations = append(locations, domain.CodeLocation{ID: "location:" + node.ID, RepositoryID: node.RepositoryID, RevisionID: node.RevisionID, FilePath: node.FilePath, SymbolIdentity: node.Identity, StartLine: node.StartLine, EndLine: node.EndLine, LocationType: node.Type})
+					parts = append(parts, node.FilePath+":"+node.Name)
+				}
+				pathKey := strings.Join(state.nodeIDs, ">")
+				if !seen[pathKey] {
+					seen[pathKey] = true
+					path := domain.ExecutionPath{ID: "path:" + digestString(string(investigationID)+"\x00"+pathKey), InvestigationID: investigationID, FailureIDs: append([]string{}, failureIDs...), NodeIDs: append([]string{}, state.nodeIDs...), RelationshipIDs: append([]string{}, state.relIDs...), Locations: locations, EvidenceIDs: append([]domain.ID{}, evidenceIDs...), Status: "structurally_resolved", Summary: strings.Join(parts, " → ")}
+					paths = append(paths, path)
+				}
+				continue
+			}
+			if len(state.relIDs) >= 4 {
+				continue
+			}
+			for _, relation := range edges[current] {
+				if _, ok := nodes[relation.TargetID]; !ok {
+					continue
+				}
+				already := false
+				for _, nodeID := range state.nodeIDs {
+					if nodeID == relation.TargetID {
+						already = true
+						break
+					}
+				}
+				if already {
+					continue
+				}
+				queue = append(queue, graphPathState{nodeIDs: append(append([]string{}, state.nodeIDs...), relation.TargetID), relIDs: append(append([]string{}, state.relIDs...), relation.ID)})
+			}
+		}
+	}
+	var evidence []EvidenceItem
+	for _, path := range paths {
+		evidence = append(evidence, EvidenceItem{ID: "E-" + path.ID, Kind: "execution_path", Source: "revision-scoped repository graph", Digest: digestString(path.Summary), Detail: path.Summary, Provenance: "deterministic graph traversal; structural path, not causal proof", Revision: snapshot.CommitSHA})
+	}
+	return paths, evidence
 }
 
 func (d *Diagnoser) openArtifactCache() (*cache.FSCache, error) {

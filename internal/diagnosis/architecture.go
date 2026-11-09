@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -262,6 +264,95 @@ func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence [
 		}
 	}
 	return out
+}
+
+// observedFilesFromEvidence returns source paths reported by CI diagnostics.
+// These are observations from the tool output; repository indexing later
+// resolves them against the checked-out revision before treating them as
+// source candidates.
+func observedFilesFromEvidence(b Baseline, evidence []EvidenceItem) []string {
+	frames := architectureFrames(b, nil, evidence)
+	seen := map[string]bool{}
+	var files []string
+	for _, frame := range frames {
+		path := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(frame.File, "./")))
+		if path == "." || path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		files = append(files, path)
+	}
+	return files
+}
+
+func containsPath(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceEvidenceForCandidates reads only bounded excerpts from the checked-out
+// revision. It turns a parser-derived location into independently inspected
+// source evidence without pretending that the excerpt proves causality.
+func sourceEvidenceForCandidates(workspace, revision string, candidates []domain.CandidateLocation) ([]domain.CandidateLocation, []EvidenceItem) {
+	if workspace == "" {
+		return candidates, nil
+	}
+	seen := map[string]bool{}
+	evidenceByCandidate := map[string]EvidenceItem{}
+	for _, candidate := range candidates {
+		path := filepath.FromSlash(candidate.Location.FilePath)
+		if path == "" || filepath.IsAbs(path) || strings.HasPrefix(filepath.Clean(path), ".."+string(filepath.Separator)) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, path))
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		line := candidate.Location.StartLine
+		if line < 1 || line > len(lines) {
+			continue
+		}
+		start := line - 3
+		if start < 1 {
+			start = 1
+		}
+		end := line + 3
+		if end > len(lines) {
+			end = len(lines)
+		}
+		var excerpt strings.Builder
+		for current := start; current <= end; current++ {
+			fmt.Fprintf(&excerpt, "%d| %s\n", current, lines[current-1])
+		}
+		key := candidate.Location.FilePath + ":" + fmt.Sprint(line)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		detail := fmt.Sprintf("checked-out revision %s\n%s", revision, bound(excerpt.String(), MaxEvidenceExcerpt))
+		evidenceByCandidate[candidate.ID] = EvidenceItem{
+			ID:         "E-source-" + digestString(revision + "\x00" + key)[:12],
+			Kind:       "source_excerpt",
+			Source:     candidate.Location.FilePath,
+			Digest:     digestString(detail),
+			Detail:     detail,
+			Provenance: "deterministic inspection of the checked-out revision",
+			Revision:   revision,
+		}
+	}
+	var evidence []EvidenceItem
+	for i := range candidates {
+		if item, ok := evidenceByCandidate[candidates[i].ID]; ok {
+			candidates[i].SupportingEvidenceIDs = appendUnique(candidates[i].SupportingEvidenceIDs, domain.ID(item.ID))
+			evidence = append(evidence, item)
+		}
+	}
+	return candidates, evidence
 }
 
 func failureIDsForText(text string, failures []domain.FailureEpisode) []string {

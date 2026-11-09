@@ -201,6 +201,8 @@ type Report struct {
 	Evidence                   []EvidenceItem                 `json:"evidence"`
 	NormalizedEvidence         *NormalizedEvidence            `json:"normalized_evidence,omitempty"`
 	Candidates                 []domain.CandidateLocation     `json:"candidates,omitempty"`
+	Deltas                     []domain.CodeDelta             `json:"deltas,omitempty"`
+	ExecutionPaths             []domain.ExecutionPath         `json:"execution_paths,omitempty"`
 	Relationships              []domain.Relationship          `json:"relationships,omitempty"`
 	FailureGroups              []domain.FailureGroup          `json:"failure_groups,omitempty"`
 	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
@@ -235,8 +237,14 @@ type Report struct {
 type Config struct {
 	RepoPath string
 	Command  []string
-	Attempts int
-	Timeout  time.Duration
+	// CI metadata identifies the external execution without making provider
+	// metadata part of the deterministic diagnosis logic.
+	CIProvider          string
+	ExternalExecutionID string
+	PullRequestID       string
+	SourceURL           string
+	Attempts            int
+	Timeout             time.Duration
 	// Executor runs the command. It is required so local and container
 	// execution stay interchangeable behind one interface.
 	Executor      execution.Executor
@@ -488,6 +496,41 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
 	}
 
+	// Existing CI evidence establishes what happened on the head. When a base
+	// revision is available, execute only that counterfactual revision so PR
+	// causality can be assessed without rerunning the already-observed head.
+	if artifactOnly && cfg.BaseRef != "" && ctx.Err() == nil {
+		cmpStage := d.metrics.Begin(observability.StageBaseComparison)
+		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
+		if cmpErr != nil {
+			cmpStage.Done("inconclusive", cmpErr)
+			report.Uncertainty = append(report.Uncertainty, "base comparison incomplete: "+cmpErr.Error())
+			report.Partial = true
+		} else {
+			report.Comparison = &comparison
+			cmpStage.Done("completed", nil)
+			if comparison.Verdict == ClassRealRegression {
+				report.Evidence = append(report.Evidence, EvidenceItem{
+					ID:         "E-pr-causality",
+					Kind:       "pr_causality",
+					Source:     "CI head artifact plus base execution",
+					Digest:     digestString(string(comparison.Verdict) + comparison.BaseCommit + comparison.HeadCommit),
+					Detail:     "the original CI evidence reports failure on the head while the same configured command passed on the base revision",
+					Provenance: "head from original CI evidence; base from controlled execution",
+				})
+			} else if comparison.Verdict == ClassPreExisting {
+				report.Evidence = append(report.Evidence, EvidenceItem{
+					ID:         "E-pr-causality",
+					Kind:       "pr_causality",
+					Source:     "CI head artifact plus base execution",
+					Digest:     digestString(string(comparison.Verdict) + comparison.BaseCommit + comparison.HeadCommit),
+					Detail:     "the same configured command failed on the base revision, so the PR is not established as the source of the failure",
+					Provenance: "head from original CI evidence; base from controlled execution",
+				})
+			}
+		}
+	}
+
 	// Preserve a lightweight report when the failure is not established. The
 	// evidence-only path must not trigger repository-wide analysis.
 	if reason, ok := refusalReason(report.Classification, baseline); ok && !artifactOnly {
@@ -504,7 +547,10 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		return report, nil
 	}
 
-	skipDeep := cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
+	// Artifact-backed runs can still inspect the checked-out source, but must
+	// not rerun the configured command: adaptive rerun actions would turn an
+	// evidence-first diagnosis into an implicit reproduction.
+	skipDeep := artifactOnly || cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
 	if skipDeep && !cfg.SkipAdaptive {
 		report.Uncertainty = append(report.Uncertainty, "deep investigation skipped because reproduction or base comparison was inconclusive")
 		report.Partial = true
@@ -515,13 +561,51 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	var localization Localization
 	var locEvidence []EvidenceItem
 	var locErr error
-	evidenceOnly := artifactOnly || report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
+	// Artifact evidence is execution evidence, not a reason to skip source
+	// indexing. Only inconclusive/fast-path runs remain observation-only.
+	evidenceOnly := report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
 	if artifactOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
 		}
+		localization.LikelyFiles = observedFilesFromEvidence(baseline, report.Evidence)
+		if len(localization.LikelyFiles) > 0 {
+			report.Evidence = append(report.Evidence, EvidenceItem{
+				ID:         "E-observed-source-location",
+				Kind:       "observed_source_location",
+				Source:     "CI diagnostic file and line output",
+				Digest:     digestString(strings.Join(localization.LikelyFiles, "\n")),
+				Detail:     "source files reported by CI diagnostics:\n" + strings.Join(localization.LikelyFiles, "\n"),
+				Provenance: "observed in original CI evidence; not yet independently verified",
+			})
+		}
+		if cfg.BaseRef != "" {
+			base := strings.TrimSpace(gitOutput(cfg.RepoPath, "rev-parse", cfg.BaseRef))
+			if base != "" {
+				changed := strings.TrimSpace(gitOutput(cfg.RepoPath, "diff", "--name-only", base+"..."+env.HeadCommit))
+				var changedPaths []string
+				for _, path := range strings.Split(changed, "\n") {
+					path = strings.TrimSpace(path)
+					if path == "" || containsPath(localization.LikelyFiles, path) {
+						continue
+					}
+					changedPaths = append(changedPaths, path)
+					localization.LikelyFiles = append(localization.LikelyFiles, path)
+				}
+				if len(changedPaths) > 0 {
+					report.Evidence = append(report.Evidence, EvidenceItem{
+						ID:     "E-git-diff",
+						Kind:   "git_diff",
+						Source: "git diff --name-only " + base + "..." + env.HeadCommit,
+						Digest: digestString(strings.Join(changedPaths, "\n")),
+						Detail: "files changed between the CI head and base:\n" + strings.Join(changedPaths, "\n"),
+					})
+				}
+			}
+		}
 		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
+		report.Uncertainty = append(report.Uncertainty, "source localization used the checked-out CI head; no local reproduction was executed")
 	} else if evidenceOnly {
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,

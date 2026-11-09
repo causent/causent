@@ -271,6 +271,10 @@ func runDiagnose(args []string) {
 	cfg := diagnosis.Config{
 		RepoPath:              repoPath,
 		Command:               cmd,
+		CIProvider:            os.Getenv("MALENIA_CI_PROVIDER"),
+		ExternalExecutionID:   os.Getenv("MALENIA_CI_RUN_ID"),
+		PullRequestID:         os.Getenv("MALENIA_CI_PR_NUMBER"),
+		SourceURL:             os.Getenv("MALENIA_CI_SOURCE_URL"),
 		Attempts:              *attempts,
 		Timeout:               *timeout,
 		InvestigationTimeout:  *investigationTimeout,
@@ -302,7 +306,11 @@ func runDiagnose(args []string) {
 			os.Exit(2)
 		}
 		digest := sha256.Sum256(data)
-		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
+		provenance := "explicit CLI input"
+		if sourceURL := os.Getenv("MALENIA_CI_SOURCE_URL"); sourceURL != "" {
+			provenance = sourceURL
+		}
+		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: provenance}}
 		parsed := diagnosis.ParseCITextEvidence(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *ciLog})
 		normalized.Executions = append(normalized.Executions, parsed.Executions...)
 		normalized.RawEvidence = append(normalized.RawEvidence, parsed.RawEvidence...)
@@ -316,7 +324,11 @@ func runDiagnose(args []string) {
 			os.Exit(2)
 		}
 		digest := sha256.Sum256(data)
-		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: "explicit CLI input"})
+		provenance := "explicit CLI input"
+		if sourceURL := os.Getenv("MALENIA_CI_SOURCE_URL"); sourceURL != "" {
+			provenance = sourceURL
+		}
+		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: provenance})
 		parsed, parseErr := diagnosis.ParseJUnitXML(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *junit})
 		if parseErr != nil {
 			fmt.Fprintln(os.Stderr, "junit: "+parseErr.Error())

@@ -162,6 +162,171 @@ func TestDiagnoseUsesCIArtifactsBeforeReproduction(t *testing.T) {
 	}
 }
 
+func TestArtifactDiagnosisContinuesIntoSourceLocalization(t *testing.T) {
+	dir := newRepo(t)
+	commit(t, dir, "source for artifact diagnosis", map[string]string{
+		"main.go": "package main\nfunc Broken() { panic(\"boom\") }\n",
+	})
+	report, err := Run(context.Background(), Config{
+		RepoPath:      dir,
+		Command:       []string{"go", "test", "./..."},
+		Executor:      unexpectedExecutor{},
+		ArtifactFirst: true,
+		SkipAdaptive:  true,
+		ExternalEvidence: []EvidenceItem{{
+			ID:         "E-ci-source",
+			Kind:       "original_ci_log",
+			Source:     "workflow/job.log",
+			Digest:     "digest",
+			Detail:     "--- FAIL: TestBroken (0.01s)\nmain.go:2: panic: boom",
+			Provenance: "workflow run 42/job test",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.Overview == nil {
+		t.Fatalf("artifact diagnosis did not build repository overview: %#v", report)
+	}
+	if report.IndexingMode == "skipped_evidence_only" || report.IndexingMode == "" {
+		t.Fatalf("artifact diagnosis did not index source: %q", report.IndexingMode)
+	}
+	if len(report.Candidates) == 0 {
+		t.Fatalf("expected source candidates, uncertainty=%v", report.Uncertainty)
+	}
+	for _, candidate := range report.Candidates {
+		if candidate.Location.LocationType != "observed_frame" && candidate.Location.FilePath == "main.go" {
+			for _, evidence := range report.Evidence {
+				if evidence.Kind == "source_excerpt" && evidence.Source == "main.go" {
+					return
+				}
+			}
+			t.Fatalf("indexed candidate has no source excerpt evidence: %#v", report.Evidence)
+		}
+	}
+	t.Fatalf("expected an indexed source candidate for main.go, got %#v", report.Candidates)
+}
+
+func TestArtifactDiagnosisUsesBaseForPRCausality(t *testing.T) {
+	dir, good, _ := failingRepo(t)
+	report, err := Run(context.Background(), Config{
+		RepoPath:      dir,
+		Command:       []string{"sh", "run.sh"},
+		BaseRef:       good,
+		Attempts:      1,
+		Timeout:       30 * time.Second,
+		Executor:      testExecutor(t),
+		ArtifactFirst: true,
+		SkipAdaptive:  true,
+		ExternalEvidence: []EvidenceItem{{
+			ID:         "E-ci-regression",
+			Kind:       "original_ci_log",
+			Source:     "workflow/job.log",
+			Digest:     "digest",
+			Detail:     "--- FAIL: TestBroken (0.01s)\nfailing: broken marker present",
+			Provenance: "workflow run 42/job test",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.Comparison == nil || report.Comparison.Verdict != ClassRealRegression {
+		t.Fatalf("expected base/head causality comparison, got %#v", report.Comparison)
+	}
+	found := false
+	for _, evidence := range report.Evidence {
+		if evidence.Kind == "pr_causality" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected PR causality evidence: %#v", report.Evidence)
+	}
+}
+
+func TestDiagnosisBuildsSymbolDeltaAndCandidateRelationship(t *testing.T) {
+	dir := newRepo(t)
+	good := commit(t, dir, "good source", map[string]string{
+		"main.go": "package main\nfunc Broken() {}\n",
+		"run.sh":  "#!/bin/sh\nif grep -q panic main.go; then echo 'panic at main.go:2' >&2; exit 1; fi\nexit 0\n",
+	})
+	commit(t, dir, "introduce panic", map[string]string{
+		"main.go": "package main\nfunc Broken() { panic(\"boom\") }\n",
+	})
+	report, err := Run(context.Background(), Config{
+		RepoPath:      dir,
+		Command:       []string{"sh", "run.sh"},
+		BaseRef:       good,
+		Attempts:      1,
+		Timeout:       30 * time.Second,
+		Executor:      testExecutor(t),
+		ArtifactFirst: true,
+		SkipAdaptive:  true,
+		ExternalEvidence: []EvidenceItem{{
+			ID:         "E-ci-delta",
+			Kind:       "original_ci_log",
+			Source:     "workflow/job.log",
+			Digest:     "digest",
+			Detail:     "--- FAIL: TestBroken (0.01s)\npanic at main.go:2",
+			Provenance: "workflow run 42/job test",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(report.Deltas) == 0 {
+		t.Fatalf("expected revision deltas: %#v", report)
+	}
+	foundChanged := false
+	foundRelation := false
+	for _, delta := range report.Deltas {
+		if delta.Kind == "modified" && delta.FilePath == "main.go" {
+			foundChanged = true
+		}
+	}
+	for _, relation := range report.Relationships {
+		if relation.Type == "CHANGED_BY_PR" {
+			foundRelation = true
+		}
+	}
+	if !foundChanged || !foundRelation {
+		t.Fatalf("expected changed source and candidate relationship: deltas=%#v relationships=%#v", report.Deltas, report.Relationships)
+	}
+}
+
+func TestDiagnosisBuildsFailureToProductionExecutionPath(t *testing.T) {
+	dir := newRepo(t)
+	commit(t, dir, "source and test", map[string]string{
+		"main.go":      "package main\nfunc Broken() {}\n",
+		"main_test.go": "package main\nfunc TestBroken() { Broken() }\n",
+	})
+	report, err := Run(context.Background(), Config{
+		RepoPath:      dir,
+		Command:       []string{"sh", "run.sh"},
+		Executor:      unexpectedExecutor{},
+		ArtifactFirst: true,
+		SkipAdaptive:  true,
+		ExternalEvidence: []EvidenceItem{{
+			ID:         "E-ci-path",
+			Kind:       "original_ci_log",
+			Source:     "workflow/job.log",
+			Digest:     "digest",
+			Detail:     "--- FAIL: TestBroken (0.01s)\nmain_test.go:2: failure",
+			Provenance: "workflow run 42/job test",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(report.ExecutionPaths) == 0 {
+		t.Fatalf("expected failure-to-production execution path: candidates=%#v relationships=%#v", report.Candidates, report.Relationships)
+	}
+	path := report.ExecutionPaths[0]
+	if len(path.Locations) < 2 || !strings.Contains(path.Summary, "main_test.go") || !strings.Contains(path.Summary, "main.go") {
+		t.Fatalf("path did not connect test to production source: %#v", path)
+	}
+}
+
 func TestDiagnoseFlakyClassification(t *testing.T) {
 	dir := newRepo(t)
 	commit(t, dir, "alternating script", map[string]string{

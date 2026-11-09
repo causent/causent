@@ -86,6 +86,37 @@ type ProgramNode struct {
 	Changed       bool   `json:"changed"`
 }
 
+// CodeDelta describes a revision-scoped change that can be connected to a
+// failure candidate. It is an observed base/head difference, not a causal
+// conclusion by itself.
+type CodeDelta struct {
+	ID             string `json:"id"`
+	RepositoryID   string `json:"repository_id"`
+	BaseRevisionID string `json:"base_revision_id"`
+	HeadRevisionID string `json:"head_revision_id"`
+	Kind           string `json:"kind"` // added, removed, modified
+	SymbolIdentity string `json:"symbol_identity"`
+	FilePath       string `json:"file_path"`
+	BaseStartLine  int    `json:"base_start_line,omitempty"`
+	HeadStartLine  int    `json:"head_start_line,omitempty"`
+	EvidenceID     ID     `json:"evidence_id,omitempty"`
+	Summary        string `json:"summary"`
+}
+
+// ExecutionPath is a bounded, revision-scoped path through the repository
+// graph connecting an observed failure to a candidate implementation.
+type ExecutionPath struct {
+	ID              string         `json:"id"`
+	InvestigationID ID             `json:"investigation_id"`
+	FailureIDs      []string       `json:"failure_ids,omitempty"`
+	NodeIDs         []string       `json:"node_ids"`
+	RelationshipIDs []string       `json:"relationship_ids"`
+	Locations       []CodeLocation `json:"locations"`
+	EvidenceIDs     []ID           `json:"evidence_ids,omitempty"`
+	Status          string         `json:"status"`
+	Summary         string         `json:"summary"`
+}
+
 type CandidateLocation struct {
 	ID                       string       `json:"id"`
 	InvestigationID          ID           `json:"investigation_id"`
