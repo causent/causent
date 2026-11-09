@@ -112,6 +112,7 @@ func runDiagnose(args []string) {
 	base := fs.String("base", "", "known base revision; compare its outcome with HEAD")
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
 	maxProbes := fs.Int("max-probes", diagnosis.DefaultMaxLocalizationProbes, "maximum test executions used to locate a revision boundary")
+	skipAdaptive := fs.Bool("skip-adaptive", false, "publish the preliminary diagnosis without optional adaptive investigation")
 	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	var probes stringList
@@ -210,6 +211,7 @@ func runDiagnose(args []string) {
 		BaseRef:               *base,
 		MaxCommits:            *maxCommits,
 		MaxLocalizationProbes: *maxProbes,
+		SkipAdaptive:          *skipAdaptive,
 	}
 	if strings.TrimSpace(*ciLog) != "" {
 		f, readErr := os.Open(*ciLog)
