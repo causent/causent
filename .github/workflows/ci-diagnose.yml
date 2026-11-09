@@ -202,11 +202,13 @@ jobs:
             exit 2
           fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/$repository/releases/latest/download/malenia_linux_amd64"
+            base_url="https://github.com/$repository/releases/latest/download"
           else
-            url="https://github.com/$repository/releases/download/$version/malenia_linux_amd64"
+            base_url="https://github.com/$repository/releases/download/$version"
           fi
-          curl -fsSL "$url" -o "$RUNNER_TEMP/malenia"
+          curl -fsSL "$base_url/malenia_linux_amd64" -o "$RUNNER_TEMP/malenia"
+          curl -fsSL "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
+          (cd "$RUNNER_TEMP" && grep '  malenia_linux_amd64$' malenia.SHA256SUMS | sed 's/malenia_linux_amd64/malenia/' | sha256sum -c -)
           chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/malenia" version
@@ -357,11 +359,13 @@ jobs:
             exit 2
           fi
           if [ "$version" = "latest" ]; then
-            url="https://github.com/$repository/releases/latest/download/malenia_linux_amd64"
+            base_url="https://github.com/$repository/releases/latest/download"
           else
-            url="https://github.com/$repository/releases/download/$version/malenia_linux_amd64"
+            base_url="https://github.com/$repository/releases/download/$version"
           fi
-          curl -fsSL "$url" -o "$RUNNER_TEMP/malenia"
+          curl -fsSL "$base_url/malenia_linux_amd64" -o "$RUNNER_TEMP/malenia"
+          curl -fsSL "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
+          (cd "$RUNNER_TEMP" && grep '  malenia_linux_amd64$' malenia.SHA256SUMS | sed 's/malenia_linux_amd64/malenia/' | sha256sum -c -)
           chmod +x "$RUNNER_TEMP/malenia"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/malenia" version
