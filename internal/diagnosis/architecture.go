@@ -20,6 +20,7 @@ var (
 	genericFailureLine = regexp.MustCompile(`(?m)^FAIL\s+([^ (]+)`)
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
+	raceFailure        = regexp.MustCompile(`(?m)^WARNING: DATA RACE\s*$`)
 )
 
 type failureObservation struct {
@@ -112,6 +113,9 @@ func parseFailureObservations(text string) []failureObservation {
 	}
 	for _, match := range jestFailure.FindAllStringSubmatch(text, -1) {
 		add(match[1], match[1])
+	}
+	if raceFailure.MatchString(text) {
+		add("race detector", "Go race detector reported DATA RACE")
 	}
 	if strings.Contains(text, "<testsuite") || strings.Contains(text, "<testsuites") {
 		if junit, err := parseJUnitFailures(text); err == nil {

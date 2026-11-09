@@ -563,8 +563,13 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	var locErr error
 	// Artifact evidence is execution evidence, not a reason to skip source
 	// indexing. Only inconclusive/fast-path runs remain observation-only.
+	// Existing CI evidence is sufficient to start source investigation even
+	// when reproduction is unavailable or classified inconclusive. Inconclusive
+	// must lower confidence and limit causal claims, not suppress indexing,
+	// candidate generation, or source inspection.
 	evidenceOnly := report.Classification == ClassInconclusive || cfg.FastPath && reproductionInconclusive(baseline, report.Comparison)
 	if artifactOnly {
+		evidenceOnly = false
 		localization = Localization{
 			HeadCommit:   env.HeadCommit,
 			BisectStatus: "skipped: artifact-backed preliminary diagnosis",

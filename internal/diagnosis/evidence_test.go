@@ -42,6 +42,23 @@ func TestParseCITextCompilerLocation(t *testing.T) {
 	}
 }
 
+func TestParseCITextEvidencePreservesLargeLogSuffixAndRaceFailure(t *testing.T) {
+	content := strings.Repeat("setup output\n", 12000) +
+		"WARNING: DATA RACE\n" +
+		"k8s.io/apiserver/pkg/storage/cacher/cache.go:123 +0x1a\n" +
+		"FAIL\tk8s.io/apiserver/pkg/storage/cacher\t0.42s\n"
+	got := ParseCITextEvidence(content, EvidenceProvenance{Provider: "prow"})
+	if len(got.Executions) != 1 || got.Executions[0].State != StateFailed {
+		t.Fatalf("expected failed execution, got %#v", got.Executions)
+	}
+	if !strings.Contains(got.RawEvidence[0].Content, "WARNING: DATA RACE") {
+		t.Fatal("large-log normalization discarded the terminal race report")
+	}
+	if len(got.Executions[0].Tests) == 0 {
+		t.Fatal("expected race/package failure observations")
+	}
+}
+
 func TestNormalizedStatesDoNotBecomePass(t *testing.T) {
 	for _, state := range []ObservationState{StateCancelled, StateTimedOut, StateNotExecuted, StateSkipped, StateUnknown} {
 		b := normalizedBaseline(NormalizedEvidence{Executions: []CIExecution{{State: state}}}, nil)

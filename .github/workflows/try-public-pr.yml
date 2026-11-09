@@ -176,7 +176,13 @@ jobs:
             -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
             -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
             -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
-            "$RUNNER_TEMP/source-ci.log" | head -c 262144 > "$RUNNER_TEMP/source-ci-bounded.log"
+            "$RUNNER_TEMP/source-ci.log" > "$RUNNER_TEMP/source-ci-sanitized.log"
+          # Preserve both setup context and the terminal failure/race summary;
+          # Prow logs place the useful failure section near the end.
+          { head -c 131072 "$RUNNER_TEMP/source-ci-sanitized.log"; \
+            printf '\n[... CI evidence middle omitted ...]\n'; \
+            tail -c 131072 "$RUNNER_TEMP/source-ci-sanitized.log"; } \
+            > "$RUNNER_TEMP/source-ci-bounded.log"
           echo "source_url=$source_url" >> "$GITHUB_OUTPUT"
           echo "provider=$source_provider" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
@@ -251,7 +257,7 @@ jobs:
           MALENIA_DOCKER_IMAGE: ${{ inputs.docker_image }}
           MALENIA_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
           MALENIA_INVESTIGATION_TIMEOUT_SECONDS: ${{ inputs.investigation_timeout_seconds }}
-          MALENIA_CI_PROVIDER: github-actions
+          MALENIA_CI_PROVIDER: ${{ steps.evidence.outputs.provider }}
           MALENIA_CI_RUN_ID: ${{ steps.evidence.outputs.run_id }}
           MALENIA_CI_PR_NUMBER: ${{ inputs.pull_request }}
           MALENIA_CI_SOURCE_URL: ${{ steps.evidence.outputs.source_url }}

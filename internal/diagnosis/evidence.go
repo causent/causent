@@ -200,8 +200,14 @@ func boundedCIEvidence(kind, content string, limit int) (RawCIEvidence, []string
 	}
 	raw := RawCIEvidence{ID: "ci-evidence-" + digestString(content)[:12], Kind: kind, Content: content}
 	if len(content) > limit {
-		raw.Content = content[:limit]
-		raw.Limitations = []string{"evidence was truncated to a bounded size"}
+		// CI systems commonly print setup first and the actual failing package,
+		// race report, or JUnit summary last. Keeping only the prefix loses the
+		// useful part of large Prow logs. Preserve both ends while keeping the
+		// stored evidence bounded.
+		head := limit / 2
+		tail := limit - head
+		raw.Content = content[:head] + "\n[... CI evidence middle omitted ...]\n" + content[len(content)-tail:]
+		raw.Limitations = []string{"evidence middle was truncated to a bounded size; prefix and suffix were preserved"}
 	}
 	return raw, raw.Limitations
 }
