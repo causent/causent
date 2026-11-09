@@ -231,6 +231,7 @@ func buildClaims(class Classification, loc Localization, evidence []EvidenceItem
 		ClassDependencyDrift:     "The failure output matches dependency or toolchain errors, so the cause is most likely a version or toolchain mismatch rather than application logic.",
 		ClassInfrastructure:      "The failure output matches environment or infrastructure errors, so the cause is most likely the execution environment rather than application logic.",
 		ClassTestFailureObserved: "CI evidence shows that a test or step failed in the recorded execution. This does not establish that the current change introduced the failure.",
+		ClassLintFailureObserved: "CI evidence shows that a linter or static analysis check failed in the recorded execution. This does not establish that the current change introduced the failure.",
 	}[class]
 	if statement != "" {
 		claims = append(claims, Claim{
@@ -291,6 +292,7 @@ func confidence(class Classification, loc Localization, uncertainty []string) fl
 		ClassDependencyDrift:     0.65,
 		ClassInfrastructure:      0.55,
 		ClassTestFailureObserved: 0.45,
+		ClassLintFailureObserved: 0.45,
 		ClassInconclusive:        0.0,
 		ClassNotReproduced:       0.0,
 	}[class]
@@ -325,6 +327,10 @@ func defaultUncertainty(class Classification, loc Localization) []string {
 	if class == ClassTestFailureObserved {
 		items = append(items, "a CI test failure was observed, but no base-versus-head comparison confirms that this change introduced it")
 	}
+	if class == ClassLintFailureObserved {
+		items = append(items, "a CI lint failure was observed, but no base-versus-head comparison confirms that this change introduced it")
+		items = append(items, "lint-hints checks may report findings that maintainers consider acceptable to merge; consult project guidelines before assuming all findings must be fixed")
+	}
 	switch class {
 	case ClassFlaky:
 		items = append(items, "flakiness depends on machine load and timing; the observed ratio is not a calibrated probability")
@@ -335,11 +341,15 @@ func defaultUncertainty(class Classification, loc Localization) []string {
 	case ClassInconclusive:
 		items = append(items, "timeouts or incomplete execution do not establish failure, success, compilation, or test behavior")
 	}
-	if loc.BisectResult == "" {
-		items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")
-	}
-	if loc.LastKnownGood == "" {
-		items = append(items, "no known-good commit was found within the search bound, so the introduction point is unknown")
+	// Only include bisect/localization uncertainty when those investigations ran.
+	// If bisect was deferred (evidence-only mode), these uncertainties are irrelevant.
+	if !strings.Contains(loc.BisectStatus, "deferred") {
+		if loc.BisectResult == "" {
+			items = append(items, "no verified git bisect result was produced; first-bad is based on a bounded walk from HEAD")
+		}
+		if loc.LastKnownGood == "" {
+			items = append(items, "no known-good commit was found within the search bound, so the introduction point is unknown")
+		}
 	}
 	return items
 }

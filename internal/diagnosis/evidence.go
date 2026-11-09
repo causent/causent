@@ -31,6 +31,8 @@ type CIIdentity struct {
 type EvidenceProvenance struct {
 	Provider    string    `json:"provider,omitempty"`
 	URI         string    `json:"uri,omitempty"`
+	SourceURL   string    `json:"source_url,omitempty"` // Original CI job URL (Prow view, GitHub Actions run)
+	LogURL      string    `json:"log_url,omitempty"`    // Direct log URL (GCS bucket, etc.)
 	Artifact    string    `json:"artifact,omitempty"`
 	CollectedAt time.Time `json:"collected_at,omitempty"`
 }
@@ -48,11 +50,12 @@ type TestObservation struct {
 	Name       string           `json:"name"`
 	State      ObservationState `json:"state"`
 	Message    string           `json:"message,omitempty"`
-	File       string           `json:"file,omitempty"`
-	Line       int              `json:"line,omitempty"`
+	File       string           `json:"file,omitempty"`     // Source code file path
+	Line       int              `json:"line,omitempty"`     // Source code line number
+	LogLine    int              `json:"log_line,omitempty"` // Line number within CI log where diagnostic appears
 	ExitCode   *int             `json:"exit_code,omitempty"`
 	Status     string           `json:"status,omitempty"`
-	EvidenceID string           `json:"evidence_id,omitempty"`
+	EvidenceID string           `json:"evidence_id,omitempty"` // Links to raw CI log in RawCIEvidence
 }
 
 type CIExecution struct {
@@ -138,6 +141,58 @@ type junitFile struct {
 type parserOptions struct{ maxBytes int }
 
 var ciLocation = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|rs|java|py|js|ts|c|cc|cpp|h)):(\d+)(?::(\d+))?`)
+var lintErrorLine = regexp.MustCompile(`^ERROR:\s+([A-Za-z0-9_./-]+\.(?:go|rs|java|py|js|ts|c|cc|cpp|h)):(\d+)(?::(\d+))?:\s+([^:]+):\s+(.+)$`)
+var prowJobPattern = regexp.MustCompile(`^\+\+\+\s+Running\s+case:\s+([^\s]+)`)
+var prowWorkdirPattern = regexp.MustCompile(`^\+\+\+\s+working\s+dir:\s+(.+)$`)
+
+func extractProwIdentity(content string) CIIdentity {
+	var identity CIIdentity
+	for _, line := range strings.Split(content, "\n") {
+		if m := prowJobPattern.FindStringSubmatch(line); m != nil {
+			identity.Job = m[1]
+		}
+		if strings.HasPrefix(line, "Verifying ") {
+			identity.Step = strings.TrimPrefix(line, "Verifying ")
+		}
+		if m := prowWorkdirPattern.FindStringSubmatch(line); m != nil && identity.Workflow == "" {
+			// Extract repo name from workdir like /home/prow/go/src/k8s.io/kubernetes
+			parts := strings.Split(m[1], "/")
+			if len(parts) > 0 {
+				identity.Workflow = parts[len(parts)-1]
+			}
+		}
+	}
+	return identity
+}
+
+func extractLintFailures(content, evidenceID string, state ObservationState, identity CIIdentity) []TestObservation {
+	var failures []TestObservation
+	seen := map[string]bool{}
+	lines := strings.Split(content, "\n")
+	for logLineNum, line := range lines {
+		if m := lintErrorLine.FindStringSubmatch(line); m != nil {
+			file := m[1]
+			lineNum, _ := strconv.Atoi(m[2])
+			linter := m[4]
+			message := m[5]
+			key := fmt.Sprintf("%s:%d", file, lineNum)
+			if !seen[key] {
+				seen[key] = true
+				failures = append(failures, TestObservation{
+					Identity:   identity,
+					Name:       fmt.Sprintf("lint: %s", linter),
+					State:      state,
+					File:       file,
+					Line:       lineNum,
+					LogLine:    logLineNum + 1, // 1-indexed for human readability
+					Message:    message,
+					EvidenceID: evidenceID,
+				})
+			}
+		}
+	}
+	return failures
+}
 
 func boundedCIEvidence(kind, content string, limit int) (RawCIEvidence, []string) {
 	if limit <= 0 {
@@ -238,12 +293,26 @@ func ParseCITextEvidence(content string, provenance EvidenceProvenance) Normaliz
 	case strings.Contains(lower, "passed") || strings.Contains(lower, "tests passed"):
 		state = StatePassed
 	}
-	exec := CIExecution{ID: raw.ID, State: state, RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
+
+	// Detect Prow job identity from log header
+	identity := extractProwIdentity(raw.Content)
+
+	exec := CIExecution{ID: raw.ID, Identity: identity, State: state, RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
 	exec.Status = string(state)
-	for _, m := range ciLocation.FindAllStringSubmatch(raw.Content, -1) {
-		line, _ := strconv.Atoi(m[2])
-		exec.Tests = append(exec.Tests, TestObservation{Name: "observed location", State: state, File: m[1], Line: line, EvidenceID: raw.ID})
+
+	// First, check for lint ERROR lines (golangci-lint, etc.)
+	// These are definitive failures, not just warnings in the log.
+	lintFailures := extractLintFailures(raw.Content, raw.ID, state, identity)
+	if len(lintFailures) > 0 {
+		exec.Tests = lintFailures
+	} else {
+		// Fallback: extract generic file:line locations
+		for _, m := range ciLocation.FindAllStringSubmatch(raw.Content, -1) {
+			line, _ := strconv.Atoi(m[2])
+			exec.Tests = append(exec.Tests, TestObservation{Identity: identity, Name: "observed location", State: state, File: m[1], Line: line, EvidenceID: raw.ID})
+		}
 	}
+
 	out := NormalizedEvidence{Executions: []CIExecution{exec}, RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
 	return out
 }

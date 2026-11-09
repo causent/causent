@@ -1,0 +1,84 @@
+{
+  "investigation_id": "20261109T191838.159334000-e8b5e2b4",
+  "repo_path": "offline-evidence",
+  "command": ["make", "verify"],
+  "classification": "lint_failure_observed",
+  
+  "normalized_evidence": {
+    "executions": [{
+      "id": "ci-evidence-2fda950548ab",
+      "identity": {
+        "workflow": "kubernetes",
+        "job": "verify.golangci-lint-pr-hints",
+        "step": "verify-golangci-lint-pr-hints.sh"
+      },
+      "state": "failed",
+      "tests": [
+        {
+          "identity": {
+            "workflow": "kubernetes",
+            "job": "verify.golangci-lint-pr-hints",
+            "step": "verify-golangci-lint-pr-hints.sh"
+          },
+          "name": "lint: ST1023",
+          "state": "failed",
+          "message": "should omit type *runtimeapi.PodSandboxConfig from declaration; it will be inferred from the right-hand side (staticcheck)",
+          "file": "pkg/kubelet/kuberuntime/kuberuntime_manager.go",
+          "line": 2227,
+          "log_line": 222,
+          "evidence_id": "ci-evidence-2fda950548ab"
+        },
+        {
+          "identity": {
+            "workflow": "kubernetes",
+            "job": "verify.golangci-lint-pr-hints",
+            "step": "verify-golangci-lint-pr-hints.sh"
+          },
+          "name": "lint: require-error",
+          "state": "failed",
+          "message": "for error assertions use require (testifylint)",
+          "file": "pkg/kubelet/kuberuntime/kuberuntime_manager_test.go",
+          "line": 7620,
+          "log_line": 225,
+          "evidence_id": "ci-evidence-2fda950548ab"
+        }
+      ],
+      "raw_evidence": [{
+        "id": "ci-evidence-2fda950548ab",
+        "kind": "ci_log",
+        "content": "[Full 15KB Prow log content - see testdata/prow-lint-failure/ci.log]",
+        "provenance": {
+          "provider": "offline",
+          "uri": "testdata/prow-lint-failure/ci.log",
+          "collected_at": "0001-01-01T00:00:00Z"
+        }
+      }]
+    }]
+  },
+  
+  "claims": [{
+    "id": "H-classification",
+    "statement": "CI evidence shows that a linter or static analysis check failed in the recorded execution. This does not establish that the current change introduced the failure.",
+    "confidence": 0.45,
+    "supporting_evidence": ["E-classification"]
+  }],
+  
+  "confidence": 0.35,
+  
+  "uncertainty": [
+    "local reproduction was deferred; classification is based on normalized CI evidence",
+    "repository overview and indexing were deferred because source-level analysis was not justified",
+    "the classification is derived from exit codes and bounded command output, not from inspecting application state",
+    "a CI lint failure was observed, but no base-versus-head comparison confirms that this change introduced it",
+    "lint-hints checks may report findings that maintainers consider acceptable to merge; consult project guidelines before assuming all findings must be fixed"
+  ],
+  
+  "reproduction_status": "deferred",
+  "reproduction_deferred_reason": "local reproduction was not requested for evidence-first diagnosis",
+  "reproduction_decision": {
+    "required": false,
+    "reason": "evidence_sufficient",
+    "explanation": "execution evidence is complete enough for an initial diagnosis",
+    "command": ["make", "verify"]
+  }
+}

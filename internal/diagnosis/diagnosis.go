@@ -36,6 +36,7 @@ const (
 	ClassNotReproduced       Classification = "not_reproduced"
 	ClassPreExisting         Classification = "pre_existing_failure"
 	ClassTestFailureObserved Classification = "test_failure_observed"
+	ClassLintFailureObserved Classification = "lint_failure_observed"
 )
 
 // Event names emitted to the event store and to events.jsonl.
@@ -722,6 +723,29 @@ func normalizedBaseline(input NormalizedEvidence, command []string) Baseline {
 func classifyNormalizedEvidence(input NormalizedEvidence, baseline Baseline) Classification {
 	class := Classify(baseline.Results)
 	if class == ClassRealRegression {
+		// Check if this is specifically a lint failure based on CI job identity
+		// and the pattern of extracted failures, not artificial naming conventions.
+		for _, exec := range input.Executions {
+			// Check job/step identity for lint-related checks
+			lintJob := strings.Contains(strings.ToLower(exec.Identity.Job), "lint") ||
+				strings.Contains(strings.ToLower(exec.Identity.Step), "lint")
+			// Check if extracted tests indicate lint failures
+			lintTests := false
+			for _, test := range exec.Tests {
+				if strings.HasPrefix(test.Name, "lint:") {
+					lintTests = true
+					break
+				}
+			}
+			if lintJob && lintTests {
+				return ClassLintFailureObserved
+			}
+			// If job identity indicates lint but parser cannot extract recognized diagnostics,
+			// preserve inconclusive rather than misclassifying as test failure.
+			if lintJob && !lintTests {
+				return ClassInconclusive
+			}
+		}
 		return ClassTestFailureObserved
 	}
 	return class
