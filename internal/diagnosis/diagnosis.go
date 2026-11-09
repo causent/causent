@@ -260,6 +260,9 @@ type Diagnoser struct {
 	events          []EventRecord
 	investigationID string
 	metrics         *observability.Metrics
+	// snapshot is built once by the staged pipeline and reused by adaptive
+	// repository actions for this investigation.
+	snapshot *programrepo.Snapshot
 }
 
 // EventRecord is one entry in events.jsonl and, when a store is configured, one
