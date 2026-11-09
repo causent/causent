@@ -67,6 +67,20 @@ Artifact ingestion is bounded, redacts common secret-shaped values, and records
 provenance and limitations. Missing or incomplete artifacts are uncertainty,
 not evidence that the failure did not occur.
 
+Integrations can also normalize provider output and skip local execution:
+
+```go
+evidence, _ := diagnosis.ParseJUnitXML(xml, diagnosis.EvidenceProvenance{Provider: "github-actions"})
+report, _ := diagnosis.DiagnoseEvidence(ctx, diagnosis.Config{RepoPath: repo}, evidence)
+```
+
+Evidence-first reports preserve workflow/job/step identity, bounded raw
+provenance, parser limitations, and explicit deferred reproduction status.
+Call `diagnosis.DecideReproduction(evidence, command)` before scheduling any
+rerun; complete failure or pass observations defer reproduction, while timeout,
+cancellation, unknown, or missing execution evidence requests a targeted
+follow-up instead of an entire suite rerun.
+
 Run the explicit experimental repair workflow:
 
 ```sh

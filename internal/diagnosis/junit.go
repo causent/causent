@@ -9,14 +9,17 @@ type junitDocument struct {
 	Suites []junitSuite `xml:"testsuite"`
 }
 type junitSuite struct {
-	Cases  []junitCase  `xml:"testcase"`
-	Suites []junitSuite `xml:"testsuite"`
+	XMLName xml.Name     `xml:""`
+	Name    string       `xml:"name,attr"`
+	Cases   []junitCase  `xml:"testcase"`
+	Suites  []junitSuite `xml:"testsuite"`
 }
 type junitCase struct {
 	Name      string        `xml:"name,attr"`
 	ClassName string        `xml:"classname,attr"`
 	Failure   *junitProblem `xml:"failure"`
 	Error     *junitProblem `xml:"error"`
+	Skipped   *struct{}     `xml:"skipped"`
 }
 type junitProblem struct {
 	Message string `xml:"message,attr"`

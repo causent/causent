@@ -175,12 +175,13 @@ func runDiagnose(args []string) {
 	}
 	probes = append(probes, repoCfg.Probes...)
 
-	if *command == "" {
+	hasEvidenceInput := strings.TrimSpace(*ciLog) != "" || strings.TrimSpace(*junit) != ""
+	if *command == "" && !hasEvidenceInput {
 		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is required (or set command in .malenia.yml)")
 		os.Exit(2)
 	}
 	cmd := splitCommand(*command)
-	if len(cmd) == 0 {
+	if len(cmd) == 0 && !hasEvidenceInput {
 		fmt.Fprintln(os.Stderr, "malenia diagnose: --command is empty")
 		os.Exit(2)
 	}
@@ -221,6 +222,8 @@ func runDiagnose(args []string) {
 		FastPath:              *fastPath,
 		ArtifactFirst:         *artifactFirst,
 	}
+	var normalized diagnosis.NormalizedEvidence
+	hasNormalizedEvidence := false
 	if strings.TrimSpace(*ciLog) != "" {
 		f, readErr := os.Open(*ciLog)
 		if readErr != nil {
@@ -235,6 +238,11 @@ func runDiagnose(args []string) {
 		}
 		digest := sha256.Sum256(data)
 		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
+		parsed := diagnosis.ParseCITextEvidence(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *ciLog})
+		normalized.Executions = append(normalized.Executions, parsed.Executions...)
+		normalized.RawEvidence = append(normalized.RawEvidence, parsed.RawEvidence...)
+		normalized.Limitations = append(normalized.Limitations, parsed.Limitations...)
+		hasNormalizedEvidence = true
 	}
 	if strings.TrimSpace(*junit) != "" {
 		data, readErr := readBoundedFile(*junit, 256<<10)
@@ -244,6 +252,14 @@ func runDiagnose(args []string) {
 		}
 		digest := sha256.Sum256(data)
 		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: "explicit CLI input"})
+		parsed, parseErr := diagnosis.ParseJUnitXML(string(data), diagnosis.EvidenceProvenance{Provider: "cli", URI: *junit})
+		if parseErr != nil {
+			fmt.Fprintln(os.Stderr, "junit: "+parseErr.Error())
+		}
+		normalized.Executions = append(normalized.Executions, parsed.Executions...)
+		normalized.RawEvidence = append(normalized.RawEvidence, parsed.RawEvidence...)
+		normalized.Limitations = append(normalized.Limitations, parsed.Limitations...)
+		hasNormalizedEvidence = true
 	}
 	if strings.TrimSpace(*artifactDir) != "" {
 		artifacts, readErr := loadArtifactEvidence(*artifactDir, 20, 256<<10)
@@ -262,6 +278,9 @@ func runDiagnose(args []string) {
 	}
 	for _, probe := range probes {
 		cfg.Probes = append(cfg.Probes, splitCommand(probe))
+	}
+	if hasNormalizedEvidence {
+		cfg.Evidence = &normalized
 	}
 
 	report, err := diagnosis.Run(context.Background(), cfg)

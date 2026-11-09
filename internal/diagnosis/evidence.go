@@ -1,0 +1,218 @@
+package diagnosis
+
+import (
+	"encoding/xml"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// ObservationState is the provider-neutral state of a test or execution.
+type ObservationState string
+
+const (
+	StatePassed      ObservationState = "passed"
+	StateFailed      ObservationState = "failed"
+	StateSkipped     ObservationState = "skipped"
+	StateCancelled   ObservationState = "cancelled"
+	StateTimedOut    ObservationState = "timed_out"
+	StateNotExecuted ObservationState = "not_executed"
+	StateUnknown     ObservationState = "unknown"
+)
+
+type CIIdentity struct {
+	Workflow string `json:"workflow,omitempty"`
+	Job      string `json:"job,omitempty"`
+	Step     string `json:"step,omitempty"`
+}
+
+type EvidenceProvenance struct {
+	Provider    string    `json:"provider,omitempty"`
+	URI         string    `json:"uri,omitempty"`
+	Artifact    string    `json:"artifact,omitempty"`
+	CollectedAt time.Time `json:"collected_at,omitempty"`
+}
+
+type RawCIEvidence struct {
+	ID          string             `json:"id"`
+	Kind        string             `json:"kind"`
+	Content     string             `json:"content"`
+	Provenance  EvidenceProvenance `json:"provenance"`
+	Limitations []string           `json:"limitations,omitempty"`
+}
+
+type TestObservation struct {
+	Identity   CIIdentity       `json:"identity"`
+	Name       string           `json:"name"`
+	State      ObservationState `json:"state"`
+	Message    string           `json:"message,omitempty"`
+	File       string           `json:"file,omitempty"`
+	Line       int              `json:"line,omitempty"`
+	ExitCode   *int             `json:"exit_code,omitempty"`
+	Status     string           `json:"status,omitempty"`
+	EvidenceID string           `json:"evidence_id,omitempty"`
+}
+
+type CIExecution struct {
+	ID          string            `json:"id"`
+	Identity    CIIdentity        `json:"identity"`
+	State       ObservationState  `json:"state"`
+	ExitCode    *int              `json:"exit_code,omitempty"`
+	Status      string            `json:"status,omitempty"`
+	Tests       []TestObservation `json:"tests,omitempty"`
+	RawEvidence []RawCIEvidence   `json:"raw_evidence,omitempty"`
+	Limitations []string          `json:"limitations,omitempty"`
+	StartedAt   time.Time         `json:"started_at,omitempty"`
+	FinishedAt  time.Time         `json:"finished_at,omitempty"`
+}
+
+// NormalizedEvidence is the provider-neutral input to evidence-first diagnosis.
+type NormalizedEvidence struct {
+	Executions  []CIExecution   `json:"executions"`
+	RawEvidence []RawCIEvidence `json:"raw_evidence,omitempty"`
+	Limitations []string        `json:"limitations,omitempty"`
+}
+
+// ReproductionDecision records whether another execution could materially
+// improve an evidence-first diagnosis. It does not execute anything.
+type ReproductionDecision struct {
+	Required bool     `json:"required"`
+	Reason   string   `json:"reason"`
+	Command  []string `json:"command,omitempty"`
+}
+
+func DecideReproduction(input NormalizedEvidence, command []string) ReproductionDecision {
+	if len(input.Executions) == 0 {
+		return ReproductionDecision{Required: true, Reason: "no execution evidence was supplied", Command: command}
+	}
+	for _, execution := range input.Executions {
+		switch execution.State {
+		case StateUnknown, StateCancelled, StateTimedOut, StateNotExecuted:
+			return ReproductionDecision{Required: true, Reason: "execution evidence is incomplete", Command: command}
+		}
+	}
+	return ReproductionDecision{
+		Required: false,
+		Reason:   "execution evidence is complete enough for an initial diagnosis",
+		Command:  command,
+	}
+}
+
+type junitFile struct {
+	Suites []junitSuite `xml:"testsuite"`
+	Cases  []junitCase  `xml:"testcase"`
+}
+type parserOptions struct{ maxBytes int }
+
+var ciLocation = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|rs|java|py|js|ts|c|cc|cpp|h)):(\d+)(?::(\d+))?`)
+
+func boundedCIEvidence(kind, content string, limit int) (RawCIEvidence, []string) {
+	if limit <= 0 {
+		limit = 64 << 10
+	}
+	raw := RawCIEvidence{ID: "ci-evidence-" + digestString(content)[:12], Kind: kind, Content: content}
+	if len(content) > limit {
+		raw.Content = content[:limit]
+		raw.Limitations = []string{"evidence was truncated to a bounded size"}
+	}
+	return raw, raw.Limitations
+}
+
+// ParseJUnitXML deterministically normalizes a JUnit report. A malformed
+// report returns an unknown execution (never a pass) together with the error.
+func ParseJUnitXML(content string, provenance EvidenceProvenance) (NormalizedEvidence, error) {
+	raw, limits := boundedCIEvidence("junit_xml", content, 64<<10)
+	out := NormalizedEvidence{RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
+	var doc junitFile
+	if err := xml.Unmarshal([]byte(raw.Content), &doc); err != nil {
+		out.Limitations = append(out.Limitations, "JUnit XML was malformed or incomplete")
+		out.Executions = []CIExecution{{ID: raw.ID, State: StateUnknown, RawEvidence: []RawCIEvidence{raw}, Limitations: out.Limitations}}
+		return out, fmt.Errorf("parse JUnit XML: %w", err)
+	}
+	exec := CIExecution{ID: raw.ID, State: StatePassed, RawEvidence: []RawCIEvidence{raw}}
+	var rootSuite junitSuite
+	rootIsSuite := false
+	if err := xml.Unmarshal([]byte(raw.Content), &rootSuite); err == nil &&
+		rootSuite.XMLName.Local == "testsuite" {
+		doc.Suites = append(doc.Suites, rootSuite)
+		rootIsSuite = true
+	}
+	var visit func([]junitSuite)
+	visit = func(suites []junitSuite) {
+		for _, suite := range suites {
+			for _, c := range suite.Cases {
+				state := StatePassed
+				msg := ""
+				if c.Failure != nil || c.Error != nil {
+					state = StateFailed
+					p := c.Failure
+					if p == nil {
+						p = c.Error
+					}
+					msg = strings.TrimSpace(p.Message)
+					if msg == "" {
+						msg = strings.TrimSpace(p.Body)
+					}
+				} else if c.Skipped != nil {
+					state = StateSkipped
+				}
+				name := c.Name
+				if c.ClassName != "" {
+					name = c.ClassName + "::" + name
+				}
+				exec.Tests = append(exec.Tests, TestObservation{Name: name, State: state, Message: msg, EvidenceID: raw.ID})
+				if state == StateFailed {
+					exec.State = StateFailed
+				}
+			}
+			visit(suite.Suites)
+		}
+	}
+	visit(doc.Suites)
+	if len(doc.Cases) > 0 && !rootIsSuite {
+		visit([]junitSuite{{Cases: doc.Cases}})
+	}
+	if len(exec.Tests) == 0 {
+		exec.State = StateUnknown
+		exec.Limitations = append(exec.Limitations, "JUnit report contained no complete testcase set")
+		out.Limitations = append(out.Limitations, exec.Limitations...)
+	}
+	exec.RawEvidence[0].Provenance = provenance
+	exec.Status = string(exec.State)
+	out.RawEvidence[0].Provenance = provenance
+	out.Executions = []CIExecution{exec}
+	return out, nil
+}
+
+// ParseCITextEvidence extracts bounded compiler/stack-trace and CI status
+// observations. It only reports pass when the log contains an explicit pass.
+func ParseCITextEvidence(content string, provenance EvidenceProvenance) NormalizedEvidence {
+	raw, limits := boundedCIEvidence("ci_log", content, 64<<10)
+	raw.Provenance = provenance
+	lower := strings.ToLower(raw.Content)
+	state := StateUnknown
+	switch {
+	case strings.Contains(lower, "cancelled") || strings.Contains(lower, "canceled"):
+		state = StateCancelled
+	case strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout"):
+		state = StateTimedOut
+	case strings.Contains(lower, "not executed"):
+		state = StateNotExecuted
+	case strings.Contains(lower, "skipped"):
+		state = StateSkipped
+	case strings.Contains(lower, "fail") || strings.Contains(lower, "error:"):
+		state = StateFailed
+	case strings.Contains(lower, "passed") || strings.Contains(lower, "tests passed"):
+		state = StatePassed
+	}
+	exec := CIExecution{ID: raw.ID, State: state, RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
+	exec.Status = string(state)
+	for _, m := range ciLocation.FindAllStringSubmatch(raw.Content, -1) {
+		line, _ := strconv.Atoi(m[2])
+		exec.Tests = append(exec.Tests, TestObservation{Name: "observed location", State: state, File: m[1], Line: line, EvidenceID: raw.ID})
+	}
+	out := NormalizedEvidence{Executions: []CIExecution{exec}, RawEvidence: []RawCIEvidence{raw}, Limitations: limits}
+	return out
+}
