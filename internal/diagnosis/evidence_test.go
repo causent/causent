@@ -2,6 +2,8 @@ package diagnosis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -173,4 +175,36 @@ func mustJUnitEvidence(t *testing.T, content string) NormalizedEvidence {
 		t.Fatalf("parse fixture: %v", err)
 	}
 	return evidence
+}
+
+func TestKubernetesM5FixtureIsOfflineDiagnosable(t *testing.T) {
+	root := filepath.Join("..", "..", "testdata", "m5", "kubernetes")
+	logData, err := os.ReadFile(filepath.Join(root, "ci.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	junitData, err := os.ReadFile(filepath.Join(root, "junit.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logEvidence := ParseCITextEvidence(string(logData), EvidenceProvenance{Provider: "fixture"})
+	junitEvidence, err := ParseJUnitXML(string(junitData), EvidenceProvenance{Provider: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logEvidence.Executions = append(logEvidence.Executions, junitEvidence.Executions...)
+	logEvidence.RawEvidence = append(logEvidence.RawEvidence, junitEvidence.RawEvidence...)
+	report, err := DiagnoseEvidence(context.Background(), Config{
+		RepoPath: "offline-fixture",
+		Command:  []string{"go", "test", "./..."},
+	}, logEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Classification != ClassInfrastructure || !report.ReproductionDecision.Required {
+		t.Fatalf("fixture report=%#v", report)
+	}
+	if report.Environment.Isolation != "external CI evidence" {
+		t.Fatalf("fixture unexpectedly used repository execution: %#v", report.Environment)
+	}
 }

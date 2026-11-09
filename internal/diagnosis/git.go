@@ -16,19 +16,55 @@ const gitTimeout = 30 * time.Second
 // captureEnvironment records the bounded execution context. No secrets, no
 // full environment dump.
 func captureEnvironment(repo string) Environment {
+	goCommand, goVersion, goRoot, goToolchain := captureGoEnvironment(repo)
 	env := Environment{
-		OS:         runtime.GOOS,
-		Arch:       runtime.GOARCH,
-		GoVersion:  runtime.Version(),
-		GitVersion: strings.TrimSpace(gitOutput(repo, "--version")),
-		RepoPath:   repo,
-		HeadCommit: strings.TrimSpace(gitOutput(repo, "rev-parse", "HEAD")),
-		RecordedAt: time.Now().UTC(),
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+		GoVersion:   goVersion,
+		GoCommand:   goCommand,
+		GoRoot:      goRoot,
+		GoToolchain: goToolchain,
+		GitVersion:  strings.TrimSpace(gitOutput(repo, "--version")),
+		RepoPath:    repo,
+		HeadCommit:  strings.TrimSpace(gitOutput(repo, "rev-parse", "HEAD")),
+		RecordedAt:  time.Now().UTC(),
 	}
 	if status := gitOutput(repo, "status", "--porcelain"); strings.TrimSpace(status) != "" {
 		env.DirtyWorktree = true
 	}
 	return env
+}
+
+func captureGoEnvironment(repo string) (string, string, string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command, err := exec.LookPath("go")
+	if err != nil {
+		return "", "", "", ""
+	}
+	run := func(args ...string) string {
+		cmd := exec.CommandContext(ctx, command, args...)
+		cmd.Dir = repo
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		if toolchain := os.Getenv("GOTOOLCHAIN"); toolchain != "" {
+			cmd.Env = append(cmd.Env, "GOTOOLCHAIN="+toolchain)
+		}
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	version := run("version")
+	values := strings.Split(run("env", "GOROOT", "GOTOOLCHAIN"), "\n")
+	var root, toolchain string
+	if len(values) > 0 {
+		root = strings.TrimSpace(values[0])
+	}
+	if len(values) > 1 {
+		toolchain = strings.TrimSpace(values[1])
+	}
+	return command, version, root, toolchain
 }
 
 // isolatedWorkspace creates a detached git worktree so reproduction never runs

@@ -358,7 +358,7 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 			firstOutput = stderrFirst
 		}
 		status := domain.ExecutionCancelled
-		if executionCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		if executionCtx.Err() == context.DeadlineExceeded {
 			status = domain.ExecutionTimedOut
 		}
 		if !cleanupComplete {
@@ -635,7 +635,7 @@ func (e *DockerExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (
 		}
 		res.CleanupDuration = time.Since(cleanupStarted)
 		if res.Status == "" {
-			if ctx.Err() != nil {
+			if ctx.Err() == context.Canceled {
 				res.Status = domain.ExecutionCancelled
 			} else {
 				res.Status = domain.ExecutionTimedOut

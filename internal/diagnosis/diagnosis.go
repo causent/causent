@@ -148,6 +148,9 @@ type Environment struct {
 	OS            string    `json:"os"`
 	Arch          string    `json:"arch"`
 	GoVersion     string    `json:"go_version,omitempty"`
+	GoCommand     string    `json:"go_command,omitempty"`
+	GoRoot        string    `json:"go_root,omitempty"`
+	GoToolchain   string    `json:"go_toolchain,omitempty"`
 	GitVersion    string    `json:"git_version,omitempty"`
 	RepoPath      string    `json:"repo_path"`
 	HeadCommit    string    `json:"head_commit"`
@@ -628,6 +631,7 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.Baseline = normalizedBaseline(evidence, cfg.Command)
 	report.ReproductionDecision = DecideReproduction(evidence, cfg.Command)
 	report.Classification = classifyNormalizedEvidence(evidence, report.Baseline)
+	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, report.Baseline))
 	report.Environment = Environment{RepoPath: cfg.RepoPath, Isolation: "external CI evidence"}
 	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
@@ -789,7 +793,7 @@ func compareVerdict(base, head Baseline) Classification {
 
 func baselineInconclusive(baseline Baseline) bool {
 	for _, attempt := range baseline.Results {
-		if !attempt.Executed {
+		if !attempt.Executed || attempt.Error != "" {
 			return true
 		}
 	}
