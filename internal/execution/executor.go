@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/causent/malenia/internal/domain"
@@ -228,6 +229,10 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 	}
 	//Create command
 	c := exec.CommandContext(ctx, req.Command[0], req.Command[1:]...)
+	// Commands such as go test spawn compiler and linker children. Keep the
+	// whole process tree in one group so a timeout cannot leave descendants
+	// running and block the executor indefinitely.
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Dir = req.Dir
 	c.Env = e.buildEnv(req.Environ)
 	c.Stdin = nil
@@ -292,7 +297,9 @@ func (e *LocalExecutor) Run(ctx context.Context, req domain.ExecutionRequest) (d
 			"duration", result.Duration.String())
 		return result, nil
 	case <-ctx.Done():
-		c.Process.Kill()
+		if err := syscall.Kill(-c.Process.Pid, syscall.SIGKILL); err != nil {
+			_ = c.Process.Kill()
+		}
 		slog.Warn("execution cancelled", "command", req.Command[0], "dir", req.Dir, "after", time.Since(started).String())
 		return domain.ExecutionResult{
 			ExitCode:  -1,
