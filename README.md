@@ -81,6 +81,13 @@ rerun; complete failure or pass observations defer reproduction, while timeout,
 cancellation, unknown, or missing execution evidence requests a targeted
 follow-up instead of an entire suite rerun.
 
+For an offline replay of previously collected CI evidence:
+
+```sh
+malenia evidence --ci-log failed-job.log --junit test-results.xml \
+  --command 'go test ./...' --output diagnosis.json
+```
+
 Run the explicit experimental repair workflow:
 
 ```sh

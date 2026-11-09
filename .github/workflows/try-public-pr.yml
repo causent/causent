@@ -49,6 +49,11 @@ on:
         required: false
         default: '600'
         type: string
+      source_run_id:
+        description: Existing failed CI workflow run to analyze; when omitted, the latest failed run for the PR head is selected
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -104,6 +109,50 @@ jobs:
           echo "pr_url=$(jq -r '.html_url' "$metadata")" >> "$GITHUB_OUTPUT"
           echo "clone_url=$(jq -r '.base.repo.clone_url' "$metadata")" >> "$GITHUB_OUTPUT"
           echo "artifact_slug=${TARGET_REPOSITORY//\//-}" >> "$GITHUB_OUTPUT"
+
+          - name: Collect original CI evidence
+            id: evidence
+            if: inputs.source_run_id != '' || steps.pr.outputs.head_sha != ''
+            env:
+              GH_TOKEN: ${{ github.token }}
+              TARGET_REPOSITORY: ${{ inputs.target_repository }}
+              HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+              SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+            run: |
+              set -euo pipefail
+              run_id="$SOURCE_RUN_ID"
+              if [ -z "$run_id" ]; then
+                run_id="$(gh run list --repo "$TARGET_REPOSITORY" --commit "$HEAD_SHA" \
+                  --status failure --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+              fi
+              if [ -z "$run_id" ]; then
+                echo "No failed source CI run found for $TARGET_REPOSITORY@$HEAD_SHA"
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              mkdir -p "$RUNNER_TEMP/source-artifacts"
+              if ! gh run view "$run_id" --repo "$TARGET_REPOSITORY" --log-failed \
+                > "$RUNNER_TEMP/source-ci.log"; then
+                echo "Could not read failed-job log for source CI run $run_id"
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              gh run download "$run_id" --repo "$TARGET_REPOSITORY" \
+                --dir "$RUNNER_TEMP/source-artifacts" || true
+              if [ ! -s "$RUNNER_TEMP/source-ci.log" ]; then
+                echo "Source CI run $run_id produced no failed-job log" >&2
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # Keep evidence bounded and remove common credential-shaped values
+              # before it reaches the diagnosis process or uploaded artifact.
+              sed -E \
+                -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
+                -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+                -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
+                "$RUNNER_TEMP/source-ci.log" | head -c 262144 > "$RUNNER_TEMP/source-ci-bounded.log"
+              echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+              echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Check out target PR
         env:
@@ -198,6 +247,13 @@ jobs:
             --investigation-timeout "${MALENIA_INVESTIGATION_TIMEOUT_SECONDS}s"
             --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
+          if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+            args=(evidence --ci-log "$RUNNER_TEMP/source-ci-bounded.log" --command "$MALENIA_COMMAND")
+            junit="$(find "$RUNNER_TEMP/source-artifacts" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
+            if [ -n "$junit" ]; then
+              args+=(--junit "$junit")
+            fi
+          fi
           if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
             args+=(--skip-adaptive)
           fi
@@ -224,7 +280,11 @@ jobs:
             echo
             echo "**Classification:** $(jq -r '.classification // "unknown"' "$report")"
             echo
-            echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
+            if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+              echo "**Evidence-first:** analyzed source CI run ${{ steps.evidence.outputs.run_id }} without local reproduction"
+            else
+              echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
+            fi
             echo
             files="$(jq -r '.localization.likely_files[]? | "- `" + . + "`"' "$report")"
             if [ -n "$files" ]; then
@@ -238,7 +298,11 @@ jobs:
               echo "$claims"
               echo
             fi
-            echo 'Full JSON report and evidence bundle are attached as the workflow artifact.'
+            if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+              echo 'The source CI log, downloaded artifacts, and JSON report are attached as the workflow artifact.'
+            else
+              echo 'The JSON report and reproduction bundle are attached as the workflow artifact.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload diagnosis report and evidence
@@ -249,5 +313,7 @@ jobs:
           path: |
             ${{ runner.temp }}/malenia-report.json
             ${{ runner.temp }}/malenia-bundle
+            ${{ runner.temp }}/source-ci-bounded.log
+            ${{ runner.temp }}/source-artifacts
           if-no-files-found: warn
           retention-days: 14
