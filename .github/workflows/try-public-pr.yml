@@ -126,6 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           run_id="$SOURCE_RUN_ID"
+          mkdir -p "$RUNNER_TEMP/source-artifacts"
           if [ -z "$run_id" ]; then
             run_id="$(gh run list --repo "$TARGET_REPOSITORY" --commit "$HEAD_SHA" \
               --status failure --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
@@ -149,7 +150,6 @@ jobs:
             fi
             source_provider="prow"
           else
-            mkdir -p "$RUNNER_TEMP/source-artifacts"
             if ! gh run view "$run_id" --repo "$TARGET_REPOSITORY" --log-failed \
               > "$RUNNER_TEMP/source-ci.log"; then
               echo "Could not read failed-job log for source CI run $run_id"
