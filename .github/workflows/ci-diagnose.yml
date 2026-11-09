@@ -65,7 +65,7 @@ on:
         description: Malenia release tag to install, or "latest"
         type: string
         required: false
-        default: latest
+        default: v3
       malenia_repository:
         description: Repository that publishes Malenia releases
         type: string
@@ -181,6 +181,9 @@ jobs:
             --json jobs \
             --jq '.jobs[] | select(.conclusion == "failure") | "\(.name) (\(.databaseId))"' \
             > "$RUNNER_TEMP/malenia-failed-jobs.txt" 2>&1 || true
+          mkdir -p "$RUNNER_TEMP/malenia-artifacts"
+          gh run download "$INPUT_RUN_ID" --repo "$INPUT_REPOSITORY" \
+            --dir "$RUNNER_TEMP/malenia-artifacts" || true
 
       - name: Install malenia
         env:
@@ -223,6 +226,7 @@ jobs:
           INPUT_DOCKER_IMAGE: ${{ inputs.docker_image }}
           INPUT_BASE: ${{ steps.revisions.outputs.base }}
           INPUT_CI_LOG: ${{ runner.temp }}/malenia-failed.log
+          INPUT_ARTIFACT_DIR: ${{ runner.temp }}/malenia-artifacts
         run: |
           set -euo pipefail
           args=(diagnose --repo . --json --bundle "$RUNNER_TEMP/malenia-bundle")
@@ -235,6 +239,9 @@ jobs:
           fi
           if [ -s "$INPUT_CI_LOG" ]; then
             args+=(--ci-log "$INPUT_CI_LOG")
+          fi
+          if [ -d "$INPUT_ARTIFACT_DIR" ]; then
+            args+=(--artifact-dir "$INPUT_ARTIFACT_DIR" --artifact-first)
           fi
           if [ -n "$INPUT_ATTEMPTS" ]; then
             args+=(--attempts "$INPUT_ATTEMPTS")
@@ -272,7 +279,11 @@ jobs:
             echo "**Classification**: \`$classification\`"
             echo
             jq -r '
-              "**Reproduced**: \(.baseline.failures)/\(.baseline.attempts) attempts failed  ",
+              (if .baseline.source == "ci_artifact" then
+                "**Evidence**: \(.baseline.failures) failure observation(s) from existing CI artifacts; no local reproduction  "
+              else
+                "**Reproduced**: \(.baseline.failures)/\(.baseline.attempts) attempts failed  "
+              end),
               "**Confidence**: \(.confidence)  ",
               (if .comparison then
                 "**Base/head**: base \(.comparison.base.failures)/\(.comparison.base.attempts), head \(.comparison.head.failures)/\(.comparison.head.attempts) → `\(.comparison.verdict)`  "
@@ -310,6 +321,7 @@ jobs:
             ${{ runner.temp }}/malenia-stderr.log
             ${{ runner.temp }}/malenia-failed.log
             ${{ runner.temp }}/malenia-failed-jobs.txt
+            ${{ runner.temp }}/malenia-artifacts
             ${{ runner.temp }}/malenia-bundle
           if-no-files-found: ignore
 

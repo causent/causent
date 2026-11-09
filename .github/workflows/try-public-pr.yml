@@ -44,6 +44,11 @@ on:
         required: false
         default: '600'
         type: string
+      malenia_version:
+        description: Pinned Malenia release tag
+        required: false
+        default: v3
+        type: string
 
 permissions:
   contents: read
@@ -129,8 +134,20 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Build Malenia
-        run: go build -trimpath -o "$RUNNER_TEMP/malenia" ./cmd/malenia
+      - name: Install Malenia binary
+        env:
+          MALENIA_VERSION: ${{ inputs.malenia_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$MALENIA_VERSION" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo 'malenia_version must be a release tag such as v3' >&2
+            exit 2
+          fi
+          curl --fail --silent --show-error --location \
+            "https://github.com/causent/malenia/releases/download/${MALENIA_VERSION}/malenia_linux_amd64" \
+            -o "$RUNNER_TEMP/malenia"
+          chmod +x "$RUNNER_TEMP/malenia"
+          "$RUNNER_TEMP/malenia" version
 
       - name: Diagnose PR
         id: diagnose

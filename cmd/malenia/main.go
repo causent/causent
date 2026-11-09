@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -114,6 +115,7 @@ func runDiagnose(args []string) {
 	maxCommits := fs.Int("max-commits", diagnosis.DefaultMaxCommits, "maximum commits to search when --good is not set")
 	maxProbes := fs.Int("max-probes", diagnosis.DefaultMaxLocalizationProbes, "maximum test executions used to locate a revision boundary")
 	skipAdaptive := fs.Bool("skip-adaptive", false, "publish the preliminary diagnosis without optional adaptive investigation")
+	artifactFirst := fs.Bool("artifact-first", false, "use CI artifact evidence before considering reproduction")
 	executorMode := fs.String("executor", envOr("MALENIA_EXECUTOR", "local"), "execution backend: local or docker")
 	image := fs.String("image", envOr("MALENIA_EXECUTOR_IMAGE", ""), "Docker image (required with --executor docker)")
 	var probes stringList
@@ -122,6 +124,7 @@ func runDiagnose(args []string) {
 	useAgent := fs.Bool("agent", false, "ask the configured gateway model to analyze collected evidence")
 	ciLog := fs.String("ci-log", "", "bounded original CI log to include as evidence")
 	junit := fs.String("junit", "", "JUnit XML test report to include as evidence")
+	artifactDir := fs.String("artifact-dir", "", "directory of bounded CI artifacts to ingest")
 	fs.Parse(args)
 
 	set := map[string]bool{}
@@ -214,6 +217,7 @@ func runDiagnose(args []string) {
 		MaxCommits:            *maxCommits,
 		MaxLocalizationProbes: *maxProbes,
 		SkipAdaptive:          *skipAdaptive,
+		ArtifactFirst:         *artifactFirst,
 	}
 	if strings.TrimSpace(*ciLog) != "" {
 		f, readErr := os.Open(*ciLog)
@@ -231,13 +235,21 @@ func runDiagnose(args []string) {
 		cfg.ExternalEvidence = []diagnosis.EvidenceItem{{ID: "E-ci-log", Kind: "original_ci_log", Source: *ciLog, Digest: hex.EncodeToString(digest[:]), Detail: string(data)}}
 	}
 	if strings.TrimSpace(*junit) != "" {
-		data, readErr := os.ReadFile(*junit)
+		data, readErr := readBoundedFile(*junit, 256<<10)
 		if readErr != nil {
 			fmt.Fprintln(os.Stderr, "junit: "+readErr.Error())
 			os.Exit(2)
 		}
 		digest := sha256.Sum256(data)
-		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_xml", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data)})
+		cfg.ExternalEvidence = append(cfg.ExternalEvidence, diagnosis.EvidenceItem{ID: "E-junit", Kind: "junit_report", Source: *junit, Digest: hex.EncodeToString(digest[:]), Detail: string(data), Provenance: "explicit CLI input"})
+	}
+	if strings.TrimSpace(*artifactDir) != "" {
+		artifacts, readErr := loadArtifactEvidence(*artifactDir, 20, 256<<10)
+		if readErr != nil {
+			fmt.Fprintln(os.Stderr, "artifacts: "+readErr.Error())
+			os.Exit(2)
+		}
+		cfg.ExternalEvidence = append(cfg.ExternalEvidence, artifacts...)
 	}
 	if *useAgent {
 		cfg.Agent, err = configuredAgent()
@@ -730,6 +742,76 @@ func writeJSON(value any) {
 		fmt.Fprintln(os.Stderr, "write JSON: "+err.Error())
 		os.Exit(1)
 	}
+}
+
+var sensitiveArtifactValue = regexp.MustCompile(`(?i)((?:authorization|token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]\r\n]+`)
+
+func readBoundedFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], fmt.Errorf("file exceeds %d-byte limit", limit)
+	}
+	return data, nil
+}
+
+func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosis.EvidenceItem, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("artifact path is not a directory")
+	}
+	var evidence []diagnosis.EvidenceItem
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if len(evidence) >= maxFiles {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		switch ext {
+		case ".log", ".txt", ".xml", ".json", ".out", ".err", ".trace":
+		default:
+			return nil
+		}
+		data, readErr := readBoundedFile(path, maxBytes)
+		if readErr != nil {
+			return nil
+		}
+		redacted := sensitiveArtifactValue.ReplaceAll(data, []byte(`${1}[REDACTED]`))
+		digest := sha256.Sum256(redacted)
+		kind := "ci_artifact"
+		lowerName := strings.ToLower(entry.Name())
+		if ext == ".xml" || strings.Contains(lowerName, "junit") || strings.Contains(lowerName, "test-result") {
+			kind = "junit_report"
+		}
+		evidence = append(evidence, diagnosis.EvidenceItem{
+			ID:         fmt.Sprintf("E-artifact-%d", len(evidence)+1),
+			Kind:       kind,
+			Source:     path,
+			Digest:     hex.EncodeToString(digest[:]),
+			Detail:     string(redacted),
+			Provenance: "CI artifact directory",
+		})
+		return nil
+	})
+	return evidence, err
 }
 
 // stringList collects a repeatable string flag.

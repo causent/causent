@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/causent/malenia/internal/agent"
@@ -86,11 +87,14 @@ func (a Attempt) Passed() bool {
 // EvidenceItem is a fact recorded during the diagnosis. Hypotheses reference
 // these by ID; they never replace them.
 type EvidenceItem struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Source string `json:"source"`
-	Digest string `json:"digest"`
-	Detail string `json:"detail"`
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Source      string   `json:"source"`
+	Digest      string   `json:"digest"`
+	Detail      string   `json:"detail"`
+	Provenance  string   `json:"provenance,omitempty"`
+	Revision    string   `json:"revision,omitempty"`
+	Limitations []string `json:"limitations,omitempty"`
 }
 
 // Claim is a hypothesis. It must cite evidence and carries its own confidence.
@@ -156,6 +160,7 @@ type Baseline struct {
 	Command    []string  `json:"command"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
+	Source     string    `json:"source,omitempty"`
 }
 
 // Comparison records the counterfactual base-versus-head evidence.
@@ -252,6 +257,9 @@ type Config struct {
 	CacheDir string
 	// SkipAdaptive disables Stage 4 deep investigation after the preliminary report.
 	SkipAdaptive bool
+	// ArtifactFirst uses existing CI evidence before considering any reproduction.
+	// When decisive failure evidence is present, no command is executed.
+	ArtifactFirst bool
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -262,7 +270,9 @@ type Diagnoser struct {
 	metrics         *observability.Metrics
 	// snapshot is built once by the staged pipeline and reused by adaptive
 	// repository actions for this investigation.
-	snapshot *programrepo.Snapshot
+	snapshot     *programrepo.Snapshot
+	executionsMu sync.Mutex
+	executions   map[string]Attempt
 }
 
 // EventRecord is one entry in events.jsonl and, when a store is configured, one
@@ -325,6 +335,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
 	d.metrics = observability.NewMetrics(report.InvestigationID)
+	d.executions = make(map[string]Attempt)
 
 	if cfg.InvestigationTimeout > 0 {
 		var cancel context.CancelFunc
@@ -360,10 +371,31 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		finish(&report, d, workspace)
 	}()
 
-	d.emit(EventReproductionStarted, domain.StatusReproducing, "reproducing failure in isolated workspace")
-	reproStage := d.metrics.Begin(observability.StageReproduction)
-	baseline, env, ws, wsCleanup, err := d.reproduce(ctx)
-	workspace, cleanup = ws, wsCleanup
+	artifactOnly := cfg.ArtifactFirst && externalFailureEvidence(report.Evidence)
+	var baseline Baseline
+	var env Environment
+	var err error
+	var reproStage *observability.StageHandle
+	if artifactOnly {
+		d.emit(EventReproductionStarted, domain.StatusCollectingEvidence, "using existing CI evidence before reproduction")
+		reproStage = d.metrics.Begin(observability.StageReproduction)
+		env = captureEnvironment(cfg.RepoPath)
+		workspace, cleanup, err = isolatedWorkspace(ctx, cfg.RepoPath, env.HeadCommit)
+		baseline = artifactBaseline(cfg.Command, report.Evidence)
+		baseline.StartedAt = report.CreatedAt
+		baseline.FinishedAt = time.Now().UTC()
+		if err == nil {
+			reproStage.Done("artifact_only", nil)
+		} else {
+			reproStage.Done("inconclusive", err)
+		}
+		report.Partial = true
+		report.Uncertainty = append(report.Uncertainty, "diagnosis is based on existing CI evidence; local reproduction was not executed")
+	} else {
+		d.emit(EventReproductionStarted, domain.StatusReproducing, "reproducing failure in isolated workspace")
+		reproStage = d.metrics.Begin(observability.StageReproduction)
+		baseline, env, workspace, cleanup, err = d.reproduce(ctx)
+	}
 	// Preserve attempts collected before cancellation or timeout. They are
 	// useful evidence even when reproduction cannot complete.
 	report.Baseline = baseline
@@ -372,7 +404,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		reproStage.Done("failed", err)
 		report.Partial = true
 		report.Uncertainty = append(report.Uncertainty, "reproduction incomplete: "+err.Error())
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if artifactOnly {
+			report.Uncertainty = append(report.Uncertainty, "repository workspace preparation failed; localization is unavailable")
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			report.Refused = true
 			report.RefusalReason = "investigation cancelled or timed out before reproduction completed"
 			d.emit(EventDiagnosisRefused, domain.StatusInconclusive, report.RefusalReason)
@@ -381,16 +415,22 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		d.emit(EventDiagnosisRefused, domain.StatusInconclusive, err.Error())
 		return report, err
 	}
-	reproStage.Count("attempts", baseline.Attempts)
-	reproStage.Count("failures", baseline.Failures)
-	reproStage.Done("completed", nil)
+	if !artifactOnly {
+		reproStage.Count("attempts", baseline.Attempts)
+		reproStage.Count("failures", baseline.Failures)
+		reproStage.Done("completed", nil)
+	}
 
 	report.Baseline = baseline
 	env.Executor = cfg.ExecutorName
 	env.Image = cfg.ExecutorImage
 	report.Environment = env
-	report.Classification = Classify(baseline.Results)
-	if cfg.BaseRef != "" {
+	if artifactOnly {
+		report.Classification = Classify(artifactEvidenceAttempts(report.Evidence))
+	} else {
+		report.Classification = Classify(baseline.Results)
+	}
+	if cfg.BaseRef != "" && !artifactOnly {
 		cmpStage := d.metrics.Begin(observability.StageBaseComparison)
 		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
 		if cmpErr != nil {
@@ -410,11 +450,15 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		fmt.Sprintf("%d/%d attempts failed", baseline.Failures, baseline.Attempts))
 	d.emit(EventClassificationComplete, domain.StatusCollectingEvidence, string(report.Classification))
 
-	report.Evidence = append(report.Evidence, attemptEvidence(baseline)...)
-	report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
+	if artifactOnly {
+		report.Evidence = append(report.Evidence, artifactClassificationEvidence(report.Classification, baseline))
+	} else {
+		report.Evidence = append(report.Evidence, attemptEvidence(baseline)...)
+		report.Evidence = append(report.Evidence, classificationEvidence(report.Classification, baseline))
+	}
 
 	// Refuse before localization when the failure itself is not established.
-	if reason, ok := refusalReason(report.Classification, baseline); ok {
+	if reason, ok := refusalReason(report.Classification, baseline); ok && !artifactOnly {
 		report.Refused = true
 		report.RefusalReason = reason
 		report.Localization = Localization{HeadCommit: env.HeadCommit, BisectStatus: "skipped: diagnosis refused"}
@@ -435,7 +479,18 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 
 	d.emit(EventLocalizationStarted, domain.StatusFormingHypotheses, "localizing likely cause")
 	locStage := d.metrics.Begin(observability.StageLocalization)
-	localization, locEvidence, locErr := d.localize(ctx, workspace, baseline, report.Comparison)
+	var localization Localization
+	var locEvidence []EvidenceItem
+	var locErr error
+	if artifactOnly {
+		localization = Localization{
+			HeadCommit:   env.HeadCommit,
+			BisectStatus: "skipped: artifact-backed preliminary diagnosis",
+		}
+		report.Uncertainty = append(report.Uncertainty, "revision localization was deferred because CI evidence was sufficient for the preliminary report")
+	} else {
+		localization, locEvidence, locErr = d.localize(ctx, workspace, baseline, report.Comparison)
+	}
 	report.Localization = localization
 	report.Evidence = append(report.Evidence, locEvidence...)
 	if locErr != nil {
@@ -687,6 +742,14 @@ func (d *Diagnoser) reproduce(ctx context.Context) (Baseline, Environment, strin
 }
 
 func (d *Diagnoser) runOnce(ctx context.Context, dir string, index int) Attempt {
+	key := d.executionKey(dir, index)
+	d.executionsMu.Lock()
+	if cached, ok := d.executions[key]; ok {
+		d.executionsMu.Unlock()
+		return cached
+	}
+	d.executionsMu.Unlock()
+
 	runCtx, cancel := context.WithTimeout(ctx, d.cfg.Timeout)
 	defer cancel()
 	res, err := d.cfg.Executor.Run(runCtx, execution.Request{
@@ -711,7 +774,29 @@ func (d *Diagnoser) runOnce(ctx context.Context, dir string, index int) Attempt 
 			attempt.Executed = res.StartedAt != (time.Time{})
 		}
 	}
+	if attempt.Passed() || attempt.Failed() {
+		d.executionsMu.Lock()
+		if d.executions == nil {
+			d.executions = make(map[string]Attempt)
+		}
+		d.executions[key] = attempt
+		d.executionsMu.Unlock()
+	}
 	return attempt
+}
+
+func (d *Diagnoser) executionKey(dir string, index int) string {
+	commit := strings.TrimSpace(gitOutput(dir, "rev-parse", "HEAD"))
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		d.cfg.RepoPath,
+		commit,
+		strings.Join(d.cfg.Command, "\x00"),
+		fmt.Sprint(index),
+		d.cfg.ExecutorName,
+		d.cfg.ExecutorImage,
+		d.cfg.Timeout.String(),
+	}, "\x00")))
+	return "execution:" + hex.EncodeToString(sum[:])
 }
 
 func (d *Diagnoser) runProbes(ctx context.Context, workspace string) []Probe {

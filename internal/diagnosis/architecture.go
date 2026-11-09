@@ -25,6 +25,61 @@ type failureObservation struct {
 	Message string
 }
 
+func externalFailureEvidence(items []EvidenceItem) bool {
+	for _, item := range items {
+		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
+			continue
+		}
+		if len(parseFailureObservations(item.Detail)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func artifactEvidenceAttempts(items []EvidenceItem) []Attempt {
+	var attempts []Attempt
+	for _, item := range items {
+		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
+			continue
+		}
+		if len(parseFailureObservations(item.Detail)) == 0 {
+			continue
+		}
+		attempts = append(attempts, Attempt{
+			Index:    len(attempts),
+			ExitCode: 1,
+			Executed: true,
+			Stderr:   bound(item.Detail, MaxEvidenceExcerpt),
+		})
+	}
+	return attempts
+}
+
+func artifactBaseline(command []string, items []EvidenceItem) Baseline {
+	attempts := artifactEvidenceAttempts(items)
+	return Baseline{
+		Attempts: len(attempts),
+		Failures: len(attempts),
+		Results:  attempts,
+		Command:  command,
+		Source:   "ci_artifact",
+	}
+}
+
+func artifactClassificationEvidence(class Classification, baseline Baseline) EvidenceItem {
+	detail := fmt.Sprintf("classification=%s failures=%d source=%s; this is CI artifact evidence, not a local reproduction", class, baseline.Failures, baseline.Source)
+	sum := sha256.Sum256([]byte(detail))
+	return EvidenceItem{
+		ID:         "E-classification",
+		Kind:       "ci_artifact_observation",
+		Source:     "normalized CI artifacts",
+		Digest:     hex.EncodeToString(sum[:]),
+		Detail:     detail,
+		Provenance: "normalized existing CI evidence",
+	}
+}
+
 // parseFailureObservations extracts multiple test failures from one CI log.
 // It is intentionally parser-shaped rather than a root-cause classifier.
 func parseFailureObservations(text string) []failureObservation {
@@ -114,7 +169,7 @@ func (d *Diagnoser) persistFailureEpisodes(report *Report, executionID string, b
 	// CI logs often contain failures from several jobs/tests but are not part
 	// of reproduction attempts. Treat them as observations, never as reruns.
 	for _, item := range report.Evidence {
-		if item.Kind != "original_ci_log" && item.Kind != "junit_report" {
+		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
 			continue
 		}
 		for _, observation := range parseFailureObservations(item.Detail) {
@@ -163,16 +218,34 @@ func failureSignature(text string) string {
 	}
 	return ""
 }
-func failureText(b Baseline) string {
+func failureText(b Baseline, evidence []EvidenceItem) string {
 	var bld strings.Builder
 	for _, a := range b.Results {
 		bld.WriteString(a.Stderr)
 		bld.WriteByte('\n')
 	}
+	for _, item := range evidence {
+		if item.Kind == "original_ci_log" || item.Kind == "junit_report" || item.Kind == "junit_xml" || item.Kind == "ci_artifact" {
+			bld.WriteString(item.Detail)
+			bld.WriteByte('\n')
+		}
+	}
 	return bld.String()
 }
-func architectureFrames(b Baseline, failures []domain.FailureEpisode) []localization.Frame {
+func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence []EvidenceItem) []localization.Frame {
 	var out []localization.Frame
+	failureIDs := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		failureIDs = append(failureIDs, failure.ID)
+	}
+	addFrames := func(text string) {
+		for _, m := range pythonFrame.FindAllStringSubmatch(text, -1) {
+			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+		}
+		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
+			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+		}
+	}
 	for _, a := range b.Results {
 		text := a.Stderr
 		failureIDs := failureIDsForText(a.Stderr, failures)
@@ -181,6 +254,11 @@ func architectureFrames(b Baseline, failures []domain.FailureEpisode) []localiza
 		}
 		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
 			out = append(out, localization.Frame{File: m[1], Line: atoi(m[2]), FailureIDs: failureIDs})
+		}
+	}
+	for _, item := range evidence {
+		if item.Kind == "original_ci_log" || item.Kind == "junit_report" || item.Kind == "junit_xml" || item.Kind == "ci_artifact" {
+			addFrames(item.Detail)
 		}
 	}
 	return out

@@ -95,7 +95,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		}
 	}
 
-	frames := architectureFrames(baseline, failures)
+	frames := architectureFrames(baseline, failures, report.Evidence)
 	var evidenceIDs []domain.ID
 	for _, e := range report.Evidence {
 		evidenceIDs = append(evidenceIDs, domain.ID(e.ID))
@@ -115,7 +115,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	}
 
 	candStage := d.metrics.Begin(observability.StageCandidateGeneration)
-	candidates, relations := localization.Generate(snapshot, localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100})
+	candidates, relations := localization.Generate(snapshot, localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100})
 	report.Candidates = candidates
 	report.Relationships = relations
 	candStage.Count("candidates", len(candidates))
