@@ -275,7 +275,9 @@ jobs:
             --investigation-timeout "${MALENIA_INVESTIGATION_TIMEOUT_SECONDS}s"
             --json
             --bundle "$RUNNER_TEMP/malenia-bundle")
+          evidence_mode=false
           if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
+            evidence_mode=true
             args=(evidence --ci-log "$RUNNER_TEMP/source-ci-bounded.log" --command "$MALENIA_COMMAND")
             junit="$(find "$RUNNER_TEMP/source-artifacts" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
             if [ -n "$junit" ]; then
@@ -285,10 +287,10 @@ jobs:
             echo "Original CI evidence was not found; refusing to run a fresh reproduction." >&2
             exit 2
           fi
-          if [ "${{ inputs.skip_adaptive }}" = "true" ]; then
+          if [ "$evidence_mode" != "true" ] && [ "${{ inputs.skip_adaptive }}" = "true" ]; then
             args+=(--skip-adaptive)
           fi
-          if [ "${{ inputs.fast_path }}" = "true" ]; then
+          if [ "$evidence_mode" != "true" ] && [ "${{ inputs.fast_path }}" = "true" ]; then
             args+=(--fast-path)
           fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
