@@ -234,8 +234,11 @@ func (d *Diagnoser) adaptiveWalk(ctx context.Context, head string) (string, stri
 		}
 		fmt.Fprintf(&log, "probe %s: passed=%t duration=%s\n", shortSHA(commits[distance]), passed, took)
 		if passed {
-			goodIndex := distance
-			return d.bisectBracket(ctx, commits, badIndex, goodIndex, "", probes, log)
+			// Without an explicit --good endpoint this is a bounded history
+			// walk, not a claim that the first transition was fully bisected.
+			// Preserve the observed passing/failing endpoints and leave
+			// BisectResult empty so callers do not present a walk as a bisect.
+			return commits[distance], commits[badIndex], "", "confirmed", log.String()
 		}
 		badIndex = distance
 		if distance == len(commits)-1 {
@@ -259,13 +262,23 @@ func (d *Diagnoser) bisectFromKnownEndpoints(ctx context.Context, good, head str
 	}
 	var log strings.Builder
 	fmt.Fprintf(&log, "strategy=base/head bracket bisection; intermediate_commits=%d probe_budget=%d\n", len(commits), d.cfg.MaxLocalizationProbes)
-	return d.bisectBracket(ctx, commits, 0, len(commits), good, 0, log)
+	lastGood, firstBad, result, status, bisectLog := d.bisectBracket(ctx, commits, 0, len(commits), good, 0, &log)
+	// The configured endpoint is authoritative evidence for the last known
+	// good revision. Intermediate passing probes narrow the boundary but do
+	// not replace the endpoint in the report's public semantics.
+	if result != "" || status == "confirmed" {
+		lastGood = good
+	}
+	return lastGood, firstBad, result, status, bisectLog
 }
 
 // bisectBracket uses indexes into newest-to-oldest commits. badIndex is a
 // known failure and goodIndex is a known pass; len(commits) represents a
 // known passing revision older than every item in the slice.
-func (d *Diagnoser) bisectBracket(ctx context.Context, commits []string, badIndex, goodIndex int, externalGood string, probes int, log strings.Builder) (string, string, string, string, string) {
+func (d *Diagnoser) bisectBracket(ctx context.Context, commits []string, badIndex, goodIndex int, externalGood string, probes int, log *strings.Builder) (string, string, string, string, string) {
+	if log == nil {
+		log = &strings.Builder{}
+	}
 	for goodIndex-badIndex > 1 && probes < d.cfg.MaxLocalizationProbes {
 		if ctx.Err() != nil {
 			return boundaryGood(commits, goodIndex, externalGood), boundaryBad(commits, badIndex), "", "inconclusive: cancelled during revision search", log.String()
@@ -274,10 +287,10 @@ func (d *Diagnoser) bisectBracket(ctx context.Context, commits []string, badInde
 		passed, conclusive, took := d.probeCommit(ctx, commits[mid])
 		probes++
 		if !conclusive {
-			fmt.Fprintf(&log, "probe %s: inconclusive duration=%s\n", shortSHA(commits[mid]), took)
+			fmt.Fprintf(log, "probe %s: inconclusive duration=%s\n", shortSHA(commits[mid]), took)
 			return boundaryGood(commits, goodIndex, externalGood), boundaryBad(commits, badIndex), "", "inconclusive: a revision probe timed out or failed to execute", log.String()
 		}
-		fmt.Fprintf(&log, "probe %s: passed=%t duration=%s\n", shortSHA(commits[mid]), passed, took)
+		fmt.Fprintf(log, "probe %s: passed=%t duration=%s\n", shortSHA(commits[mid]), passed, took)
 		if passed {
 			goodIndex = mid
 		} else {

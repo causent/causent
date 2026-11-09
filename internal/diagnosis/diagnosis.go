@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,7 +18,9 @@ import (
 	"github.com/causent/malenia/internal/agent"
 	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/observability"
 	"github.com/causent/malenia/internal/persistence"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 // Classification is the deterministic category assigned to an observed failure.
@@ -43,6 +46,7 @@ const (
 	EventBundleCreated          = "bundle_created"
 	EventDiagnosisCompleted     = "diagnosis_completed"
 	EventDiagnosisRefused       = "diagnosis_refused"
+	EventPreliminaryDiagnosis   = "preliminary_diagnosis"
 )
 
 // Defaults bound every loop in this package.
@@ -184,6 +188,12 @@ type Report struct {
 	FailureEpisodes     []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
 	Hypotheses          []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings            []domain.DiagnosticFinding     `json:"findings,omitempty"`
+	Preliminary         *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
+	Overview            *programrepo.Overview          `json:"overview,omitempty"`
+	Metrics             *observability.Metrics         `json:"metrics,omitempty"`
+	IndexingMode        string                         `json:"indexing_mode,omitempty"`
+	CoverageNotes       []string                       `json:"coverage_notes,omitempty"`
+	Partial             bool                           `json:"partial,omitempty"`
 	Experiments         []domain.Experiment            `json:"experiments,omitempty"`
 	UnresolvedQuestions []domain.InvestigationQuestion `json:"unresolved_questions,omitempty"`
 	StoppingReason      string                         `json:"stopping_reason,omitempty"`
@@ -236,6 +246,12 @@ type Config struct {
 	AdaptiveMaxActivities  int
 	AdaptiveMaxExperiments int
 	AdaptiveTimeout        time.Duration
+	// InvestigationTimeout bounds the whole diagnosis, separately from per-command Timeout.
+	InvestigationTimeout time.Duration
+	// CacheDir stores revision-aware repository artifacts. Empty uses <repo>/.malenia/artifact-cache.
+	CacheDir string
+	// SkipAdaptive disables Stage 4 deep investigation after the preliminary report.
+	SkipAdaptive bool
 }
 
 // Diagnoser executes the diagnosis workflow.
@@ -243,6 +259,7 @@ type Diagnoser struct {
 	cfg             Config
 	events          []EventRecord
 	investigationID string
+	metrics         *observability.Metrics
 }
 
 // EventRecord is one entry in events.jsonl and, when a store is configured, one
@@ -304,6 +321,13 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	}
 	report.Evidence = append(report.Evidence, cfg.ExternalEvidence...)
 	d.investigationID = report.InvestigationID
+	d.metrics = observability.NewMetrics(report.InvestigationID)
+
+	if cfg.InvestigationTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.InvestigationTimeout)
+		defer cancel()
+	}
 
 	// Create the investigation so the gateway can stream this run.
 	if cfg.Store != nil {
@@ -322,14 +346,41 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	}
 	d.emit(EventDiagnosisStarted, domain.StatusPreparing, "diagnosis workflow started")
 
-	d.emit(EventReproductionStarted, domain.StatusReproducing, "reproducing failure in isolated workspace")
+	var workspace string
+	var cleanup func()
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+		// Always persist terminal status and collected evidence, including after
+		// cancellation or timeout. Optional stages must not erase partial results.
+		finish(&report, d, workspace)
+	}()
 
-	baseline, env, workspace, cleanup, err := d.reproduce(ctx)
+	d.emit(EventReproductionStarted, domain.StatusReproducing, "reproducing failure in isolated workspace")
+	reproStage := d.metrics.Begin(observability.StageReproduction)
+	baseline, env, ws, wsCleanup, err := d.reproduce(ctx)
+	workspace, cleanup = ws, wsCleanup
+	// Preserve attempts collected before cancellation or timeout. They are
+	// useful evidence even when reproduction cannot complete.
+	report.Baseline = baseline
+	report.Environment = env
 	if err != nil {
+		reproStage.Done("failed", err)
+		report.Partial = true
+		report.Uncertainty = append(report.Uncertainty, "reproduction incomplete: "+err.Error())
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			report.Refused = true
+			report.RefusalReason = "investigation cancelled or timed out before reproduction completed"
+			d.emit(EventDiagnosisRefused, domain.StatusInconclusive, report.RefusalReason)
+			return report, err
+		}
 		d.emit(EventDiagnosisRefused, domain.StatusInconclusive, err.Error())
 		return report, err
 	}
-	defer cleanup()
+	reproStage.Count("attempts", baseline.Attempts)
+	reproStage.Count("failures", baseline.Failures)
+	reproStage.Done("completed", nil)
 
 	report.Baseline = baseline
 	env.Executor = cfg.ExecutorName
@@ -337,12 +388,19 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	report.Environment = env
 	report.Classification = Classify(baseline.Results)
 	if cfg.BaseRef != "" {
+		cmpStage := d.metrics.Begin(observability.StageBaseComparison)
 		comparison, cmpErr := d.compare(ctx, cfg.BaseRef, baseline, env.HeadCommit)
 		if cmpErr != nil {
+			cmpStage.Done("inconclusive", cmpErr)
 			report.Uncertainty = append(report.Uncertainty, "base comparison incomplete: "+cmpErr.Error())
+			report.Partial = true
+			if isTimeoutOrCancel(cmpErr) {
+				report.Uncertainty = append(report.Uncertainty, "base comparison timed out or was cancelled; result is inconclusive, not negative evidence")
+			}
 		} else {
 			report.Comparison = &comparison
 			report.Classification = comparison.Verdict
+			cmpStage.Done("completed", nil)
 		}
 	}
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence,
@@ -361,22 +419,50 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Confidence = 0
 		if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, report.Localization); err != nil {
 			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+			report.Partial = true
 		}
-		finish(&report, d, workspace)
 		return report, nil
 	}
+
+	skipDeep := cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
+	if skipDeep && !cfg.SkipAdaptive {
+		report.Uncertainty = append(report.Uncertainty, "deep investigation skipped because reproduction or base comparison was inconclusive")
+		report.Partial = true
+	}
+
 	d.emit(EventLocalizationStarted, domain.StatusFormingHypotheses, "localizing likely cause")
+	locStage := d.metrics.Begin(observability.StageLocalization)
 	localization, locEvidence, locErr := d.localize(ctx, workspace, baseline, report.Comparison)
 	report.Localization = localization
 	report.Evidence = append(report.Evidence, locEvidence...)
 	if locErr != nil {
+		locStage.Done("inconclusive", locErr)
 		report.Uncertainty = append(report.Uncertainty, "localization incomplete: "+locErr.Error())
+		report.Partial = true
+		if isTimeoutOrCancel(locErr) {
+			report.Uncertainty = append(report.Uncertainty, "localization timed out or was cancelled; collected evidence is preserved")
+		}
+	} else {
+		locStage.Done("completed", nil)
 	}
 	if err := d.persistArchitecture(ctx, &report, workspace, baseline, env, localization); err != nil {
 		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
+		report.Partial = true
 	}
-	if err := d.runAdaptiveLoop(ctx, &report, workspace); err != nil {
-		report.Uncertainty = append(report.Uncertainty, "adaptive investigation incomplete: "+err.Error())
+
+	if !skipDeep && !cfg.SkipAdaptive {
+		adaptStage := d.metrics.Begin(observability.StageAdaptiveDeep)
+		if err := d.runAdaptiveLoop(ctx, &report, workspace); err != nil {
+			adaptStage.Done("inconclusive", err)
+			report.Uncertainty = append(report.Uncertainty, "adaptive investigation incomplete: "+err.Error())
+			report.Partial = true
+		} else {
+			adaptStage.Count("actions", report.AdaptiveIterations)
+			adaptStage.Count("experiments", len(report.Experiments))
+			adaptStage.Done("completed", nil)
+		}
+	} else if report.StoppingReason == "" {
+		report.StoppingReason = "adaptive investigation skipped"
 	}
 	d.emit(EventLocalizationCompleted, domain.StatusFormingHypotheses, locStatus(localization))
 
@@ -417,12 +503,31 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.RefusalReason = fmt.Sprintf("confidence %.2f is below the %.2f threshold; evidence is insufficient for a diagnosis", report.Confidence, RefusalConfidence)
 	}
 
-	if len(cfg.Probes) > 0 {
+	if len(cfg.Probes) > 0 && ctx.Err() == nil {
 		report.Probes = d.runProbes(ctx, workspace)
 	}
 
-	finish(&report, d, workspace)
 	return report, nil
+}
+
+func isTimeoutOrCancel(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func reproductionInconclusive(baseline Baseline, comparison *Comparison) bool {
+	if baseline.TimedOut > 0 && baseline.Failures == 0 && baseline.Passes == 0 {
+		return true
+	}
+	if comparison == nil {
+		return false
+	}
+	if comparison.Base.TimedOut > 0 && comparison.Base.Failures == 0 && comparison.Base.Passes == 0 {
+		return true
+	}
+	if comparison.Head.TimedOut > 0 && comparison.Head.Failures == 0 && comparison.Head.Passes == 0 {
+		return true
+	}
+	return false
 }
 
 func (d *Diagnoser) compare(ctx context.Context, baseRef string, head Baseline, headCommit string) (Comparison, error) {
@@ -473,8 +578,13 @@ func compareVerdict(base, head Baseline) Classification {
 }
 
 // finish writes the bundle, emits the terminal events, and persists the final
-// investigation status.
+// investigation status. It is safe to call after cancellation: already collected
+// evidence and preliminary findings are preserved.
 func finish(report *Report, d *Diagnoser, workspace string) {
+	var bundleStage *observability.StageHandle
+	if d.metrics != nil {
+		bundleStage = d.metrics.Begin(observability.StageBundlePublish)
+	}
 	if d.cfg.Store != nil {
 		if inv, err := d.cfg.Store.GetInvestigation(domain.ID(report.InvestigationID)); err == nil {
 			inv.Status = statusFor(*report)
@@ -484,20 +594,38 @@ func finish(report *Report, d *Diagnoser, workspace string) {
 		}
 	}
 	if d.cfg.BundleDir != "" {
+		if d.metrics != nil {
+			clone := d.metrics.Clone()
+			report.Metrics = &clone
+		}
 		path, err := WriteBundle(*report, d.events, d.cfg.BundleDir)
 		if err != nil {
 			report.Uncertainty = append(report.Uncertainty, "bundle could not be written: "+err.Error())
 			d.emit(EventBundleCreated, statusFor(*report), "bundle failed: "+err.Error())
+			if bundleStage != nil {
+				bundleStage.Done("failed", err)
+			}
 		} else {
 			report.BundlePath = path
 			report.ReplayCommand = fmt.Sprintf("malenia replay %s", path)
 			d.emit(EventBundleCreated, statusFor(*report), path)
+			if bundleStage != nil {
+				bundleStage.Done("completed", nil)
+			}
 		}
+	} else if bundleStage != nil {
+		bundleStage.Done("skipped", nil)
 	}
 	if report.Refused {
 		d.emit(EventDiagnosisRefused, domain.StatusInconclusive, report.RefusalReason)
 	} else {
 		d.emit(EventDiagnosisCompleted, domain.StatusCompleted, string(report.Classification))
+	}
+	if d.metrics != nil {
+		inconclusive := report.Refused || report.Classification == ClassNotReproduced || report.Partial
+		d.metrics.Finish(report.Partial, inconclusive)
+		clone := d.metrics.Clone()
+		report.Metrics = &clone
 	}
 	// Refresh the bundle so events.jsonl and the manifest include the terminal
 	// events emitted above, while keeping the reported path stable.
@@ -510,7 +638,7 @@ func finish(report *Report, d *Diagnoser, workspace string) {
 }
 
 func statusFor(report Report) domain.Status {
-	if report.Refused {
+	if report.Refused || report.Partial {
 		return domain.StatusInconclusive
 	}
 	return domain.StatusCompleted
