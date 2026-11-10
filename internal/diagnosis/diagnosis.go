@@ -119,25 +119,30 @@ type EvidenceItem struct {
 	ArtifactID     string   `json:"artifact_id,omitempty"`
 	ParserVersion  string   `json:"parser_version,omitempty"`
 	TraceFormat    string   `json:"trace_format,omitempty"`
+	ReportID       string   `json:"report_id,omitempty"`
+	ArtifactDigest string   `json:"artifact_digest,omitempty"`
+	StorageRef     string   `json:"storage_ref,omitempty"`
+	ParserName     string   `json:"parser_name,omitempty"`
 }
 
 // RaceReport preserves the two sides of a Go race. A stack frame is evidence,
 // not itself a diagnosis; keeping the sides separate prevents attribution from
 // collapsing into a generic list of locations.
 type RaceReport struct {
-	Test                    string                 `json:"test,omitempty"`
-	ReadAddress             string                 `json:"read_address,omitempty"`
-	WriteAddress            string                 `json:"write_address,omitempty"`
-	ReadAccessType          string                 `json:"read_access_type,omitempty"`
-	WriteAccessType         string                 `json:"write_access_type,omitempty"`
-	ReadGoroutineID         int64                  `json:"read_goroutine_id,omitempty"`
-	WriteGoroutineID        int64                  `json:"write_goroutine_id,omitempty"`
-	ReadFrameRole           string                 `json:"read_frame_role,omitempty"`
-	WriteFrameRole          string                 `json:"write_frame_role,omitempty"`
-	ReadStack               []localization.Frame   `json:"read_stack,omitempty"`
-	WriteStack              []localization.Frame   `json:"write_stack,omitempty"`
-	GoroutineCreationStacks [][]localization.Frame `json:"goroutine_creation_stacks,omitempty"`
-	EvidenceIDs             []string               `json:"evidence_ids,omitempty"`
+	Test                               string                         `json:"test,omitempty"`
+	ReadAddress                        string                         `json:"read_address,omitempty"`
+	WriteAddress                       string                         `json:"write_address,omitempty"`
+	ReadAccessType                     string                         `json:"read_access_type,omitempty"`
+	WriteAccessType                    string                         `json:"write_access_type,omitempty"`
+	ReadGoroutineID                    int64                          `json:"read_goroutine_id,omitempty"`
+	WriteGoroutineID                   int64                          `json:"write_goroutine_id,omitempty"`
+	ReadFrameRole                      string                         `json:"read_frame_role,omitempty"`
+	WriteFrameRole                     string                         `json:"write_frame_role,omitempty"`
+	ReadStack                          []localization.Frame           `json:"read_stack,omitempty"`
+	WriteStack                         []localization.Frame           `json:"write_stack,omitempty"`
+	GoroutineCreationStacks            [][]localization.Frame         `json:"goroutine_creation_stacks,omitempty"`
+	GoroutineCreationStacksByGoroutine map[int64][]localization.Frame `json:"goroutine_creation_stacks_by_goroutine,omitempty"`
+	EvidenceIDs                        []string                       `json:"evidence_ids,omitempty"`
 }
 
 type IncidentLocation struct {

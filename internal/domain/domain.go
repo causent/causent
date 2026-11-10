@@ -54,6 +54,10 @@ type Evidence struct {
 	ArtifactRef        string
 	ParserVersion      string
 	TraceFormat        string
+	ReportID           string
+	ArtifactDigest     string
+	StorageRef         string
+	ParserName         string
 }
 
 // EvidenceType enumerates the types of evidence.

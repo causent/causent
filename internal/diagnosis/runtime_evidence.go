@@ -14,10 +14,46 @@ import (
 // Empty fields remain unknown; they are never filled by similarity matching.
 type ExecutionIdentity struct {
 	WorkflowRunID  string `json:"workflow_run_id,omitempty"`
+	ReportID       string `json:"report_id,omitempty"`
 	BuildID        string `json:"build_id,omitempty"`
 	ExecutionID    string `json:"execution_id,omitempty"`
 	SourceRevision string `json:"source_revision,omitempty"`
 	TestAttemptID  string `json:"test_attempt_id,omitempty"`
+}
+
+type RuntimeArtifactProvenance struct {
+	ArtifactID    string `json:"artifact_id,omitempty"`
+	Digest        string `json:"digest,omitempty"`
+	StorageRef    string `json:"storage_ref,omitempty"`
+	ParserName    string `json:"parser_name,omitempty"`
+	ParserVersion string `json:"parser_version,omitempty"`
+}
+
+const (
+	SourceResolutionExactAccess       = "exact_access"
+	SourceResolutionEnclosingFunction = "enclosing_function"
+	SourceResolutionLineOnly          = "line_only"
+	SourceResolutionAmbiguous         = "ambiguous"
+	SourceResolutionUnresolved        = "unresolved"
+)
+
+func ClassifySourceResolution(accessID string, stack []localization.Frame, ambiguous bool) string {
+	if accessID != "" {
+		return SourceResolutionExactAccess
+	}
+	if ambiguous {
+		return SourceResolutionAmbiguous
+	}
+	if len(stack) == 0 {
+		return SourceResolutionUnresolved
+	}
+	if stack[0].Function != "" {
+		return SourceResolutionEnclosingFunction
+	}
+	if stack[0].File != "" && stack[0].Line > 0 {
+		return SourceResolutionLineOnly
+	}
+	return SourceResolutionUnresolved
 }
 
 type RuntimeAccessObservation struct {
@@ -32,17 +68,22 @@ type RuntimeAccessObservation struct {
 	SourceResolutionStatus     string               `json:"source_resolution_status"`
 	SourceResolutionProvenance string               `json:"source_resolution_provenance,omitempty"`
 	RawArtifactRef             string               `json:"raw_artifact_ref,omitempty"`
+	RawArtifactID              string               `json:"raw_artifact_id,omitempty"`
+	RawArtifactDigest          string               `json:"raw_artifact_digest,omitempty"`
+	ParserName                 string               `json:"parser_name,omitempty"`
+	ParserVersion              string               `json:"parser_version,omitempty"`
 }
 
 type RuntimeMemoryLocationOverlap struct {
-	ID           string            `json:"id"`
-	Execution    ExecutionIdentity `json:"execution"`
-	AccessA      string            `json:"access_a"`
-	AccessB      string            `json:"access_b"`
-	AddressA     string            `json:"address_a"`
-	AddressB     string            `json:"address_b"`
-	Relationship string            `json:"relationship"` // same_address or byte_range_overlap
-	Provenance   string            `json:"provenance"`
+	ID           string                    `json:"id"`
+	Execution    ExecutionIdentity         `json:"execution"`
+	AccessA      string                    `json:"access_a"`
+	AccessB      string                    `json:"access_b"`
+	AddressA     string                    `json:"address_a"`
+	AddressB     string                    `json:"address_b"`
+	Relationship string                    `json:"relationship"` // same_address or byte_range_overlap
+	Provenance   string                    `json:"provenance"`
+	Artifact     RuntimeArtifactProvenance `json:"artifact"`
 }
 
 type ExecutionTraceObservation struct {
@@ -68,6 +109,7 @@ type GoroutineLifecycleObservation struct {
 
 type RuntimeEvidenceGraph struct {
 	Execution ExecutionIdentity               `json:"execution"`
+	Artifact  RuntimeArtifactProvenance       `json:"artifact,omitempty"`
 	Races     []RuntimeObservedRace           `json:"races,omitempty"`
 	Accesses  []RuntimeAccessObservation      `json:"accesses,omitempty"`
 	Overlaps  []RuntimeMemoryLocationOverlap  `json:"memory_location_overlaps,omitempty"`
@@ -78,27 +120,36 @@ type RuntimeEvidenceGraph struct {
 // RuntimeObservedRace is deliberately narrow: it records what the detector
 // reported and does not claim object identity or happens-before semantics.
 type RuntimeObservedRace struct {
-	ID         string            `json:"id"`
-	Execution  ExecutionIdentity `json:"execution"`
-	Read       string            `json:"read_access"`
-	Write      string            `json:"write_access"`
-	Provenance string            `json:"provenance"`
+	ID         string                    `json:"id"`
+	Execution  ExecutionIdentity         `json:"execution"`
+	Read       string                    `json:"read_access"`
+	Write      string                    `json:"write_access"`
+	Provenance string                    `json:"provenance"`
+	Artifact   RuntimeArtifactProvenance `json:"artifact"`
 }
 
 func IngestRuntimeRaceReports(reports []RaceReport, execution ExecutionIdentity, artifactRef string) RuntimeEvidenceGraph {
-	graph := RuntimeEvidenceGraph{Execution: execution}
+	return ingestRuntimeRaceReports(reports, execution, RuntimeArtifactProvenance{StorageRef: artifactRef, ParserName: "go-race-report", ParserVersion: "unknown"})
+}
+
+func IngestRuntimeRaceReportsWithProvenance(reports []RaceReport, execution ExecutionIdentity, artifact RuntimeArtifactProvenance) RuntimeEvidenceGraph {
+	return ingestRuntimeRaceReports(reports, execution, artifact)
+}
+
+func ingestRuntimeRaceReports(reports []RaceReport, execution ExecutionIdentity, artifact RuntimeArtifactProvenance) RuntimeEvidenceGraph {
+	graph := RuntimeEvidenceGraph{Execution: execution, Artifact: artifact}
 	seen := map[string]bool{}
 	for i, report := range reports {
-		read := runtimeAccess(report, "read", report.ReadAddress, report.ReadGoroutineID, report.ReadStack, creationStack(report, 0), execution, artifactRef, i*2)
-		write := runtimeAccess(report, "write", report.WriteAddress, report.WriteGoroutineID, report.WriteStack, creationStack(report, 1), execution, artifactRef, i*2+1)
+		read := runtimeAccess(report, "read", report.ReadAddress, report.ReadGoroutineID, report.ReadStack, creationStack(report, report.ReadGoroutineID), execution, artifact, i*2)
+		write := runtimeAccess(report, "write", report.WriteAddress, report.WriteGoroutineID, report.WriteStack, creationStack(report, report.WriteGoroutineID), execution, artifact, i*2+1)
 		graph.Accesses = append(graph.Accesses, read, write)
 		key := read.ID + "\x00" + write.ID
 		if !seen[key] {
 			seen[key] = true
-			graph.Races = append(graph.Races, RuntimeObservedRace{ID: raceEvidenceID(execution, report, i), Execution: execution, Read: read.ID, Write: write.ID, Provenance: artifactRef})
+			graph.Races = append(graph.Races, RuntimeObservedRace{ID: raceEvidenceID(execution, report, i), Execution: execution, Read: read.ID, Write: write.ID, Provenance: artifact.StorageRef, Artifact: artifact})
 		}
-		if read.Address != "" && read.Address == write.Address && execution.ExecutionID != "" {
-			graph.Overlaps = append(graph.Overlaps, RuntimeMemoryLocationOverlap{ID: "overlap:" + read.ID + ":" + write.ID, Execution: execution, AccessA: read.ID, AccessB: write.ID, AddressA: read.Address, AddressB: write.Address, Relationship: "same_address", Provenance: artifactRef})
+		if read.Address != "" && read.Address == write.Address && (execution.ExecutionID != "" || execution.ReportID != "") {
+			graph.Overlaps = append(graph.Overlaps, RuntimeMemoryLocationOverlap{ID: "overlap:" + read.ID + ":" + write.ID, Execution: execution, AccessA: read.ID, AccessB: write.ID, AddressA: read.Address, AddressB: write.Address, Relationship: "same_address", Provenance: artifact.StorageRef, Artifact: artifact})
 		}
 	}
 	return graph
@@ -108,29 +159,37 @@ func RuntimeEvidenceItems(graph RuntimeEvidenceGraph, rawArtifactRef string) []E
 	var out []EvidenceItem
 	for _, race := range graph.Races {
 		payload, _ := json.Marshal(race)
-		out = append(out, EvidenceItem{ID: race.ID, Kind: "runtime_observed_race", ClaimKind: "RuntimeObservedRace", Basis: "RuntimeObserved", RunID: race.Execution.ExecutionID, ExecutionID: race.Execution.ExecutionID, BuildID: race.Execution.BuildID, SourceRevision: race.Execution.SourceRevision, TestAttemptID: race.Execution.TestAttemptID, Source: "Go race detector", Detail: string(payload), Provenance: rawArtifactRef, Digest: digestBytes(payload)})
+		out = append(out, runtimeEvidenceItem(race.ID, "runtime_observed_race", "RuntimeObservedRace", race.Execution, race.Artifact, string(payload)))
 	}
 	for _, access := range graph.Accesses {
 		payload, _ := json.Marshal(access)
-		out = append(out, EvidenceItem{ID: access.ID, Kind: "runtime_access_observation", ClaimKind: "RuntimeAccessObservation", Basis: "RuntimeObserved", AccessID: access.SourceAccessID, RunID: access.Execution.ExecutionID, ExecutionID: access.Execution.ExecutionID, BuildID: access.Execution.BuildID, SourceRevision: access.Execution.SourceRevision, TestAttemptID: access.Execution.TestAttemptID, Source: "Go race detector", Detail: string(payload), Provenance: access.RawArtifactRef, Digest: digestBytes(payload)})
+		item := runtimeEvidenceItem(access.ID, "runtime_access_observation", "RuntimeAccessObservation", access.Execution, RuntimeArtifactProvenance{ArtifactID: access.RawArtifactID, Digest: access.RawArtifactDigest, StorageRef: access.RawArtifactRef, ParserName: access.ParserName, ParserVersion: access.ParserVersion}, string(payload))
+		item.AccessID = access.SourceAccessID
+		out = append(out, item)
 	}
 	for _, overlap := range graph.Overlaps {
 		payload, _ := json.Marshal(overlap)
-		out = append(out, EvidenceItem{ID: overlap.ID, Kind: "runtime_memory_location_overlap", ClaimKind: "RuntimeMemoryLocationOverlap", Basis: "RuntimeObserved", RunID: overlap.Execution.ExecutionID, ExecutionID: overlap.Execution.ExecutionID, BuildID: overlap.Execution.BuildID, SourceRevision: overlap.Execution.SourceRevision, TestAttemptID: overlap.Execution.TestAttemptID, Source: "Go race detector", Detail: string(payload), Provenance: overlap.Provenance, Digest: digestBytes(payload), Limitations: []string{"does not establish containing Go object, field identity, allocation identity, synchronization ordering, or happens-before"}})
+		item := runtimeEvidenceItem(overlap.ID, "runtime_memory_location_overlap", "RuntimeMemoryLocationOverlap", overlap.Execution, overlap.Artifact, string(payload))
+		item.Limitations = []string{"does not establish containing Go object, field identity, allocation identity, synchronization ordering, or happens-before"}
+		out = append(out, item)
 	}
 	return out
 }
 
+func runtimeEvidenceItem(id, kind, claim string, execution ExecutionIdentity, artifact RuntimeArtifactProvenance, detail string) EvidenceItem {
+	return EvidenceItem{ID: id, Kind: kind, ClaimKind: claim, Basis: "RuntimeObserved", RunID: execution.ExecutionID, ExecutionID: execution.ExecutionID, ReportID: execution.ReportID, BuildID: execution.BuildID, SourceRevision: execution.SourceRevision, TestAttemptID: execution.TestAttemptID, ArtifactID: artifact.ArtifactID, ArtifactDigest: artifact.Digest, StorageRef: artifact.StorageRef, ParserName: artifact.ParserName, ParserVersion: artifact.ParserVersion, Source: "Go race detector", Detail: detail, Provenance: artifact.StorageRef, Digest: artifact.Digest}
+}
+
 func RuntimeTraceEvidenceItem(trace ExecutionTraceObservation) EvidenceItem {
 	payload, _ := json.Marshal(trace)
-	return EvidenceItem{ID: "runtime-trace:" + trace.Execution.ExecutionID + ":" + trace.ArtifactDigest, Kind: "execution_trace_observation", ClaimKind: "ExecutionTraceObservation", Basis: "RuntimeObserved", RunID: trace.Execution.ExecutionID, ExecutionID: trace.Execution.ExecutionID, BuildID: trace.Execution.BuildID, SourceRevision: trace.Execution.SourceRevision, TestAttemptID: trace.Execution.TestAttemptID, ArtifactID: trace.ArtifactRef, ParserVersion: trace.ParserVersion, TraceFormat: trace.TraceFormat, Source: "Go execution trace adapter", Detail: string(payload), Provenance: trace.ArtifactRef, Digest: digestBytes(payload)}
+	return EvidenceItem{ID: "runtime-trace:" + trace.Execution.ExecutionID + ":" + trace.Execution.ReportID + ":" + trace.ArtifactDigest, Kind: "execution_trace_observation", ClaimKind: "ExecutionTraceObservation", Basis: "RuntimeObserved", RunID: trace.Execution.ExecutionID, ExecutionID: trace.Execution.ExecutionID, ReportID: trace.Execution.ReportID, BuildID: trace.Execution.BuildID, SourceRevision: trace.Execution.SourceRevision, TestAttemptID: trace.Execution.TestAttemptID, ArtifactID: trace.ArtifactRef, ArtifactDigest: trace.ArtifactDigest, StorageRef: trace.ArtifactRef, ParserName: "go-execution-trace-adapter", ParserVersion: trace.ParserVersion, TraceFormat: trace.TraceFormat, Source: "Go execution trace adapter", Detail: string(payload), Provenance: trace.ArtifactRef, Digest: trace.ArtifactDigest}
 }
 
 func RuntimeLifecycleEvidenceItems(events []GoroutineLifecycleObservation, trace ExecutionTraceObservation) []EvidenceItem {
 	out := make([]EvidenceItem, 0, len(events))
 	for _, event := range events {
 		payload, _ := json.Marshal(event)
-		out = append(out, EvidenceItem{ID: event.ID, Kind: "goroutine_lifecycle_observation", ClaimKind: "GoroutineLifecycleObservation", Basis: "RuntimeObserved", RunID: event.Execution.ExecutionID, ExecutionID: event.Execution.ExecutionID, BuildID: event.Execution.BuildID, SourceRevision: event.Execution.SourceRevision, TestAttemptID: event.Execution.TestAttemptID, ArtifactID: trace.ArtifactRef, ParserVersion: trace.ParserVersion, TraceFormat: trace.TraceFormat, Source: "Go execution trace adapter", Detail: string(payload), Provenance: trace.ArtifactRef, Digest: digestBytes(payload)})
+		out = append(out, EvidenceItem{ID: event.ID, Kind: "goroutine_lifecycle_observation", ClaimKind: "GoroutineLifecycleObservation", Basis: "RuntimeObserved", RunID: event.Execution.ExecutionID, ExecutionID: event.Execution.ExecutionID, ReportID: event.Execution.ReportID, BuildID: event.Execution.BuildID, SourceRevision: event.Execution.SourceRevision, TestAttemptID: event.Execution.TestAttemptID, ArtifactID: trace.ArtifactRef, ArtifactDigest: trace.ArtifactDigest, StorageRef: trace.ArtifactRef, ParserName: "go-execution-trace-adapter", ParserVersion: trace.ParserVersion, TraceFormat: trace.TraceFormat, Source: "Go execution trace adapter", Detail: string(payload), Provenance: trace.ArtifactRef, Digest: trace.ArtifactDigest})
 	}
 	return out
 }
@@ -140,28 +199,25 @@ func digestBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func runtimeAccess(report RaceReport, op, address string, gid int64, stack, creation []localization.Frame, execution ExecutionIdentity, artifact string, index int) RuntimeAccessObservation {
-	status := "unresolved"
-	if len(stack) > 0 {
-		status = "enclosing_function_or_line"
-	}
-	return RuntimeAccessObservation{ID: fmt.Sprintf("runtime-access:%s:%d:%s", execution.ExecutionID, index, op), Execution: execution, Operation: op, Address: address, GoroutineID: gid, Stack: append([]localization.Frame(nil), stack...), GoroutineCreationStack: append([]localization.Frame(nil), creation...), SourceResolutionStatus: status, SourceResolutionProvenance: "race_report_stack", RawArtifactRef: artifact}
+func runtimeAccess(report RaceReport, op, address string, gid int64, stack, creation []localization.Frame, execution ExecutionIdentity, artifact RuntimeArtifactProvenance, index int) RuntimeAccessObservation {
+	status := ClassifySourceResolution("", stack, false)
+	return RuntimeAccessObservation{ID: fmt.Sprintf("runtime-access:%s:%s:%d:%s", execution.ExecutionID, execution.ReportID, index, op), Execution: execution, Operation: op, Address: address, GoroutineID: gid, Stack: append([]localization.Frame(nil), stack...), GoroutineCreationStack: append([]localization.Frame(nil), creation...), SourceResolutionStatus: status, SourceResolutionProvenance: "race_report_stack", RawArtifactRef: artifact.StorageRef, RawArtifactID: artifact.ArtifactID, RawArtifactDigest: artifact.Digest, ParserName: artifact.ParserName, ParserVersion: artifact.ParserVersion}
 }
 
-func creationStack(report RaceReport, index int) []localization.Frame {
-	if index >= 0 && index < len(report.GoroutineCreationStacks) {
-		return report.GoroutineCreationStacks[index]
+func creationStack(report RaceReport, goroutineID int64) []localization.Frame {
+	if stack, ok := report.GoroutineCreationStacksByGoroutine[goroutineID]; ok {
+		return stack
 	}
 	return nil
 }
 
 func raceEvidenceID(execution ExecutionIdentity, report RaceReport, index int) string {
-	sum := sha256.Sum256([]byte(execution.ExecutionID + "\x00" + report.ReadAddress + "\x00" + report.WriteAddress + fmt.Sprint(index)))
+	sum := sha256.Sum256([]byte(execution.ExecutionID + "\x00" + execution.ReportID + "\x00" + report.ReadAddress + "\x00" + report.WriteAddress + fmt.Sprint(index)))
 	return "runtime-race:" + hex.EncodeToString(sum[:8])
 }
 
 func sameExecution(a, b ExecutionIdentity) bool {
-	return a.ExecutionID != "" && b.ExecutionID != "" && a.ExecutionID == b.ExecutionID && a.BuildID == b.BuildID && a.SourceRevision == b.SourceRevision && a.TestAttemptID == b.TestAttemptID
+	return a.ExecutionID != "" && b.ExecutionID != "" && a.ExecutionID == b.ExecutionID && a.BuildID != "" && a.BuildID == b.BuildID && a.SourceRevision != "" && a.SourceRevision == b.SourceRevision && a.TestAttemptID != "" && a.TestAttemptID == b.TestAttemptID
 }
 
 // CorrelateExecutionTrace refuses to merge artifacts unless all execution

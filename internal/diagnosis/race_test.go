@@ -34,6 +34,9 @@ func TestParseRaceReportsPreservesReadWriteAndCreationStacks(t *testing.T) {
 	if len(reports[0].GoroutineCreationStacks) != 1 || len(reports[0].GoroutineCreationStacks[0]) < 2 {
 		t.Fatalf("creation stack missing: %#v", reports[0])
 	}
+	if len(reports[0].GoroutineCreationStacksByGoroutine[31033]) < 2 || len(reports[0].GoroutineCreationStacksByGoroutine[32511]) != 0 {
+		t.Fatalf("creation stacks were not keyed by goroutine: %#v", reports[0].GoroutineCreationStacksByGoroutine)
+	}
 	if len(reports[0].WriteStack) == 0 || len(reports[0].ReadStack) == 0 || reports[0].WriteStack[0].File == reports[0].ReadStack[0].File {
 		t.Fatalf("read/write stacks were not preserved independently: %#v", reports[0])
 	}

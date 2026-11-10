@@ -27,6 +27,7 @@ var (
 	raceTestLine       = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT)\s+(.+)$`)
 	raceLocationLine   = regexp.MustCompile(`^\s+([^\s()]+\.go):([0-9]+)\s+\+0x[0-9a-fA-F]+`)
 	raceAccessHeader   = regexp.MustCompile(`(?i)^(?:Previous )?(read|write) at (0x[0-9a-fA-F]+)?(?: by goroutine ([0-9]+))?`)
+	raceCreationHeader = regexp.MustCompile(`(?i)^Goroutine ([0-9]+) .*created at:`)
 )
 
 type failureObservation struct {
@@ -44,6 +45,7 @@ func parseRaceReports(text string) []RaceReport {
 	section := ""
 	currentTest := ""
 	pendingFunction := ""
+	currentCreationGoroutine := int64(0)
 	flush := func() {
 		if current.Test == "" {
 			current.Test = currentTest
@@ -53,6 +55,7 @@ func parseRaceReports(text string) []RaceReport {
 		}
 		current = RaceReport{}
 		section = ""
+		currentCreationGoroutine = 0
 	}
 	for lineNumber, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -84,6 +87,12 @@ func parseRaceReports(text string) []RaceReport {
 		case strings.Contains(trimmed, " created at:"):
 			section = "create"
 			pendingFunction = ""
+			if match := raceCreationHeader.FindStringSubmatch(trimmed); len(match) > 1 {
+				currentCreationGoroutine = int64(atoi(match[1]))
+				if current.GoroutineCreationStacksByGoroutine == nil {
+					current.GoroutineCreationStacksByGoroutine = map[int64][]localization.Frame{}
+				}
+			}
 			current.GoroutineCreationStacks = append(current.GoroutineCreationStacks, nil)
 		case strings.HasPrefix(trimmed, "================") || strings.HasPrefix(trimmed, "--- FAIL:"):
 			section = ""
@@ -133,6 +142,9 @@ func parseRaceReports(text string) []RaceReport {
 				}
 				last := len(current.GoroutineCreationStacks) - 1
 				current.GoroutineCreationStacks[last] = append(current.GoroutineCreationStacks[last], frame)
+				if currentCreationGoroutine != 0 {
+					current.GoroutineCreationStacksByGoroutine[currentCreationGoroutine] = append(current.GoroutineCreationStacksByGoroutine[currentCreationGoroutine], frame)
+				}
 			}
 		}
 	}
@@ -386,7 +398,7 @@ func saveEvidenceItem(store *persistence.Store, report *Report, item EvidenceIte
 	if provenance == "" {
 		provenance = "diagnosis report evidence"
 	}
-	return store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: provenance, ClaimKind: item.ClaimKind, Basis: item.Basis, DeclarationID: item.DeclarationID, AccessID: item.AccessID, InstanceID: item.InstanceID, RunID: item.RunID, Ordering: item.Ordering, Revision: item.Revision, ExecutionID: item.ExecutionID, BuildID: item.BuildID, SourceRevision: item.SourceRevision, TestAttemptID: item.TestAttemptID, ArtifactRef: item.ArtifactID, ParserVersion: item.ParserVersion, TraceFormat: item.TraceFormat})
+	return store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: provenance, ClaimKind: item.ClaimKind, Basis: item.Basis, DeclarationID: item.DeclarationID, AccessID: item.AccessID, InstanceID: item.InstanceID, RunID: item.RunID, Ordering: item.Ordering, Revision: item.Revision, ExecutionID: item.ExecutionID, BuildID: item.BuildID, SourceRevision: item.SourceRevision, TestAttemptID: item.TestAttemptID, ArtifactRef: item.ArtifactID, ParserVersion: item.ParserVersion, TraceFormat: item.TraceFormat, ReportID: item.ReportID, ArtifactDigest: item.ArtifactDigest, StorageRef: item.StorageRef, ParserName: item.ParserName})
 }
 
 func (d *Diagnoser) persistFailureEpisodes(report *Report, executionID string, baseline Baseline) ([]domain.FailureEpisode, error) {

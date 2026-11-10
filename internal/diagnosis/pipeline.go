@@ -108,20 +108,36 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		return err
 	}
 	report.FailureEpisodes = failures
+	var runtimeGraph RuntimeEvidenceGraph
+	runtimeGraphSet := false
 	for _, item := range report.Evidence {
 		if !isCIEvidenceKind(item.Kind) {
 			continue
 		}
-		for _, race := range parseRaceReports(item.Detail) {
+		traces := parseRaceReports(item.Detail)
+		for _, race := range traces {
 			race.EvidenceIDs = []string{item.ID}
 			report.RaceReports = append(report.RaceReports, race)
 		}
+		if len(traces) > 0 {
+			storageRef := item.Provenance
+			if storageRef == "" {
+				storageRef = item.Source
+			}
+			part := IngestRuntimeRaceReportsWithProvenance(traces, ExecutionIdentity{WorkflowRunID: externalExecutionID, ReportID: item.ID, SourceRevision: env.HeadCommit}, RuntimeArtifactProvenance{ArtifactID: item.ID, Digest: item.Digest, StorageRef: storageRef, ParserName: "go-race-report-parser", ParserVersion: "p2.1"})
+			if !runtimeGraphSet {
+				runtimeGraph = part
+				runtimeGraphSet = true
+			} else {
+				runtimeGraph.Races = append(runtimeGraph.Races, part.Races...)
+				runtimeGraph.Accesses = append(runtimeGraph.Accesses, part.Accesses...)
+				runtimeGraph.Overlaps = append(runtimeGraph.Overlaps, part.Overlaps...)
+			}
+		}
 	}
-	if len(report.RaceReports) > 0 {
-		runtimeExecution := ExecutionIdentity{WorkflowRunID: externalExecutionID, ExecutionID: executionID, SourceRevision: env.HeadCommit}
-		graph := IngestRuntimeRaceReports(report.RaceReports, runtimeExecution, "ci-race-report")
-		report.RuntimeEvidence = &graph
-		runtimeItems := RuntimeEvidenceItems(graph, "ci-race-report")
+	if runtimeGraphSet {
+		report.RuntimeEvidence = &runtimeGraph
+		runtimeItems := RuntimeEvidenceItems(runtimeGraph, "unavailable")
 		report.Evidence = append(report.Evidence, runtimeItems...)
 		if persist {
 			for _, item := range runtimeItems {
