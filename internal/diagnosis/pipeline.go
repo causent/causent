@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -386,6 +387,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 }
 
 func (d *Diagnoser) stageOverview(ctx context.Context, report *Report, workspace, repoID, revisionID, commitSHA string, artifactCache *cache.FSCache) (programrepo.Overview, error) {
+	slog.Info("diagnosis stage started", "stage", "repository_overview", "investigation_id", report.InvestigationID)
 	if report.NormalizedEvidence != nil || report.Baseline.Source == "ci_artifact" {
 		stage := d.metrics.Begin(observability.StageRepositoryOverview)
 		stage.Meta("mode", "focused")
@@ -393,6 +395,7 @@ func (d *Diagnoser) stageOverview(ctx context.Context, report *Report, workspace
 		stage.Count("files", sumCounts(overview.FileCounts))
 		stage.Count("languages", len(overview.Languages))
 		stage.Done("completed", nil)
+		slog.Info("diagnosis stage completed", "stage", "repository_overview", "mode", "focused", "selected_paths", len(report.Localization.LikelyFiles))
 		report.CoverageNotes = append(report.CoverageNotes, "repository overview is focused on CI-selected paths; broad metadata scan is deferred")
 		return overview, nil
 	}
@@ -462,6 +465,7 @@ func focusedOverview(repoID, revisionID, commitSHA string, paths []string) progr
 }
 
 func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, repoID, revisionID, commitSHA string, loc Localization, artifactCache *cache.FSCache) (programrepo.Snapshot, string, error) {
+	slog.Info("diagnosis stage started", "stage", "indexing", "investigation_id", report.InvestigationID)
 	key := cache.Key{RepositoryID: repoID, CommitSHA: commitSHA, AnalyzerVersion: cache.AnalyzerVersion, ArtifactType: cache.ArtifactSnapshot, ArtifactID: "snapshot"}
 	if artifactCache != nil {
 		var cached programrepo.Snapshot
@@ -503,6 +507,12 @@ func (d *Diagnoser) stageIndex(ctx context.Context, report *Report, workspace, r
 				"snapshot coverage is intentionally bounded; absent files are unresolved, not negative evidence")
 			return snapshot, "targeted", nil
 		}
+		stage := d.metrics.Begin(observability.StageIndexing)
+		stage.Meta("mode", "targeted-empty")
+		stage.Done("incomplete", nil)
+		report.CoverageNotes = append(report.CoverageNotes, "no usable source paths were extracted from CI evidence; broad indexing was refused")
+		slog.Warn("targeted indexing had no usable paths; broad scan refused", "investigation_id", report.InvestigationID)
+		return programrepo.Snapshot{RepositoryID: repoID, RevisionID: revisionID, CommitSHA: commitSHA}, "targeted-empty", nil
 	}
 	baseRef := d.cfg.BaseRef
 	if baseRef != "" && artifactCache != nil {

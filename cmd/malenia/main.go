@@ -19,9 +19,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/causent/malenia/internal/agent"
@@ -360,7 +362,9 @@ func runDiagnose(args []string) {
 		cfg.Evidence = &normalized
 	}
 
-	report, err := diagnosis.Run(context.Background(), cfg)
+	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	report, err := diagnosis.Run(runCtx, cfg)
 	if err != nil {
 		if *jsonOutput {
 			// Preserve partial evidence so timeout and cancellation failures can
