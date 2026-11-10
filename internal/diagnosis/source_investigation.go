@@ -1,0 +1,450 @@
+package diagnosis
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/causent/malenia/internal/domain"
+	programrepo "github.com/causent/malenia/internal/repository"
+)
+
+var sourceIdentifierRE = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\b`)
+
+type sourceAccessTarget struct {
+	Access string
+	File   string
+	Line   int
+}
+
+// runSourceInvestigation performs bounded, deterministic inspection after
+// localization. It is intentionally independent of model planning: every
+// action below reads a revision-scoped file or graph fact and records its
+// output as evidence before any hypothesis is formed.
+func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, workspace string, snapshot programrepo.Snapshot, candidates []domain.CandidateLocation, persist bool) error {
+	if workspace == "" || ctx.Err() != nil {
+		return ctx.Err()
+	}
+	targets := sourceInvestigationTargets(report, candidates)
+	if len(targets) == 0 {
+		return nil
+	}
+	var accesses []struct {
+		target sourceAccessTarget
+		line   string
+		facts  []string
+	}
+
+	for index, target := range targets {
+		if index >= 4 || ctx.Err() != nil {
+			break
+		}
+		path := filepath.Join(workspace, filepath.FromSlash(target.File))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		if target.Line < 1 || target.Line > len(lines) {
+			continue
+		}
+		node := enclosingSourceNode(snapshot.Nodes, target.File, target.Line)
+		if node == nil {
+			continue
+		}
+		start, end := node.StartLine, node.EndLine
+		if start < 1 {
+			start = 1
+		}
+		if end > len(lines) || end < start {
+			end = len(lines)
+		}
+		functionText := numberedSource(lines, start, end)
+		functionEvidence, err := d.recordSourceAction(ctx, report, persist, "InspectFunction", target.File+":"+fmt.Sprint(target.Line),
+			fmt.Sprintf("complete enclosing %s %s (%s:%d-%d)", node.Type, node.Name, target.File, start, end),
+			"source function", target.File, functionText)
+		if err != nil {
+			return err
+		}
+		facts := []string{functionEvidence}
+		accessLine := lines[target.Line-1]
+		accesses = append(accesses, struct {
+			target sourceAccessTarget
+			line   string
+			facts  []string
+		}{target: target, line: accessLine, facts: facts})
+
+		variables := sourceVariables(accessLine)
+		trace := traceVariables(lines, variables)
+		if len(trace) > 0 {
+			id, err := d.recordSourceAction(ctx, report, persist, "TraceVariable", target.File+":"+fmt.Sprint(target.Line),
+				"trace identifiers used by the observed access through declarations, assignments, and references",
+				"source variable trace", target.File, strings.Join(trace, "\n"))
+			if err != nil {
+				return err
+			}
+			accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+		}
+
+		refs := referenceLines(lines, variables)
+		if len(refs) > 0 {
+			id, err := d.recordSourceAction(ctx, report, persist, "FindReferences", target.File+":"+fmt.Sprint(target.Line),
+				"find references to identifiers used by the observed access",
+				"source references", target.File, strings.Join(refs, "\n"))
+			if err != nil {
+				return err
+			}
+			accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+		}
+
+		syncLines := synchronizationLines(lines, start, end)
+		syncEvidence := "no synchronization operation was found inside the enclosing function; this is not proof that no synchronization exists elsewhere"
+		if len(syncLines) > 0 {
+			syncEvidence = "synchronization and ordering operations in the enclosing function:\n" + strings.Join(syncLines, "\n")
+		}
+		id, err := d.recordSourceAction(ctx, report, persist, "InspectSynchronization", target.File+":"+fmt.Sprint(target.Line),
+			"inspect locks, atomics, channels, and wait operations around the observed access",
+			"source synchronization", target.File, syncEvidence)
+		if err != nil {
+			return err
+		}
+		accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+
+		lifecycle := lifecycleLines(lines, start, end)
+		if len(lifecycle) == 0 {
+			lifecycle = []string{"no goroutine, cancellation, wait, or cleanup operation found in the enclosing function; callers remain unresolved"}
+		}
+		id, err = d.recordSourceAction(ctx, report, persist, "InspectGoroutineLifecycle", target.File+":"+fmt.Sprint(target.Line),
+			"inspect goroutine creation, cancellation, waiting, and cleanup around the observed access",
+			"source lifecycle", target.File, strings.Join(lifecycle, "\n"))
+		if err != nil {
+			return err
+		}
+		accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+
+		relations := relatedCallFacts(snapshot.Relationships, node.ID, snapshot.Nodes)
+		if len(relations) > 0 {
+			id, err = d.recordSourceAction(ctx, report, persist, "TraceCallers", node.Identity,
+				"trace verified static callers; these relationships are not runtime observations",
+				"source callers", target.File, strings.Join(relations, "\n"))
+			if err != nil {
+				return err
+			}
+			accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+			id, err = d.recordSourceAction(ctx, report, persist, "TraceCallees", node.Identity,
+				"trace verified static callees; these relationships are not runtime observations",
+				"source callees", target.File, strings.Join(relations, "\n"))
+			if err != nil {
+				return err
+			}
+			accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+		}
+
+		cleanup := cleanupLines(lines, start, end)
+		if len(cleanup) == 0 {
+			cleanup = []string{"no explicit cleanup operation found in the enclosing function; cleanup ownership is unresolved"}
+		}
+		id, err = d.recordSourceAction(ctx, report, persist, "InspectCleanup", target.File+":"+fmt.Sprint(target.Line),
+			"inspect defer, close, cancellation, and teardown operations",
+			"source cleanup", target.File, strings.Join(cleanup, "\n"))
+		if err != nil {
+			return err
+		}
+		accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
+	}
+	if testDetail := sourceTestContext(report, snapshot); testDetail != "" {
+		if _, err := d.recordSourceAction(ctx, report, persist, "InspectTest", report.InvestigationID,
+			"inspect the indexed test and setup context named by the failure evidence",
+			"source test context", "repository test context", testDetail); err != nil {
+			return err
+		}
+	}
+
+	if len(accesses) >= 2 && hasRaceIncident(report.FailureIncidents) {
+		if hypothesis := sourceRaceHypothesis(report, accesses); hypothesis != nil {
+			report.Hypotheses = append(report.Hypotheses, *hypothesis)
+			if persist {
+				if err := d.cfg.Store.SaveHypothesis(*hypothesis); err != nil {
+					return err
+				}
+				if err := d.cfg.Store.SaveHypothesisHistory(domain.HypothesisHistory{ID: domain.NewID(), HypothesisID: hypothesis.ID, InvestigationID: hypothesis.InvestigationID, PreviousStatus: domain.HypProposed, NextStatus: domain.HypProposed, Evaluation: "bounded source investigation", CreatedAt: time.Now().UTC()}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, persist bool, actionType, target, summary, kind, source, detail string) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if len(report.InvestigationActions) >= 24 {
+		return "", nil
+	}
+	if detail == "" {
+		return "", nil
+	}
+	hash := sha256.Sum256([]byte(report.InvestigationID + "\x00" + actionType + "\x00" + target + "\x00" + detail))
+	digest := hex.EncodeToString(hash[:])
+	evidenceID := "E-investigation-" + digest[:12]
+	evidence := EvidenceItem{ID: evidenceID, Kind: kind, Source: source, Digest: digest, Detail: detail, Provenance: "deterministic source inspection of checked-out revision", Revision: report.Environment.HeadCommit}
+	report.Evidence = append(report.Evidence, evidence)
+	action := InvestigationAction{ID: "action:" + digest[:16], Type: actionType, Target: target, Status: "completed", Summary: summary, EvidenceIDs: []string{evidenceID}}
+	report.InvestigationActions = append(report.InvestigationActions, action)
+	if !persist {
+		return evidenceID, nil
+	}
+	if d.cfg.Store == nil {
+		return evidenceID, nil
+	}
+	if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(evidenceID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceSourceCode, Source: source, Timestamp: report.CreatedAt, ContentRef: kind, Digest: digest, Payload: detail, Provenance: evidence.Provenance}); err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	activity := domain.Activity{ID: action.ID, InvestigationID: domain.ID(report.InvestigationID), Type: actionType, Status: domain.ActivityCompleted, InputRefs: []string{target}, OutputRefs: []string{evidenceID}, AttemptCount: 1, SelectionReason: "source investigation selected from localized failure evidence", StartedAt: &now, CompletedAt: &now}
+	if err := d.cfg.Store.SaveActivity(activity); err != nil {
+		return "", err
+	}
+	return evidenceID, nil
+}
+
+func sourceInvestigationTargets(report *Report, candidates []domain.CandidateLocation) []sourceAccessTarget {
+	var targets []sourceAccessTarget
+	seen := map[string]bool{}
+	add := func(access, file string, line int) {
+		file = filepath.ToSlash(strings.TrimSpace(file))
+		if file == "" || line <= 0 || filepath.IsAbs(file) || strings.HasPrefix(file, "../") {
+			return
+		}
+		key := access + "\x00" + file + ":" + fmt.Sprint(line)
+		if !seen[key] {
+			seen[key] = true
+			targets = append(targets, sourceAccessTarget{Access: access, File: file, Line: line})
+		}
+	}
+	for _, race := range report.RaceReports {
+		if len(race.ReadStack) > 0 {
+			add("read", race.ReadStack[0].File, race.ReadStack[0].Line)
+		}
+		if len(race.WriteStack) > 0 {
+			add("write", race.WriteStack[0].File, race.WriteStack[0].Line)
+		}
+	}
+	if len(targets) == 0 {
+		for _, candidate := range candidates {
+			if candidate.Location.Provenance == "direct_stack_frame" || candidate.Location.Provenance == "observed_frame" {
+				add("observed", candidate.Location.FilePath, candidate.Location.StartLine)
+			}
+			if len(targets) >= 4 {
+				break
+			}
+		}
+	}
+	return targets
+}
+
+func enclosingSourceNode(nodes []domain.ProgramNode, file string, line int) *domain.ProgramNode {
+	var best *domain.ProgramNode
+	for index := range nodes {
+		node := &nodes[index]
+		if node.FilePath != file || (node.Type != "Function" && node.Type != "Method" && node.Type != "Test") || node.StartLine > line || node.EndLine < line {
+			continue
+		}
+		if best == nil || (node.EndLine-node.StartLine) < (best.EndLine-best.StartLine) {
+			best = node
+		}
+	}
+	return best
+}
+
+func numberedSource(lines []string, start, end int) string {
+	var b strings.Builder
+	for line := start; line <= end; line++ {
+		fmt.Fprintf(&b, "%d| %s\n", line, lines[line-1])
+	}
+	return b.String()
+}
+
+func sourceVariables(line string) []string {
+	keywords := map[string]bool{"if": true, "else": true, "for": true, "range": true, "return": true, "go": true, "defer": true, "func": true, "var": true, "const": true, "type": true, "nil": true, "true": true, "false": true, "package": true, "select": true, "case": true, "default": true}
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range sourceIdentifierRE.FindAllString(line, -1) {
+		if keywords[value] || seen[value] || len(value) < 2 {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func traceVariables(lines []string, variables []string) []string {
+	var out []string
+	for _, variable := range variables {
+		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(variable) + `\b`)
+		count := 0
+		for index, line := range lines {
+			if pattern.MatchString(line) {
+				out = append(out, fmt.Sprintf("%d| %s", index+1, line))
+				count++
+				if count >= 8 {
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+func referenceLines(lines []string, variables []string) []string {
+	refs := traceVariables(lines, variables)
+	if len(refs) > 24 {
+		return refs[:24]
+	}
+	return refs
+}
+
+func synchronizationLines(lines []string, start, end int) []string {
+	patterns := []*regexp.Regexp{regexp.MustCompile(`\b(Lock|RLock|Unlock|RUnlock|Wait|Done|Add)\s*\(`), regexp.MustCompile(`\batomic\.`), regexp.MustCompile(`\b(chan|select)\b`)}
+	var result []string
+	for line := start; line <= end && line <= len(lines); line++ {
+		for _, pattern := range patterns {
+			if pattern.MatchString(lines[line-1]) {
+				result = append(result, fmt.Sprintf("%d| %s", line, lines[line-1]))
+				break
+			}
+		}
+	}
+	return result
+}
+
+func lifecycleLines(lines []string, start, end int) []string {
+	pattern := regexp.MustCompile(`\bgo\s+|\bcontext\.|\bcancel\s*\(|\bWait\s*\(|\bClose\s*\(|\bdefer\b`)
+	var result []string
+	for line := start; line <= end && line <= len(lines); line++ {
+		if pattern.MatchString(lines[line-1]) {
+			result = append(result, fmt.Sprintf("%d| %s", line, lines[line-1]))
+		}
+	}
+	return result
+}
+
+func cleanupLines(lines []string, start, end int) []string {
+	pattern := regexp.MustCompile(`\bdefer\b|\b(Close|cancel|Cleanup|TearDown|Stop|Shutdown)\s*\(`)
+	var result []string
+	for line := start; line <= end && line <= len(lines); line++ {
+		if pattern.MatchString(lines[line-1]) {
+			result = append(result, fmt.Sprintf("%d| %s", line, lines[line-1]))
+		}
+	}
+	return result
+}
+
+func relatedCallFacts(relations []domain.Relationship, nodeID string, nodes []domain.ProgramNode) []string {
+	byID := map[string]domain.ProgramNode{}
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	var result []string
+	for _, relation := range relations {
+		if relation.Type != "CALLS" || (relation.SourceID != nodeID && relation.TargetID != nodeID) || relation.Metadata["provenance"] != "verified_static_call" {
+			continue
+		}
+		source, sourceOK := byID[relation.SourceID]
+		target, targetOK := byID[relation.TargetID]
+		if sourceOK && targetOK {
+			result = append(result, fmt.Sprintf("%s -> %s [verified_static_call]", source.Identity, target.Identity))
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sourceTestContext(report *Report, snapshot programrepo.Snapshot) string {
+	var tests []string
+	for _, race := range report.RaceReports {
+		if race.Test != "" {
+			tests = append(tests, race.Test)
+		}
+	}
+	if len(tests) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, node := range snapshot.Nodes {
+		if node.Type != "Test" {
+			continue
+		}
+		for _, test := range tests {
+			if strings.Contains(test, node.Name) || strings.Contains(node.Name, test) {
+				lines = append(lines, fmt.Sprintf("indexed test %s at %s:%d-%d", node.Identity, node.FilePath, node.StartLine, node.EndLine))
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return "test identifier from CI: " + strings.Join(tests, "; ") + "\nno matching test symbol was indexed; test setup context remains unresolved"
+	}
+	sort.Strings(lines)
+	return "test identifiers from CI: " + strings.Join(tests, "; ") + "\n" + strings.Join(lines, "\n")
+}
+
+func sourceRaceHypothesis(report *Report, accesses []struct {
+	target sourceAccessTarget
+	line   string
+	facts  []string
+}) *domain.Hypothesis {
+	left, right := sourceVariables(accesses[0].line), sourceVariables(accesses[1].line)
+	common := map[string]bool{}
+	for _, variable := range left {
+		for _, other := range right {
+			if variable == other && len(variable) > 2 {
+				common[variable] = true
+			}
+		}
+	}
+	if len(common) == 0 {
+		return nil
+	}
+	variables := make([]string, 0, len(common))
+	for variable := range common {
+		variables = append(variables, variable)
+	}
+	sort.Strings(variables)
+	supporting := append([]string{}, accesses[0].facts...)
+	supporting = append(supporting, accesses[1].facts...)
+	idBytes := sha256.Sum256([]byte(report.InvestigationID + "\x00" + strings.Join(variables, ",")))
+	return &domain.Hypothesis{
+		ID:                    domain.ID("hypothesis:source-race:" + hex.EncodeToString(idBytes[:8])),
+		InvestigationID:       domain.ID(report.InvestigationID),
+		Statement:             fmt.Sprintf("The conflicting %s and %s accesses both reference %s; they may execute without a verified happens-before edge, but source inspection has not established the violated ownership or synchronization invariant.", accesses[0].target.Access, accesses[1].target.Access, strings.Join(variables, ", ")),
+		AffectedComponent:     accesses[0].target.File + " and " + accesses[1].target.File,
+		SupportingEvidenceIDs: stringIDsToDomain(uniqueStrings(supporting)),
+		PredictedObservations: []string{"a source or targeted experiment that demonstrates lock, channel, atomic, or lifecycle ordering between both accesses would distinguish this hypothesis from a benign synchronization path"},
+		Confidence:            0.35,
+		Status:                domain.HypProposed,
+		Relevance:             0.35,
+		MissingEvidence:       []string{"verified happens-before or ownership ordering between both accesses", "a controlled experiment that distinguishes synchronization failure from benign concurrent access"},
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}

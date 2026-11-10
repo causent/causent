@@ -216,6 +216,17 @@ type RepairAssessment struct {
 	Limitations      []string `json:"limitations,omitempty"`
 }
 
+// InvestigationAction is an auditable deterministic source-inspection step.
+// Its output is evidence, not a causal conclusion.
+type InvestigationAction struct {
+	ID          string   `json:"id"`
+	Type        string   `json:"type"`
+	Target      string   `json:"target,omitempty"`
+	Status      string   `json:"status"`
+	Summary     string   `json:"summary"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+}
+
 // Environment is the bounded execution context. Secrets are never recorded.
 type Environment struct {
 	OS            string    `json:"os"`
@@ -282,6 +293,7 @@ type Report struct {
 	FailureIncidents           []FailureIncident              `json:"failure_incidents,omitempty"`
 	RootCause                  RootCauseAssessment            `json:"root_cause"`
 	Repair                     *RepairAssessment              `json:"repair,omitempty"`
+	InvestigationActions       []InvestigationAction          `json:"investigation_actions,omitempty"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
 	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`

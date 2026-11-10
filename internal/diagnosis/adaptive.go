@@ -198,6 +198,21 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	}
 	state.UpdatedAt = time.Now().UTC()
 	report.StoppingReason, report.AdaptiveIterations = state.StoppingReason, state.Iterations
+	for _, activity := range currentActivities {
+		if activity.Status != domain.ActivityCompleted && activity.Status != domain.ActivityFailed {
+			continue
+		}
+		seen := false
+		for _, action := range report.InvestigationActions {
+			if action.ID == activity.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs})
+		}
+	}
 	return d.cfg.Store.SaveAdaptiveState(state)
 }
 

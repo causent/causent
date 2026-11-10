@@ -263,6 +263,12 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		}
 	}
 	report.Candidates = candidates
+	if !evidenceOnly && len(report.FailureIncidents) > 0 {
+		if err := d.runSourceInvestigation(ctx, report, workspace, snapshot, candidates, persist); err != nil {
+			report.Uncertainty = append(report.Uncertainty, "source investigation incomplete: "+err.Error())
+			report.Partial = true
+		}
+	}
 	refineEvidenceLikelyFiles(report)
 	report.Relationships = relations
 	candStage.Count("candidates", len(candidates))
@@ -350,7 +356,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
-	if hasRaceIncident(report.FailureIncidents) {
+	if hasRaceIncident(report.FailureIncidents) && len(report.Hypotheses) == 0 {
 		// Candidate locations remain machine-readable supporting evidence. A
 		// generic candidate statement is not a falsifiable mechanism, so do not
 		// publish it as a hypothesis when the incident evidence cannot distinguish
@@ -491,6 +497,13 @@ func assessRootCause(report Report) RootCauseAssessment {
 	incident := report.FailureIncidents[0]
 	assessment.ObservedLocations = append([]IncidentLocation(nil), incident.ObservedLocations...)
 	assessment.EvidenceIDs = append([]string(nil), incident.EvidenceIDs...)
+	if len(report.InvestigationActions) > 0 {
+		assessment.Statement = "Source inspection retrieved the enclosing functions and relevant variable, synchronization, lifecycle, caller, and test facts, but it did not establish the ownership invariant or a verified happens-before relationship that explains the conflicting accesses."
+		assessment.MissingEvidence = []string{
+			"a verified happens-before or ownership relationship between the read and write",
+			"a controlled observation distinguishing a synchronization defect from a benign concurrent access",
+		}
+	}
 	return assessment
 }
 
