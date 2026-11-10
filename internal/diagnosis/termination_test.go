@@ -89,6 +89,14 @@ func TestAssignInvestigationTargetsUsesVerifiedReceiverQualifiedCall(t *testing.
 	}
 }
 
+func TestAssignInvestigationTargetsDoesNotFallbackToAccessForOrdering(t *testing.T) {
+	report := &Report{Concurrency: &ConcurrencyModel{Accesses: []ConcurrencyAccess{{File: "read.go", Line: 1, Function: "go:pkg.Read"}, {File: "setup.go", Line: 2, Function: "go:pkg.Setup"}}}, InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{{ID: "shutdown-ordering"}}}}
+	assignInvestigationTargets(report, programrepo.Snapshot{Nodes: []domain.ProgramNode{{ID: "setup", Type: "Function", Identity: "go:pkg.Setup", FilePath: "setup.go", StartLine: 1, EndLine: 4}}})
+	if report.InvestigationObjective.Unknowns[0].TargetSymbol != "" || report.InvestigationObjective.Unknowns[0].Target != "" {
+		t.Fatalf("unverified ordering target was accepted: %#v", report.InvestigationObjective.Unknowns[0])
+	}
+}
+
 func TestAdaptiveEvidenceProgressRequiresNewEvidence(t *testing.T) {
 	report := &Report{Evidence: []EvidenceItem{{ID: "same"}}}
 	if adaptiveProducesNewEvidence(report, []domain.Evidence{{ID: "same"}}) {

@@ -281,9 +281,6 @@ func assignInvestigationTargets(report *Report, snapshot programrepo.Snapshot) {
 	}
 	for i := range report.InvestigationObjective.Unknowns {
 		u := &report.InvestigationObjective.Unknowns[i]
-		if u.TargetSymbol != "" {
-			continue
-		}
 		var target string
 		switch u.ID {
 		case "exact-memory":
@@ -293,7 +290,7 @@ func assignInvestigationTargets(report *Report, snapshot programrepo.Snapshot) {
 		case "shutdown-ordering", "happens-before":
 			u.TargetSymbol, target = accessRelatedTarget(report, snapshot, 1)
 		}
-		if u.TargetSymbol == "" && report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
+		if u.ID == "exact-memory" && u.TargetSymbol == "" && report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
 			a := report.Concurrency.Accesses[0]
 			u.TargetSymbol, target = a.Function, fmt.Sprintf("%s:%d:%s", a.File, a.Line, a.Function)
 		}
@@ -316,7 +313,7 @@ func accessRelatedTarget(report *Report, snapshot programrepo.Snapshot, index in
 	a := report.Concurrency.Accesses[index]
 	node := enclosingSourceNode(snapshot.Nodes, a.File, a.Line)
 	if node == nil {
-		return accessTarget(report, snapshot, index)
+		return "", ""
 	}
 	for _, relation := range snapshot.Relationships {
 		if relation.Type != "CALLS" || relation.SourceID != node.ID || relation.Metadata["provenance"] != "verified_static_call" {
@@ -328,7 +325,7 @@ func accessRelatedTarget(report *Report, snapshot programrepo.Snapshot, index in
 			}
 		}
 	}
-	return accessTarget(report, snapshot, index)
+	return "", ""
 }
 
 func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, persist bool, actionType, target, summary, kind, source, detail string) (string, error) {

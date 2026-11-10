@@ -106,6 +106,22 @@ func TestSelectAllowsSameActionForDifferentTarget(t *testing.T) {
 	}
 }
 
+func TestSelectDoesNotRepeatObjectiveLessAdaptiveAction(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "ExpandCallees"}); err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Hypotheses: []domain.Hypothesis{{Status: domain.HypInconclusive}},
+		Activities: []domain.Activity{{ID: "activity:inv:adaptive:1", Type: "ExpandCallees", Status: domain.ActivityCompleted, ObjectiveID: ""}},
+		Budget:     domain.InvestigationBudget{MaxIterations: 4},
+	}
+	decision := Select(state, r, DefaultScorePolicy)
+	if decision.StoppingReason == "" {
+		t.Fatalf("repeated objective-less action was selected: %#v", decision)
+	}
+}
+
 func TestSelectReportsBudgetExhaustionAfterCompletedAdaptiveWork(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(testAction{kind: "InspectSynchronization"}); err != nil {

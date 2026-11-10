@@ -64,6 +64,13 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 	}
 	var considered []ActionCandidate
 	var dispositions []CandidateDisposition
+	hasTypedObjectives := false
+	for _, objective := range state.Objectives {
+		if objective.Status != "resolved" && objective.Status != "rejected" && objective.Status != "not_applicable" && len(objective.Requirements) > 0 {
+			hasTypedObjectives = true
+			break
+		}
+	}
 	for _, definition := range registry.Definitions() {
 		if definition.Type == "" {
 			continue
@@ -107,7 +114,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 		if unresolved == 0 {
 			continue
 		}
-		if typedCandidateSeen && selectedObjective == nil {
+		if (typedCandidateSeen || hasTypedObjectives) && selectedObjective == nil && objectiveMatch == 0 {
 			continue
 		}
 		objectiveID := ""
@@ -256,6 +263,9 @@ func completed(state State, kind, objectiveID string, input ActionInput) bool {
 		}
 		if a.ObjectiveID != objectiveID {
 			continue
+		}
+		if objectiveID == "" && len(input.References) == 0 {
+			return true
 		}
 		if len(input.References) > 0 && equalStrings(a.InputRefs, input.References) {
 			return true
