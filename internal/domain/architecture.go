@@ -263,6 +263,8 @@ type AdaptiveObjective struct {
 	Revision           string   `json:"revision,omitempty"`
 	NextAction         string   `json:"next_action,omitempty"`
 	CandidateActions   []string `json:"candidate_actions,omitempty"`
+	Target             string   `json:"target,omitempty"`
+	TargetSymbol       string   `json:"target_symbol,omitempty"`
 }
 
 // HistoricalReference points at prior repository knowledge without asserting

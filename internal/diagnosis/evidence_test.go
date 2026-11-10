@@ -77,7 +77,7 @@ func TestNormalizedStatesDoNotBecomePass(t *testing.T) {
 
 func TestDecideReproductionDefersWhenEvidenceIsComplete(t *testing.T) {
 	decision := DecideReproduction(NormalizedEvidence{Executions: []CIExecution{{State: StateFailed}}}, []string{"go", "test", "./pkg/failing"})
-	if decision.Required || decision.Reason == "" {
+	if decision.Required || decision.Reason == "" || !decision.InitialDiagnosisSufficient || decision.CausalResolutionSufficient || decision.ReproductionRequired || decision.VerificationSufficient {
 		t.Fatalf("decision=%#v", decision)
 	}
 }

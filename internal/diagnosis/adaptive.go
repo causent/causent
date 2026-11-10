@@ -14,6 +14,7 @@ import (
 	"github.com/causent/malenia/internal/localization"
 	"github.com/causent/malenia/internal/persistence"
 	"github.com/causent/malenia/internal/reasoning"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 // rerunAction is intentionally narrow: it can only rerun the already approved
@@ -160,7 +161,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		}
 		decision.Selected.Input.InvestigationID = invID
 		if isRepositoryInspectionAction(decision.Selected.ActionType) {
-			target := adaptiveActionTarget(report)
+			target, symbol := adaptiveTargetForObjective(report, decision.Selected.ObjectiveID, d.snapshot)
 			if target == "" {
 				state.StoppingReason = "execution_unavailable"
 				if report.InvestigationObjective != nil {
@@ -169,7 +170,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 				break
 			}
 			decision.Selected.Input.References = []string{target}
-			decision.Selected.Input.Metadata = map[string]string{"target_symbol": firstCandidateSymbol(report)}
+			decision.Selected.Input.Metadata = map[string]string{"target_symbol": symbol}
 		}
 		activity := investigation.NewActivity(invID, "activity:"+report.InvestigationID+":adaptive:"+fmt.Sprint(state.Iterations+1), decision.Selected.ActionType, nil, decision.Selected.Input.References)
 		activity.Status = domain.ActivityRunning
@@ -188,6 +189,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			}
 			break
 		}
+		newEvidence := adaptiveProducesNewEvidence(report, out.Evidence)
 		for _, evidence := range out.Evidence {
 			if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
 				return fmt.Errorf("save adaptive evidence: %w", err)
@@ -218,6 +220,16 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			for _, c := range report.Candidates {
 				if err := d.cfg.Store.SaveCandidate(c); err != nil {
 					return fmt.Errorf("save adaptive candidate: %w", err)
+				}
+			}
+		}
+		if len(out.Evidence) > 0 && !newEvidence {
+			out.Metadata["progress"] = "none"
+			if report.InvestigationObjective != nil && decision.Selected.ObjectiveID != "" {
+				for i := range report.InvestigationObjective.Unknowns {
+					if report.InvestigationObjective.Unknowns[i].ID == decision.Selected.ObjectiveID {
+						report.InvestigationObjective.Unknowns[i].Evaluation = "action returned no new evidence or relationships; dependency remains unresolved"
+					}
 				}
 			}
 		}
@@ -385,7 +397,7 @@ func objectiveFromCheckpoint(values []domain.AdaptiveObjective) *InvestigationOb
 	}
 	out := &InvestigationObjective{FailureObjective: "Resume the persisted causal investigation", Status: "investigating"}
 	for _, value := range values {
-		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...)})
+		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
 	}
 	return out
 }
@@ -404,7 +416,7 @@ func saveAdaptiveObjectives(store *persistence.Store, report *Report, state *dom
 	}
 	state.Objectives = make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, unknown := range report.InvestigationObjective.Unknowns {
-		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...)})
+		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
 	}
 	state.UpdatedAt = time.Now().UTC()
 	return store.SaveAdaptiveState(*state)
@@ -549,6 +561,43 @@ func firstCandidateSymbol(report *Report) string {
 		return ""
 	}
 	return report.Candidates[0].Location.SymbolIdentity
+}
+
+func adaptiveTargetForObjective(report *Report, objectiveID string, snapshot *programrepo.Snapshot) (string, string) {
+	if report.InvestigationObjective != nil {
+		for _, unknown := range report.InvestigationObjective.Unknowns {
+			if unknown.ID != objectiveID {
+				continue
+			}
+			if unknown.Target != "" && unknown.TargetSymbol != "" {
+				if snapshot != nil {
+					for _, node := range snapshot.Nodes {
+						if node.Identity == unknown.TargetSymbol {
+							return fmt.Sprintf("%s:%d:%s", node.FilePath, node.StartLine, node.Identity), node.Identity
+						}
+					}
+				}
+				return unknown.Target, unknown.TargetSymbol
+			}
+		}
+	}
+	if target := adaptiveActionTarget(report); target != "" {
+		return target, firstCandidateSymbol(report)
+	}
+	return "", ""
+}
+
+func adaptiveProducesNewEvidence(report *Report, evidence []domain.Evidence) bool {
+	known := map[string]bool{}
+	for _, item := range report.Evidence {
+		known[item.ID] = true
+	}
+	for _, item := range evidence {
+		if !known[string(item.ID)] {
+			return true
+		}
+	}
+	return false
 }
 
 func adaptiveActionTarget(report *Report) string {

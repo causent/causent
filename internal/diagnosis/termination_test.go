@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/causent/malenia/internal/domain"
+	programrepo "github.com/causent/malenia/internal/repository"
 )
 
 func TestTerminalInvestigationRecordsUnresolvedAndUnattemptedWork(t *testing.T) {
@@ -52,5 +53,26 @@ func TestAdaptiveActionTargetRequiresSourceLocation(t *testing.T) {
 	got := adaptiveActionTarget(&Report{Candidates: []domain.CandidateLocation{{Location: domain.CodeLocation{FilePath: "cacher.go", StartLine: 1389, SymbolIdentity: "Cacher.Stop"}}}})
 	if got != "cacher.go:1389:Cacher.Stop" {
 		t.Fatalf("unexpected source target: %q", got)
+	}
+}
+
+func TestAdaptiveTargetFollowsSelectedDependency(t *testing.T) {
+	report := &Report{InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{
+		{ID: "shutdown-ordering", Target: "setup.go:130:go:pkg.Cacher.Stop", TargetSymbol: "go:pkg.Cacher.Stop"},
+	}}}
+	snapshot := &programrepo.Snapshot{Nodes: []domain.ProgramNode{{Identity: "go:pkg.Cacher.Stop", FilePath: "cacher.go", StartLine: 1389}}}
+	target, symbol := adaptiveTargetForObjective(report, "shutdown-ordering", snapshot)
+	if target != "cacher.go:1389:go:pkg.Cacher.Stop" || symbol != "go:pkg.Cacher.Stop" {
+		t.Fatalf("dependency target was not resolved from source facts: target=%q symbol=%q", target, symbol)
+	}
+}
+
+func TestAdaptiveEvidenceProgressRequiresNewEvidence(t *testing.T) {
+	report := &Report{Evidence: []EvidenceItem{{ID: "same"}}}
+	if adaptiveProducesNewEvidence(report, []domain.Evidence{{ID: "same"}}) {
+		t.Fatal("repeated evidence was counted as progress")
+	}
+	if !adaptiveProducesNewEvidence(report, []domain.Evidence{{ID: "new"}}) {
+		t.Fatal("new evidence was not counted as progress")
 	}
 }

@@ -91,6 +91,23 @@ func TestEvidenceFirstContinuesIntoAdaptiveController(t *testing.T) {
 			t.Fatalf("adaptive action lost target provenance: %#v", action)
 		}
 	}
+	adaptiveTargets := map[string]bool{}
+	adaptiveEvidence := map[string]bool{}
+	for _, action := range report.InvestigationActions {
+		if !strings.Contains(action.ID, ":adaptive:") {
+			continue
+		}
+		adaptiveTargets[action.Target] = true
+		for _, evidenceID := range action.EvidenceIDs {
+			if adaptiveEvidence[evidenceID] {
+				t.Fatalf("adaptive action repeated evidence without a new target result: %#v", report.InvestigationActions)
+			}
+			adaptiveEvidence[evidenceID] = true
+		}
+	}
+	if len(adaptiveTargets) < 2 {
+		t.Fatalf("adaptive actions did not follow dependency-specific targets: %#v", report.InvestigationActions)
+	}
 }
 
 func TestDiagnosisPersistsRepositoryGraphAndLocalization(t *testing.T) {

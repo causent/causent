@@ -249,6 +249,8 @@ type InvestigationUnknown struct {
 	Evaluation       string   `json:"predicate_evaluation,omitempty"`
 	Revision         string   `json:"revision,omitempty"`
 	NextAction       string   `json:"next_action,omitempty"`
+	Target           string   `json:"target,omitempty"`
+	TargetSymbol     string   `json:"target_symbol,omitempty"`
 }
 
 type InvestigationObjective struct {

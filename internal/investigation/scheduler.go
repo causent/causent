@@ -29,10 +29,11 @@ type ActionScore struct {
 	Total                float64
 }
 type ActionCandidate struct {
-	ActionType string
-	Input      ActionInput
-	Score      ActionScore
-	Reason     string
+	ActionType  string
+	ObjectiveID string
+	Input       ActionInput
+	Score       ActionScore
+	Reason      string
 }
 type Decision struct {
 	Selected       ActionCandidate
@@ -65,6 +66,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			}
 		}
 		objectiveMatch := 0
+		objectiveID := ""
 		for _, objective := range state.Objectives {
 			if objective.Status == "resolved" || objective.Status == "rejected" || objective.Status == "not_applicable" {
 				continue
@@ -73,6 +75,9 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			for _, action := range objective.CandidateActions {
 				if action == definition.Type {
 					objectiveMatch++
+					if objectiveID == "" {
+						objectiveID = objective.ID
+					}
 				}
 			}
 		}
@@ -92,7 +97,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			score.UncertaintyReduction = 1.2
 		}
 		score.Total = score.DiagnosticRelevance*policy.Relevance + score.UncertaintyReduction*policy.Uncertainty + score.Discrimination*policy.Discrimination + score.EvidenceQuality*policy.Quality - score.ExecutionCost*policy.Cost - score.ExecutionRisk*policy.Risk - score.ExpectedLatency*policy.Latency
-		considered = append(considered, ActionCandidate{ActionType: definition.Type, Score: score, Reason: fmt.Sprintf("%d unresolved objective(s), %d matching predicates; expected information gain %.2f at cost %.2f", unresolved, objectiveMatch, score.UncertaintyReduction, score.ExecutionCost)})
+		considered = append(considered, ActionCandidate{ActionType: definition.Type, ObjectiveID: objectiveID, Score: score, Reason: fmt.Sprintf("%d unresolved objective(s), %d matching predicates; expected information gain %.2f at cost %.2f", unresolved, objectiveMatch, score.UncertaintyReduction, score.ExecutionCost)})
 	}
 	if len(considered) == 0 {
 		return Decision{StoppingReason: "no useful uncompleted actions remain"}

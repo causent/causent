@@ -48,6 +48,9 @@ func TestSelectChangesWithObjectiveEvidence(t *testing.T) {
 	if first.Selected.ActionType != "TraceVariable" {
 		t.Fatalf("selected %s, want TraceVariable: %#v", first.Selected.ActionType, first)
 	}
+	if first.Selected.ObjectiveID != "memory" {
+		t.Fatalf("selected action did not retain dependency identity: %#v", first)
+	}
 	state.Objectives[0].CandidateActions = []string{"InspectSynchronization"}
 	second := Select(state, r, DefaultScorePolicy)
 	if second.Selected.ActionType != "InspectSynchronization" {

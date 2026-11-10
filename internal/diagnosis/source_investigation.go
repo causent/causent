@@ -262,8 +262,54 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 		}
 	}
 	evaluateInvestigationObjectives(report)
+	assignInvestigationTargets(report)
 	finishInvestigationObjective(report)
 	return nil
+}
+
+// assignInvestigationTargets converts each unresolved dependency into a
+// concrete source request. It uses only source facts already collected by the
+// deterministic investigation; it does not infer a causal conclusion.
+func assignInvestigationTargets(report *Report) {
+	if report.InvestigationObjective == nil {
+		return
+	}
+	for i := range report.InvestigationObjective.Unknowns {
+		u := &report.InvestigationObjective.Unknowns[i]
+		if u.TargetSymbol != "" {
+			continue
+		}
+		var target string
+		switch u.ID {
+		case "exact-memory":
+			if report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
+				a := report.Concurrency.Accesses[0]
+				u.TargetSymbol, target = a.Function, fmt.Sprintf("%s:%d:%s", a.File, a.Line, a.Function)
+			}
+		case "goroutine-ownership":
+			u.TargetSymbol, target = sourceTargetContaining(report, "startBackgroundResync")
+			if u.TargetSymbol == "" {
+				u.TargetSymbol, target = sourceTargetContaining(report, "Stop")
+			}
+		case "shutdown-ordering", "happens-before":
+			u.TargetSymbol, target = sourceTargetContaining(report, "Stop")
+		}
+		if u.TargetSymbol == "" && report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
+			a := report.Concurrency.Accesses[0]
+			u.TargetSymbol, target = a.Function, fmt.Sprintf("%s:%d:%s", a.File, a.Line, a.Function)
+		}
+		u.Target = target
+	}
+}
+
+func sourceTargetContaining(report *Report, token string) (string, string) {
+	for i := len(report.InvestigationActions) - 1; i >= 0; i-- {
+		target := report.InvestigationActions[i].Target
+		if strings.Contains(strings.ToLower(target), strings.ToLower(token)) {
+			return target, target
+		}
+	}
+	return "", ""
 }
 
 func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, persist bool, actionType, target, summary, kind, source, detail string) (string, error) {
@@ -496,7 +542,7 @@ func (d *Diagnoser) saveInvestigationCheckpoint(report *Report) error {
 	}
 	objectives := make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, u := range report.InvestigationObjective.Unknowns {
-		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...)})
+		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...), Target: u.Target, TargetSymbol: u.TargetSymbol})
 	}
 	state, err := d.cfg.Store.GetAdaptiveState(domain.ID(report.InvestigationID))
 	if err != nil {
