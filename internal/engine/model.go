@@ -124,7 +124,7 @@ func (HeuristicProvider) GeneratePatches(_ context.Context, request PatchRequest
 				if err != nil {
 					continue
 				}
-				lines := strings.Split(string(source), "\n")
+				lines := strings.Split(strings.TrimSuffix(string(source), "\n"), "\n")
 				for lineNo, line := range lines {
 					replacement, explanation, expected, risks := heuristicPythonEdit(line)
 					if replacement == "" {

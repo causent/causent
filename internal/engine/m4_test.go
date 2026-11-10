@@ -93,3 +93,17 @@ ZeroDivisionError: division by zero`)
 		t.Fatalf("unexpected frames: %+v", frames)
 	}
 }
+
+func TestCollectPythonTestsIncludesImportedImplementationSource(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "test_bug.py"), []byte("from bug import add_marker\nadd_marker([])\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "bug.py"), []byte("def add_marker(items):\n    items.append(\"marker\")\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	context := collectPythonTests(repo, nil, []string{"python3", "test_bug.py"})
+	if !strings.Contains(context, "TEST test_bug.py") || !strings.Contains(context, "SOURCE bug.py") {
+		t.Fatalf("imported implementation source was not collected: %s", context)
+	}
+}
