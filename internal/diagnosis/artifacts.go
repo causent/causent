@@ -86,6 +86,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 	return &ArtifactDecoderRegistry{decoders: []ArtifactDecoder{
 		junitArtifactDecoder{},
 		raceArtifactDecoder{},
+		runtimeExceptionArtifactDecoder{},
 		sarifArtifactDecoder{},
 		tapArtifactDecoder{},
 		coverageArtifactDecoder{},
@@ -381,6 +382,24 @@ func (coverageArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, dete
 		}
 	}
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "coverage_report", ClaimKind: "coverage_observation", Basis: "Observed", Detail: string(data), Provenance: desc.StorageRef}}}
+}
+
+type runtimeExceptionArtifactDecoder struct{}
+
+func (runtimeExceptionArtifactDecoder) Name() string    { return "runtime-exception" }
+func (runtimeExceptionArtifactDecoder) Version() string { return "v1" }
+func (runtimeExceptionArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	text := string(data)
+	switch {
+	case strings.Contains(text, "Traceback (most recent call last):"), strings.Contains(text, "panic:"), strings.Contains(text, "Exception in thread "), regexp.MustCompile(`(?m)^\s*[A-Za-z0-9_$.]+(?:Error|Exception|Failure):\s*`).MatchString(text):
+		return ArtifactDetection{Format: "runtime_exception_text", Category: ArtifactRuntime, Confidence: "medium", Reason: "language runtime exception or panic marker"}
+	default:
+		return ArtifactDetection{Confidence: "none"}
+	}
+}
+
+func (runtimeExceptionArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "runtime_exception_report", ClaimKind: "RuntimeExceptionObservation", Basis: "RuntimeObserved", Detail: string(data), Provenance: desc.StorageRef}}}
 }
 
 type structuredTraceArtifactDecoder struct{}

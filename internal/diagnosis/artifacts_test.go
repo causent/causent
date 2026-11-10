@@ -130,6 +130,7 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "cobertura", data: `<?xml version="1.0"?><coverage><packages/></coverage>`, format: "cobertura_xml", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "jacoco", data: `<?xml version="1.0"?><report name="unit"><package name="pkg"/></report>`, format: "jacoco_xml", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "trace", data: `{"format_version":"structured-trace-v1","events":[{"goroutine_id":7,"kind":"created","timestamp":10}]}`, format: "structured-trace-v1", kind: "execution_trace_observation", cat: ArtifactTrace},
+		{name: "python-exception", data: "Traceback (most recent call last):\n  File \"app.py\", line 4\nValueError: bad input\n", format: "runtime_exception_text", kind: "runtime_exception_report", cat: ArtifactRuntime},
 	}
 	registry := NewArtifactDecoderRegistry()
 	for _, tc := range tests {
@@ -171,5 +172,16 @@ func TestTAPArtifactParticipatesInCIFailureClassification(t *testing.T) {
 	observations := parseFailureObservations(text)
 	if len(observations) != 1 || observations[0].Test != "parser rejects input" {
 		t.Fatalf("TAP failure was not normalized: %#v", observations)
+	}
+}
+
+func TestRuntimeExceptionArtifactParticipatesInCIFailureClassification(t *testing.T) {
+	text := "Traceback (most recent call last):\nValueError: bad input\n"
+	if !isCIEvidenceKind("runtime_exception_report") {
+		t.Fatal("runtime exception is not recognized as CI evidence")
+	}
+	observations := parseFailureObservations(text)
+	if len(observations) != 1 || observations[0].Test != "runtime exception" {
+		t.Fatalf("runtime exception was not normalized: %#v", observations)
 	}
 }

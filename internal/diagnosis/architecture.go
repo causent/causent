@@ -23,6 +23,7 @@ var (
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
 	tapFailure         = regexp.MustCompile(`(?m)^\s*not ok\b(?:\s+[0-9]+)?(?:\s+-\s+)?([^\r\n]*)`)
+	runtimeException   = regexp.MustCompile(`(?m)(?:Traceback \(most recent call last\):|^panic:|Exception in thread |^[A-Za-z0-9_$.]+(?:Error|Exception|Failure):)`)
 	raceFailure        = regexp.MustCompile(`(?m)^WARNING: DATA RACE\s*$`)
 	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\s+\+0x[0-9a-fA-F]+)?\s*$`)
 	raceTestLine       = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT)\s+(.+)$`)
@@ -275,7 +276,7 @@ func normalizeRacePath(path string) string {
 }
 
 func isCIEvidenceKind(kind string) bool {
-	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact" || kind == "tap_report"
+	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact" || kind == "tap_report" || kind == "runtime_exception_report"
 }
 
 func externalFailureEvidence(items []EvidenceItem) bool {
@@ -369,6 +370,9 @@ func parseFailureObservations(text string) []failureObservation {
 	}
 	for _, match := range tapFailure.FindAllStringSubmatch(text, -1) {
 		add(match[1], "TAP test failed: "+match[1])
+	}
+	if runtimeException.MatchString(text) {
+		add("runtime exception", "runtime exception or panic was reported")
 	}
 	if raceFailure.MatchString(text) {
 		add("race detector", "Go race detector reported DATA RACE")
