@@ -112,6 +112,8 @@ type EvidenceItem struct {
 // collapsing into a generic list of locations.
 type RaceReport struct {
 	Test                    string                 `json:"test,omitempty"`
+	ReadAccessType          string                 `json:"read_access_type,omitempty"`
+	WriteAccessType         string                 `json:"write_access_type,omitempty"`
 	ReadStack               []localization.Frame   `json:"read_stack,omitempty"`
 	WriteStack              []localization.Frame   `json:"write_stack,omitempty"`
 	GoroutineCreationStacks [][]localization.Frame `json:"goroutine_creation_stacks,omitempty"`

@@ -315,6 +315,12 @@ jobs:
               (if ((.localization.likely_files // []) | length) > 0 then
                 "**Likely files**:\n" + ((.localization.likely_files // []) | map("- `\(.)`") | join("\n"))
               else empty end),
+              (if ((.failure_episodes // []) | length) > 0 then
+                "**Failure episodes**:\n" + ((.failure_episodes[0:12] // []) | map("- **" + (.test_identifier // "unknown test") + "** — " + (.failure_type // "observed failure") + ": " + (.failure_message // "no message")) | join("\n"))
+              else empty end),
+              (if ((.race_reports // []) | length) > 0 then
+                "**Race evidence**:\n" + ((.race_reports[0:5] // []) | map("- " + (.test // "unknown test") + ": read " + ((.read_stack[0].file // "unknown") + ":" + ((.read_stack[0].line // 0)|tostring)) + "; write " + ((.write_stack[0].file // "unknown") + ":" + ((.write_stack[0].line // 0)|tostring))) | join("\n"))
+              else empty end),
               (if ((.candidates // []) | length) > 0 then
                 "**Inspected source candidates**:\n" + ((.candidates[0:5] // []) | map("- `" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "` — " + (.location.symbol_identity // "unresolved") + " (" + (.location.provenance // .location.location_type // "unattributed") + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")") | join("\n"))
               else empty end),

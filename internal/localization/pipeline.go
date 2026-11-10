@@ -14,6 +14,8 @@ import (
 type Frame struct {
 	File        string      `json:"file"`
 	Line        int         `json:"line"`
+	Function    string      `json:"function,omitempty"`
+	LogLine     int         `json:"log_line,omitempty"`
 	EvidenceIDs []domain.ID `json:"evidence_ids,omitempty"`
 	FailureIDs  []string    `json:"failure_ids,omitempty"`
 	Provenance  string      `json:"provenance,omitempty"`

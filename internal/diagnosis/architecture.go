@@ -22,6 +22,8 @@ var (
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
 	raceFailure        = regexp.MustCompile(`(?m)^WARNING: DATA RACE\s*$`)
+	raceRun            = regexp.MustCompile(`^=== RUN\s+(.+)$`)
+	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\+0x[0-9a-f]+)?\s*$`)
 )
 
 type failureObservation struct {
@@ -37,35 +39,50 @@ func parseRaceReports(text string) []RaceReport {
 	lines := strings.Split(text, "\n")
 	current := RaceReport{}
 	section := ""
+	currentTest := ""
+	pendingFunction := ""
 	flush := func() {
-		if len(current.ReadStack) > 0 || len(current.WriteStack) > 0 {
+		if current.Test == "" {
+			current.Test = currentTest
+		}
+		if current.ReadAccessType != "" || current.WriteAccessType != "" || len(current.ReadStack) > 0 || len(current.WriteStack) > 0 {
 			reports = append(reports, current)
 		}
 		current = RaceReport{}
 		section = ""
 	}
-	for _, line := range lines {
+	for lineNumber, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		switch {
+		case raceRun.MatchString(trimmed):
+			currentTest = strings.TrimSpace(raceRun.FindStringSubmatch(trimmed)[1])
 		case strings.HasPrefix(trimmed, "WARNING: DATA RACE"):
 			flush()
 		case strings.HasPrefix(trimmed, "Read at"):
 			section = "read"
+			current.ReadAccessType = "read"
+		case strings.HasPrefix(trimmed, "Previous read at"), strings.HasPrefix(trimmed, "Read at"):
+			section = "read"
+			current.ReadAccessType = "read"
 		case strings.HasPrefix(trimmed, "Previous write at"), strings.HasPrefix(trimmed, "Write at"):
 			section = "write"
+			current.WriteAccessType = "write"
 		case strings.Contains(trimmed, " created at:"):
 			section = "create"
-		case trimmed == "" && section != "create":
-			section = ""
+			current.GoroutineCreationStacks = append(current.GoroutineCreationStacks, nil)
 		default:
 			m := goFrame.FindStringSubmatch(trimmed)
 			if len(m) == 0 {
+				if fn := raceFunction.FindStringSubmatch(trimmed); len(fn) > 1 && !strings.Contains(trimmed, "Goroutine ") {
+					pendingFunction = fn[1]
+				}
 				continue
 			}
-			frame := localization.Frame{File: normalizeEvidencePath(m[1]), Line: atoi(m[2]), Provenance: "direct_stack_frame"}
+			frame := localization.Frame{File: normalizeRacePath(m[1]), Line: atoi(m[2]), Function: pendingFunction, LogLine: lineNumber + 1, Provenance: "direct_stack_frame"}
 			if frame.File == "" {
 				continue
 			}
+			pendingFunction = ""
 			switch section {
 			case "read":
 				current.ReadStack = append(current.ReadStack, frame)
@@ -82,6 +99,17 @@ func parseRaceReports(text string) []RaceReport {
 	}
 	flush()
 	return reports
+}
+
+// Race reports retain standard-library frames because they are part of the
+// goroutine creation evidence. They are not promoted to repository candidates
+// by architectureFrames, which intentionally filters runtime/toolchain paths.
+func normalizeRacePath(path string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if marker := "/kubernetes/"; strings.Contains(path, marker) {
+		path = path[strings.Index(path, marker)+len(marker):]
+	}
+	return strings.TrimPrefix(path, "./")
 }
 
 func isCIEvidenceKind(kind string) bool {

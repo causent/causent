@@ -731,10 +731,13 @@ func buildExecutionPaths(investigationID domain.ID, snapshot programrepo.Snapsho
 		edges[relation.SourceID] = append(edges[relation.SourceID], relation)
 	}
 	targets := map[string]bool{}
+	provenanceByNode := map[string]string{}
 	for _, candidate := range candidates {
 		const prefix = "candidate:"
 		if strings.HasPrefix(candidate.ID, prefix) {
-			targets[strings.TrimPrefix(candidate.ID, prefix)] = true
+			nodeID := strings.TrimPrefix(candidate.ID, prefix)
+			targets[nodeID] = true
+			provenanceByNode[nodeID] = candidate.Location.Provenance
 		}
 	}
 	var tests []domain.ProgramNode
@@ -756,13 +759,17 @@ func buildExecutionPaths(investigationID domain.ID, snapshot programrepo.Snapsho
 				parts := make([]string, 0, len(state.nodeIDs))
 				for _, nodeID := range state.nodeIDs {
 					node := nodes[nodeID]
-					locations = append(locations, domain.CodeLocation{ID: "location:" + node.ID, RepositoryID: node.RepositoryID, RevisionID: node.RevisionID, FilePath: node.FilePath, SymbolIdentity: node.Identity, StartLine: node.StartLine, EndLine: node.EndLine, LocationType: node.Type})
+					provenance := provenanceByNode[node.ID]
+					if provenance == "" && node.ID == test.ID {
+						provenance = "package_association"
+					}
+					locations = append(locations, domain.CodeLocation{ID: "location:" + node.ID, RepositoryID: node.RepositoryID, RevisionID: node.RevisionID, FilePath: node.FilePath, SymbolIdentity: node.Identity, StartLine: node.StartLine, EndLine: node.EndLine, LocationType: node.Type, Provenance: provenance})
 					parts = append(parts, node.FilePath+":"+node.Name)
 				}
 				pathKey := strings.Join(state.nodeIDs, ">")
 				if !seen[pathKey] {
 					seen[pathKey] = true
-					path := domain.ExecutionPath{ID: "path:" + digestString(string(investigationID)+"\x00"+pathKey), InvestigationID: investigationID, FailureIDs: append([]string{}, failureIDs...), NodeIDs: append([]string{}, state.nodeIDs...), RelationshipIDs: append([]string{}, state.relIDs...), Locations: locations, EvidenceIDs: append([]domain.ID{}, evidenceIDs...), Status: "structurally_resolved", Summary: strings.Join(parts, " → ")}
+					path := domain.ExecutionPath{ID: "path:" + digestString(string(investigationID)+"\x00"+pathKey), InvestigationID: investigationID, FailureIDs: append([]string{}, failureIDs...), NodeIDs: append([]string{}, state.nodeIDs...), RelationshipIDs: append([]string{}, state.relIDs...), Locations: locations, EvidenceIDs: append([]domain.ID{}, evidenceIDs...), Status: "inferred_call_path", Summary: strings.Join(parts, " → ")}
 					paths = append(paths, path)
 				}
 				continue
@@ -771,6 +778,12 @@ func buildExecutionPaths(investigationID domain.ID, snapshot programrepo.Snapsho
 				continue
 			}
 			for _, relation := range edges[current] {
+				// Structural references, imports, and package proximity are not
+				// execution edges. Only explicit test/call relationships may
+				// participate in an inferred call path.
+				if relation.Type != "TESTS" && relation.Type != "CALLS" {
+					continue
+				}
 				if _, ok := nodes[relation.TargetID]; !ok {
 					continue
 				}

@@ -176,7 +176,14 @@ func edgeID(source, typ, target string) string {
 	return "pe-" + hex.EncodeToString(h[:12])
 }
 func addEdge(s *Snapshot, source, sourceType, target, targetType, typ string) {
-	s.Relationships = append(s.Relationships, domain.Relationship{ID: edgeID(source, typ, target), SourceType: sourceType, SourceID: source, TargetType: targetType, TargetID: target, Type: typ, RevisionID: s.RevisionID})
+	provenance := "dependency"
+	switch typ {
+	case "CALLS", "TESTS":
+		provenance = "inferred_caller"
+	case "DEFINES":
+		provenance = "enclosing_symbol"
+	}
+	s.Relationships = append(s.Relationships, domain.Relationship{ID: edgeID(source, typ, target), SourceType: sourceType, SourceID: source, TargetType: targetType, TargetID: target, Type: typ, RevisionID: s.RevisionID, Metadata: map[string]string{"provenance": provenance}})
 }
 
 var (
