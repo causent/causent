@@ -141,6 +141,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		tapArtifactDecoder{},
 		coverageArtifactDecoder{},
 		structuredTraceArtifactDecoder{},
+		openTelemetryArtifactDecoder{},
 		jsonArtifactDecoder{},
 		textArtifactDecoder{},
 	}}
@@ -463,6 +464,59 @@ func (structuredTraceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byt
 	evidence := []EvidenceItem{RuntimeTraceEvidenceItem(parsedMeta)}
 	evidence = append(evidence, RuntimeLifecycleEvidenceItems(lifecycle, parsedMeta)...)
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: evidence}
+}
+
+type openTelemetryArtifactDecoder struct{}
+
+func (openTelemetryArtifactDecoder) Name() string    { return "opentelemetry-json" }
+func (openTelemetryArtifactDecoder) Version() string { return "v1" }
+func (openTelemetryArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	var document struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []json.RawMessage `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	if json.Unmarshal(data, &document) != nil || len(document.ResourceSpans) == 0 {
+		return ArtifactDetection{Confidence: "none"}
+	}
+	for _, resource := range document.ResourceSpans {
+		for _, scope := range resource.ScopeSpans {
+			if len(scope.Spans) > 0 {
+				return ArtifactDetection{Format: "opentelemetry_json", Category: ArtifactTrace, Confidence: "high", Reason: "OTLP resourceSpans and span records"}
+			}
+		}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (openTelemetryArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	var document struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []json.RawMessage `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+	}
+	spanCount := 0
+	for _, resource := range document.ResourceSpans {
+		for _, scope := range resource.ScopeSpans {
+			spanCount += len(scope.Spans)
+		}
+	}
+	if spanCount == 0 {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{"OTLP document contained no spans"}}
+	}
+	meta := ExecutionTraceObservation{Execution: ExecutionIdentity{WorkflowRunID: desc.WorkflowRunID, ReportID: desc.ArtifactID, BuildID: desc.BuildID, SourceRevision: desc.SourceRevision, TestAttemptID: desc.TestAttemptID}, TraceFormat: detection.Format, ArtifactDigest: desc.Digest, ArtifactRef: desc.StorageRef, ParserVersion: "v1"}
+	payload, _ := json.Marshal(struct {
+		Observation ExecutionTraceObservation `json:"observation"`
+		SpanCount   int                       `json:"span_count"`
+		Raw         string                    `json:"raw"`
+	}{Observation: meta, SpanCount: spanCount, Raw: string(data)})
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "execution_trace_observation", ClaimKind: "ExecutionTraceObservation", Basis: "RuntimeObserved", Detail: string(payload), Provenance: desc.StorageRef}}}
 }
 
 type jsonArtifactDecoder struct{}

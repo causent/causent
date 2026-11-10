@@ -147,6 +147,7 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "cobertura", data: `<?xml version="1.0"?><coverage><packages/></coverage>`, format: "cobertura_xml", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "jacoco", data: `<?xml version="1.0"?><report name="unit"><package name="pkg"/></report>`, format: "jacoco_xml", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "trace", data: `{"format_version":"structured-trace-v1","events":[{"goroutine_id":7,"kind":"created","timestamp":10}]}`, format: "structured-trace-v1", kind: "execution_trace_observation", cat: ArtifactTrace},
+		{name: "otlp", data: `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"request","traceId":"abc"}]}]}]}`, format: "opentelemetry_json", kind: "execution_trace_observation", cat: ArtifactTrace},
 		{name: "python-exception", data: "Traceback (most recent call last):\n  File \"app.py\", line 4\nValueError: bad input\n", format: "runtime_exception_text", kind: "runtime_exception_report", cat: ArtifactRuntime},
 	}
 	registry := NewArtifactDecoderRegistry()
@@ -169,6 +170,9 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 						t.Fatalf("trace decoder produced causal claim: %#v", evidence)
 					}
 				}
+			}
+			if tc.name == "otlp" && (item.Ordering != "" || item.ExecutionID != "") {
+				t.Fatalf("OTLP evidence made unsupported causal or process claims: %#v", item)
 			}
 		})
 	}
