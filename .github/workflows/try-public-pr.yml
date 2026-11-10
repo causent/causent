@@ -64,6 +64,11 @@ on:
         required: false
         default: ''
         type: string
+      source_ci_url:
+        description: Original failed CI URL; accepts a Prow GS URL and derives its build identifier
+        required: false
+        default: ''
+        type: string
       allow_reproduction_fallback:
         description: Run the configured command when no original CI evidence can be collected
         required: false
@@ -138,70 +143,9 @@ jobs:
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_CI_URL: ${{ inputs.source_ci_url }}
         run: |
-          set -euo pipefail
-          run_id="$SOURCE_RUN_ID"
-          mkdir -p "$RUNNER_TEMP/source-artifacts"
-          if [ -z "$run_id" ]; then
-            run_id="$(gh run list --repo "$TARGET_REPOSITORY" --commit "$HEAD_SHA" \
-              --status failure --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
-          fi
-          source_url=""
-          if [ -z "$run_id" ]; then
-            source_url="$(gh api "repos/$TARGET_REPOSITORY/commits/$HEAD_SHA/status" \
-              --jq '.statuses[] | select(.state == "failure") | .target_url' | sed -n '1p')"
-          fi
-          if [ -z "$run_id" ]; then
-            if [[ "$source_url" != https://prow.k8s.io/view/gs/* ]]; then
-              echo "No failed source CI run or supported status context found for $TARGET_REPOSITORY@$HEAD_SHA"
-              echo "available=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            log_url="https://storage.googleapis.com/${source_url#https://prow.k8s.io/view/gs/}/build-log.txt"
-            if ! curl --fail --silent --show-error --location "$log_url" > "$RUNNER_TEMP/source-ci.log"; then
-              echo "Could not read Prow log: $log_url"
-              echo "available=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            source_provider="prow"
-          else
-            if ! gh run view "$run_id" --repo "$TARGET_REPOSITORY" --log-failed \
-              > "$RUNNER_TEMP/source-ci.log"; then
-              echo "Could not read failed-job log for source CI run $run_id"
-              echo "available=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            gh run download "$run_id" --repo "$TARGET_REPOSITORY" \
-              --dir "$RUNNER_TEMP/source-artifacts" || true
-            source_provider="github-actions"
-          fi
-          if [ -z "$run_id" ] && [ -z "$source_url" ]; then
-            echo "No failed source CI run found for $TARGET_REPOSITORY@$HEAD_SHA"
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ ! -s "$RUNNER_TEMP/source-ci.log" ]; then
-            echo "Source CI evidence was empty" >&2
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Keep evidence bounded and remove common credential-shaped values
-          # before it reaches the diagnosis process or uploaded artifact.
-          sed -E \
-            -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' \
-            -e 's/((token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
-            -e 's/(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[0-9A-Z]{16})/[REDACTED]/g' \
-            "$RUNNER_TEMP/source-ci.log" > "$RUNNER_TEMP/source-ci-sanitized.log"
-          # Preserve both setup context and the terminal failure/race summary;
-          # Prow logs place the useful failure section near the end.
-          { head -c 131072 "$RUNNER_TEMP/source-ci-sanitized.log"; \
-            printf '\n[... CI evidence middle omitted ...]\n'; \
-            tail -c 131072 "$RUNNER_TEMP/source-ci-sanitized.log"; } \
-            > "$RUNNER_TEMP/source-ci-bounded.log"
-          echo "source_url=$source_url" >> "$GITHUB_OUTPUT"
-          echo "provider=$source_provider" >> "$GITHUB_OUTPUT"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "available=true" >> "$GITHUB_OUTPUT"
+          "$GITHUB_WORKSPACE/.github/scripts/resolve-source-evidence.sh"
 
       - name: Check out target PR
         env:
@@ -299,6 +243,8 @@ jobs:
           MALENIA_CI_RUN_ID: ${{ steps.evidence.outputs.run_id }}
           MALENIA_CI_PR_NUMBER: ${{ inputs.pull_request }}
           MALENIA_CI_SOURCE_URL: ${{ steps.evidence.outputs.source_url }}
+          EVIDENCE_BOUNDED_LOG_PATH: ${{ steps.evidence.outputs.bounded_log_path }}
+          EVIDENCE_ARTIFACT_DIR: ${{ steps.evidence.outputs.artifact_dir }}
         run: |
           set -euo pipefail
           if [[ ! "$MALENIA_ATTEMPTS" =~ ^[1-5]$ ]]; then
@@ -327,9 +273,9 @@ jobs:
           evidence_mode=false
           if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
             evidence_mode=true
-            args+=(--ci-log "$RUNNER_TEMP/source-ci-bounded.log" \
-              --artifact-dir "$RUNNER_TEMP/source-artifacts" --artifact-first)
-            junit="$(find "$RUNNER_TEMP/source-artifacts" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
+            args+=(--ci-log "$EVIDENCE_BOUNDED_LOG_PATH" \
+              --artifact-dir "$EVIDENCE_ARTIFACT_DIR" --artifact-first)
+            junit="$(find "$EVIDENCE_ARTIFACT_DIR" -type f \( -iname '*.xml' -o -iname '*.junit' \) -print -quit)"
             if [ -n "$junit" ]; then
               args+=(--junit "$junit")
             fi
@@ -471,6 +417,7 @@ jobs:
             ${{ runner.temp }}/malenia-report.json
             ${{ runner.temp }}/malenia-bundle
             ${{ runner.temp }}/source-ci-bounded.log
+            ${{ runner.temp }}/source-evidence-status.txt
             ${{ runner.temp }}/source-artifacts
           if-no-files-found: warn
           retention-days: 14

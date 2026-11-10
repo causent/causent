@@ -111,14 +111,28 @@ func TestManualDiagnosisWorkflow(t *testing.T) {
 func TestPublicTrialCanUseSourceBuildAndVerifiedRepair(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/try-public-pr.yml")
 	for check, passed := range map[string]bool{
-		"source build input":    strings.Contains(content, "source_build:"),
-		"repair input":          strings.Contains(content, "repair:"),
-		"passes repair flag":    strings.Contains(content, "args+=(--repair)"),
-		"renders repair result": strings.Contains(content, "Repair and verification") && strings.Contains(content, ".repair.verification_status"),
+		"source build input":           strings.Contains(content, "source_build:"),
+		"repair input":                 strings.Contains(content, "repair:"),
+		"passes repair flag":           strings.Contains(content, "args+=(--repair)"),
+		"renders repair result":        strings.Contains(content, "Repair and verification") && strings.Contains(content, ".repair.verification_status"),
+		"accepts original Prow URL":    strings.Contains(content, "source_ci_url:") && strings.Contains(content, "SOURCE_CI_URL"),
+		"uses extracted resolver":      strings.Contains(content, "resolve-source-evidence.sh"),
+		"propagates resolver paths":    strings.Contains(content, "bounded_log_path") && strings.Contains(content, "EVIDENCE_ARTIFACT_DIR"),
+		"uploads resolver diagnostics": strings.Contains(content, "source-evidence-status.txt"),
 	} {
 		if !passed {
 			t.Errorf("public trial check failed: %s", check)
 		}
+	}
+}
+
+func TestProwEvidenceResolverScriptExists(t *testing.T) {
+	info, err := os.Stat(".github/scripts/resolve-source-evidence.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatal("Prow evidence resolver must be executable")
 	}
 }
 
