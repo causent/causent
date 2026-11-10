@@ -382,6 +382,7 @@ jobs:
                 + "\n\n**Relevant code:** " + ($incident.proposed_explanation // "No mechanism established.")
                 + "\n\n**PR relationship:** " + ($incident.pr_relationship // "Not established.")
                 + "\n\n**Evidence IDs:** " + (($finding.evidence_ids // $incident.evidence_ids // []) | join(", "))
+                + "\n\n**Root cause assessment:** " + (($report.root_cause.status // "unknown") + ": " + ($report.root_cause.statement // "not established") + "; causality=" + ($report.root_cause.causality_status // "unverified") + "; verification=" + ($report.root_cause.verification_status // "not_attempted"))
                 + "\n\n**Confidence:** observed=" + (($incident.observed_confidence // 0)|tostring) + ", explanation=" + (($incident.explanation_confidence // 0)|tostring) + ", causality=" + (($incident.causality_confidence // 0)|tostring)' "$report" 2>/dev/null || true)"
             if [ -n "$primary" ]; then
               echo '**Primary diagnosis:**'
