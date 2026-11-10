@@ -57,56 +57,63 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 			return investigation.ActionOutput{}, err
 		}
 	}
-	selected := make([]domain.ProgramNode, 0, 16)
+	selected := make([]domain.ProgramNode, 0, 1)
 	for _, node := range snapshot.Nodes {
-		if node.Identity == target || strings.Contains(node.Identity, target) {
+		if node.Identity == target {
 			selected = append(selected, node)
-		}
-		if len(selected) >= 16 {
 			break
 		}
 	}
-	if len(selected) == 0 && a.kind == "InspectSymbol" {
-		return investigation.ActionOutput{}, fmt.Errorf("symbol %q was not resolved", a.target)
+	selectedNodeID := ""
+	if len(selected) > 0 {
+		selectedNodeID = selected[0].ID
 	}
 	var rels []domain.Relationship
-	for _, rel := range snapshot.Relationships {
-		match := strings.Contains(rel.SourceID, target) || strings.Contains(rel.TargetID, target)
-		if !match {
-			continue
-		}
-		switch a.kind {
-		case "FindReferences":
-			if rel.Type != "REFERENCES" {
+	if selectedNodeID != "" {
+		for _, rel := range snapshot.Relationships {
+			if rel.SourceID != selectedNodeID && rel.TargetID != selectedNodeID {
 				continue
 			}
-		case "ExpandCallers", "ExpandCallees":
-			if rel.Type != "CALLS" {
-				continue
+			switch a.kind {
+			case "FindReferences":
+				if rel.Type != "REFERENCES" {
+					continue
+				}
+			case "ExpandCallers", "ExpandCallees":
+				if rel.Type != "CALLS" {
+					continue
+				}
+			case "InspectDependency":
+				if rel.Type != "IMPORTS" && rel.Type != "DEPENDS_ON" {
+					continue
+				}
+			case "InspectTest":
+				if rel.Type != "TESTS" {
+					continue
+				}
 			}
-		case "InspectDependency":
-			if rel.Type != "IMPORTS" && rel.Type != "DEPENDS_ON" {
-				continue
+			rels = append(rels, rel)
+			if len(rels) >= 32 {
+				break
 			}
-		case "InspectTest":
-			if rel.Type != "TESTS" {
-				continue
-			}
-		}
-		rels = append(rels, rel)
-		if len(rels) >= 32 {
-			break
 		}
 	}
+	outcome := "relationships_found"
+	progress := "candidate_evidence"
+	if selectedNodeID == "" {
+		outcome, progress = "unresolved_target", "none"
+	} else if len(rels) == 0 {
+		outcome, progress = "no_relationships", "none"
+	}
 	payload := struct {
-		Action, Target string
-		Nodes          []domain.ProgramNode
-		Relationships  []domain.Relationship
-	}{a.kind, target, selected, rels}
+		Action, Target, Outcome, Progress string
+		Nodes                             []domain.ProgramNode
+		Relationships                     []domain.Relationship
+	}{a.kind, target, outcome, progress, selected, rels}
 	data, _ := json.Marshal(payload)
 	hash := sha256.Sum256(data)
 	e := domain.Evidence{ID: domain.ID("evidence:adaptive:" + hex.EncodeToString(hash[:8])), InvestigationID: input.InvestigationID, Type: domain.EvidenceSourceCode, Source: "adaptive:" + a.kind, Timestamp: time.Now().UTC(), ContentRef: "repository-snapshot", Digest: hex.EncodeToString(hash[:]), Payload: string(data), Provenance: "deterministic repository analyzer; revision-scoped snapshot"}
-	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": target}}, nil
+	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": target, "outcome": outcome, "progress": progress}}, nil
 }
 
 type compareRevisionsAction struct {
