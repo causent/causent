@@ -97,32 +97,35 @@ func (a Attempt) Passed() bool {
 // EvidenceItem is a fact recorded during the diagnosis. Hypotheses reference
 // these by ID; they never replace them.
 type EvidenceItem struct {
-	ID             string   `json:"id"`
-	Kind           string   `json:"kind"`
-	Source         string   `json:"source"`
-	Digest         string   `json:"digest"`
-	Detail         string   `json:"detail"`
-	Provenance     string   `json:"provenance,omitempty"`
-	Revision       string   `json:"revision,omitempty"`
-	Limitations    []string `json:"limitations,omitempty"`
-	ClaimKind      string   `json:"claim_kind,omitempty"`
-	Basis          string   `json:"basis,omitempty"`
-	DeclarationID  string   `json:"declaration_id,omitempty"`
-	AccessID       string   `json:"access_id,omitempty"`
-	InstanceID     string   `json:"instance_id,omitempty"`
-	RunID          string   `json:"run_id,omitempty"`
-	Ordering       string   `json:"ordering,omitempty"`
-	ExecutionID    string   `json:"execution_id,omitempty"`
-	BuildID        string   `json:"build_id,omitempty"`
-	SourceRevision string   `json:"source_revision,omitempty"`
-	TestAttemptID  string   `json:"test_attempt_id,omitempty"`
-	ArtifactID     string   `json:"artifact_id,omitempty"`
-	ParserVersion  string   `json:"parser_version,omitempty"`
-	TraceFormat    string   `json:"trace_format,omitempty"`
-	ReportID       string   `json:"report_id,omitempty"`
-	ArtifactDigest string   `json:"artifact_digest,omitempty"`
-	StorageRef     string   `json:"storage_ref,omitempty"`
-	ParserName     string   `json:"parser_name,omitempty"`
+	ID               string   `json:"id"`
+	Kind             string   `json:"kind"`
+	Source           string   `json:"source"`
+	Digest           string   `json:"digest"`
+	Detail           string   `json:"detail"`
+	Provenance       string   `json:"provenance,omitempty"`
+	Revision         string   `json:"revision,omitempty"`
+	Limitations      []string `json:"limitations,omitempty"`
+	ClaimKind        string   `json:"claim_kind,omitempty"`
+	Basis            string   `json:"basis,omitempty"`
+	DeclarationID    string   `json:"declaration_id,omitempty"`
+	AccessID         string   `json:"access_id,omitempty"`
+	InstanceID       string   `json:"instance_id,omitempty"`
+	RunID            string   `json:"run_id,omitempty"`
+	Ordering         string   `json:"ordering,omitempty"`
+	ExecutionID      string   `json:"execution_id,omitempty"`
+	BuildID          string   `json:"build_id,omitempty"`
+	SourceRevision   string   `json:"source_revision,omitempty"`
+	TestAttemptID    string   `json:"test_attempt_id,omitempty"`
+	ArtifactID       string   `json:"artifact_id,omitempty"`
+	ParserVersion    string   `json:"parser_version,omitempty"`
+	TraceFormat      string   `json:"trace_format,omitempty"`
+	ReportID         string   `json:"report_id,omitempty"`
+	ArtifactDigest   string   `json:"artifact_digest,omitempty"`
+	StorageRef       string   `json:"storage_ref,omitempty"`
+	ParserName       string   `json:"parser_name,omitempty"`
+	ArtifactCategory string   `json:"artifact_category,omitempty"`
+	ArtifactFormat   string   `json:"artifact_format,omitempty"`
+	DecoderStatus    string   `json:"decoder_status,omitempty"`
 }
 
 // RaceReport preserves the two sides of a Go race. A stack frame is evidence,

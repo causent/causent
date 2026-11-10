@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +35,22 @@ import (
 )
 
 const defaultVersion = "0.2.0-diagnosis"
+
+func readBoundedFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], fmt.Errorf("file exceeds %d-byte limit", limit)
+	}
+	return data, nil
+}
 
 // version is overridden at build time with -X main.version=<tag>.
 var version = defaultVersion
@@ -950,89 +965,8 @@ func writeJSON(value any) {
 	}
 }
 
-var sensitiveArtifactValue = regexp.MustCompile(`(?i)((?:authorization|token|password|secret|api[_-]?key)[=:][[:space:]]*)[^[:space:]\r\n]+`)
-
-func readBoundedFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return data[:limit], fmt.Errorf("file exceeds %d-byte limit", limit)
-	}
-	return data, nil
-}
-
 func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosis.EvidenceItem, error) {
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("artifact path is not a directory")
-	}
-	var evidence []diagnosis.EvidenceItem
-	var limitations []string
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if len(evidence) >= maxFiles {
-			return filepath.SkipDir
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		switch ext {
-		case ".log", ".txt", ".xml", ".json", ".out", ".err", ".trace":
-		default:
-			return nil
-		}
-		data, readErr := readBoundedFile(path, maxBytes)
-		if readErr != nil {
-			limitations = append(limitations, fmt.Sprintf("%s: %v", path, readErr))
-			return nil
-		}
-		redacted := sensitiveArtifactValue.ReplaceAll(data, []byte(`${1}[REDACTED]`))
-		digest := sha256.Sum256(redacted)
-		kind := "ci_artifact"
-		lowerName := strings.ToLower(entry.Name())
-		if ext == ".xml" || strings.Contains(lowerName, "junit") || strings.Contains(lowerName, "test-result") {
-			kind = "junit_report"
-		}
-		evidence = append(evidence, diagnosis.EvidenceItem{
-			ID:         fmt.Sprintf("E-artifact-%d", len(evidence)+1),
-			Kind:       kind,
-			Source:     path,
-			Digest:     hex.EncodeToString(digest[:]),
-			Detail:     string(redacted),
-			Provenance: "CI artifact directory",
-		})
-		return nil
-	})
-	if len(evidence) >= maxFiles {
-		limitations = append(limitations, fmt.Sprintf("artifact file limit reached (%d); additional files were not ingested", maxFiles))
-	}
-	if len(limitations) > 0 {
-		evidence = append(evidence, diagnosis.EvidenceItem{
-			ID:          fmt.Sprintf("E-artifact-limitations-%d", len(evidence)+1),
-			Kind:        "ci_artifact_manifest",
-			Source:      root,
-			Detail:      strings.Join(limitations, "\n"),
-			Provenance:  "bounded CI artifact ingestion",
-			Limitations: limitations,
-		})
-	}
-	return evidence, err
+	return diagnosis.LoadArtifactEvidence(root, maxFiles, maxBytes)
 }
 
 // stringList collects a repeatable string flag.

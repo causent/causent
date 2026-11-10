@@ -76,7 +76,7 @@ func TestEvidenceContractRoundTrip(t *testing.T) {
 	if err := s.SaveInvestigation(inv); err != nil {
 		t.Fatal(err)
 	}
-	want := domain.Evidence{ID: "e-contract", InvestigationID: inv.ID, Type: domain.EvidenceSourceCode, Source: "test", Timestamp: nowForTest(), Payload: "proof", Provenance: "fixture", ClaimKind: "synchronization-ordering", Basis: "SourceVerified", DeclarationID: "pkg.Cacher.stopWg", AccessID: "access:1", InstanceID: "instance:1", RunID: "run:1", Ordering: "happens-before", Revision: "head", ExecutionID: "exec:1", BuildID: "build:1", SourceRevision: "rev:1", TestAttemptID: "attempt:1", ArtifactRef: "artifact:1", ParserVersion: "parser:1", TraceFormat: "trace:v1", ReportID: "report:1", ArtifactDigest: "raw-digest", StorageRef: "artifact://raw", ParserName: "go-race-report-parser"}
+	want := domain.Evidence{ID: "e-contract", InvestigationID: inv.ID, Type: domain.EvidenceSourceCode, Source: "test", Timestamp: nowForTest(), Payload: "proof", Provenance: "fixture", ClaimKind: "synchronization-ordering", Basis: "SourceVerified", DeclarationID: "pkg.Cacher.stopWg", AccessID: "access:1", InstanceID: "instance:1", RunID: "run:1", Ordering: "happens-before", Revision: "head", ExecutionID: "exec:1", BuildID: "build:1", SourceRevision: "rev:1", TestAttemptID: "attempt:1", ArtifactRef: "artifact:1", ParserVersion: "parser:1", TraceFormat: "trace:v1", ReportID: "report:1", ArtifactDigest: "raw-digest", StorageRef: "artifact://raw", ParserName: "go-race-report-parser", ArtifactCategory: "runtime_diagnostics", ArtifactFormat: "go_race_report", DecoderStatus: "decoded"}
 	if err := s.SaveEvidence(want); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestEvidenceContractRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ClaimKind != want.ClaimKind || got.Basis != want.Basis || got.DeclarationID != want.DeclarationID || got.InstanceID != want.InstanceID || got.Ordering != want.Ordering || got.Revision != want.Revision || got.ExecutionID != want.ExecutionID || got.BuildID != want.BuildID || got.SourceRevision != want.SourceRevision || got.TestAttemptID != want.TestAttemptID || got.ArtifactRef != want.ArtifactRef || got.ParserVersion != want.ParserVersion || got.TraceFormat != want.TraceFormat || got.ReportID != want.ReportID || got.ArtifactDigest != want.ArtifactDigest || got.StorageRef != want.StorageRef || got.ParserName != want.ParserName {
+	if got.ClaimKind != want.ClaimKind || got.Basis != want.Basis || got.DeclarationID != want.DeclarationID || got.InstanceID != want.InstanceID || got.Ordering != want.Ordering || got.Revision != want.Revision || got.ExecutionID != want.ExecutionID || got.BuildID != want.BuildID || got.SourceRevision != want.SourceRevision || got.TestAttemptID != want.TestAttemptID || got.ArtifactRef != want.ArtifactRef || got.ParserVersion != want.ParserVersion || got.TraceFormat != want.TraceFormat || got.ReportID != want.ReportID || got.ArtifactDigest != want.ArtifactDigest || got.StorageRef != want.StorageRef || got.ParserName != want.ParserName || got.ArtifactCategory != want.ArtifactCategory || got.ArtifactFormat != want.ArtifactFormat || got.DecoderStatus != want.DecoderStatus {
 		t.Fatalf("contract metadata lost: got=%+v", got)
 	}
 }
