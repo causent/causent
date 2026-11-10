@@ -154,6 +154,18 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			break
 		}
 		decision.Selected.Input.InvestigationID = invID
+		if isRepositoryInspectionAction(decision.Selected.ActionType) {
+			target := adaptiveActionTarget(report)
+			if target == "" {
+				state.StoppingReason = "execution_unavailable"
+				if report.InvestigationObjective != nil {
+					report.InvestigationObjective.StoppingReason = "selected source action has no resolvable source target"
+				}
+				break
+			}
+			decision.Selected.Input.References = []string{target}
+			decision.Selected.Input.Metadata = map[string]string{"target_symbol": firstCandidateSymbol(report)}
+		}
 		activity := investigation.NewActivity(invID, "activity:"+report.InvestigationID+":adaptive:"+fmt.Sprint(state.Iterations+1), decision.Selected.ActionType, nil, decision.Selected.Input.References)
 		activity.Status = domain.ActivityRunning
 		activity.AttemptCount = 1
@@ -532,6 +544,30 @@ func firstCandidateSymbol(report *Report) string {
 		return ""
 	}
 	return report.Candidates[0].Location.SymbolIdentity
+}
+
+func adaptiveActionTarget(report *Report) string {
+	if len(report.Candidates) == 0 {
+		return ""
+	}
+	location := report.Candidates[0].Location
+	if location.SymbolIdentity == "" || location.FilePath == "" {
+		return ""
+	}
+	target := location.FilePath
+	if location.StartLine > 0 {
+		target += ":" + fmt.Sprint(location.StartLine)
+	}
+	return target + ":" + location.SymbolIdentity
+}
+
+func isRepositoryInspectionAction(kind string) bool {
+	switch kind {
+	case "InspectSymbol", "InspectFunction", "TraceVariable", "FindReferences", "InspectGoroutineLifecycle", "InspectSynchronization", "InspectCleanup", "TraceCallers", "TraceCallees", "ExpandCallers", "ExpandCallees", "InspectDependency", "InspectTest":
+		return true
+	default:
+		return false
+	}
 }
 
 func isAdaptiveActivity(kind string) bool {

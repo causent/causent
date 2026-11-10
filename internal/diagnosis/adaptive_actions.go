@@ -35,6 +35,13 @@ func (a repositoryAction) Definition() investigation.ActionDefinition {
 	}
 }
 func (a repositoryAction) Execute(ctx context.Context, input investigation.ActionInput) (investigation.ActionOutput, error) {
+	target := a.target
+	if input.Metadata != nil && input.Metadata["target_symbol"] != "" {
+		target = input.Metadata["target_symbol"]
+	}
+	if target == "" {
+		return investigation.ActionOutput{}, fmt.Errorf("source action %s has no resolvable target", a.kind)
+	}
 	repoID := "local:" + a.diagnoser.cfg.RepoPath
 	commit := strings.TrimSpace(gitOutput(a.workspace, "rev-parse", "HEAD"))
 	if commit == "" {
@@ -52,7 +59,7 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 	}
 	selected := make([]domain.ProgramNode, 0, 16)
 	for _, node := range snapshot.Nodes {
-		if a.target == "" || node.Identity == a.target || strings.Contains(node.Identity, a.target) {
+		if node.Identity == target || strings.Contains(node.Identity, target) {
 			selected = append(selected, node)
 		}
 		if len(selected) >= 16 {
@@ -64,7 +71,7 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 	}
 	var rels []domain.Relationship
 	for _, rel := range snapshot.Relationships {
-		match := a.target == "" || strings.Contains(rel.SourceID, a.target) || strings.Contains(rel.TargetID, a.target)
+		match := strings.Contains(rel.SourceID, target) || strings.Contains(rel.TargetID, target)
 		if !match {
 			continue
 		}
@@ -95,11 +102,11 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 		Action, Target string
 		Nodes          []domain.ProgramNode
 		Relationships  []domain.Relationship
-	}{a.kind, a.target, selected, rels}
+	}{a.kind, target, selected, rels}
 	data, _ := json.Marshal(payload)
 	hash := sha256.Sum256(data)
 	e := domain.Evidence{ID: domain.ID("evidence:adaptive:" + hex.EncodeToString(hash[:8])), InvestigationID: input.InvestigationID, Type: domain.EvidenceSourceCode, Source: "adaptive:" + a.kind, Timestamp: time.Now().UTC(), ContentRef: "repository-snapshot", Digest: hex.EncodeToString(hash[:]), Payload: string(data), Provenance: "deterministic repository analyzer; revision-scoped snapshot"}
-	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": a.target}}, nil
+	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": target}}, nil
 }
 
 type compareRevisionsAction struct {

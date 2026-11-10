@@ -946,7 +946,9 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	if report.StoppingReason == "" {
 		report.StoppingReason = "investigation_blocked"
 	}
-	ensureTerminalInvestigation(&report, report.StoppingReason, domain.InvestigationBudget{})
+	if report.TerminalInvestigation == nil {
+		ensureTerminalInvestigation(&report, report.StoppingReason, domain.InvestigationBudget{})
+	}
 	report.FailureIncidents = buildFailureIncidents(&report)
 	report.RootCause = assessRootCause(report)
 	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)

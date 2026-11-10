@@ -83,6 +83,14 @@ func TestEvidenceFirstContinuesIntoAdaptiveController(t *testing.T) {
 	if checkpoint.TerminalExplanation == nil || checkpoint.TerminalExplanation.Reason != report.StoppingReason {
 		t.Fatalf("terminal explanation was not durably checkpointed: %#v", checkpoint.TerminalExplanation)
 	}
+	if checkpoint.TerminalExplanation.Budget.MaxIterations == 0 || checkpoint.TerminalExplanation.Budget.IterationsUsed == 0 {
+		t.Fatalf("adaptive budget was overwritten in terminal explanation: %#v", checkpoint.TerminalExplanation.Budget)
+	}
+	for _, action := range report.InvestigationActions {
+		if strings.Contains(action.ID, ":adaptive:") && action.Target == "" {
+			t.Fatalf("adaptive action lost target provenance: %#v", action)
+		}
+	}
 }
 
 func TestDiagnosisPersistsRepositoryGraphAndLocalization(t *testing.T) {

@@ -44,3 +44,13 @@ func TestTerminalInvestigationMarksUnavailableActions(t *testing.T) {
 		t.Fatalf("unavailable action was not recorded: %#v", report.TerminalInvestigation)
 	}
 }
+
+func TestAdaptiveActionTargetRequiresSourceLocation(t *testing.T) {
+	if got := adaptiveActionTarget(&Report{Candidates: []domain.CandidateLocation{{Location: domain.CodeLocation{SymbolIdentity: "Cacher.Stop"}}}}); got != "" {
+		t.Fatalf("target without file location was accepted: %q", got)
+	}
+	got := adaptiveActionTarget(&Report{Candidates: []domain.CandidateLocation{{Location: domain.CodeLocation{FilePath: "cacher.go", StartLine: 1389, SymbolIdentity: "Cacher.Stop"}}}})
+	if got != "cacher.go:1389:Cacher.Stop" {
+		t.Fatalf("unexpected source target: %q", got)
+	}
+}
