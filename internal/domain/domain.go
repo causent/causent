@@ -48,6 +48,7 @@ type Evidence struct {
 	Ordering           string
 	Revision           string
 	ExecutionID        string
+	WorkflowRunID      string
 	BuildID            string
 	SourceRevision     string
 	TestAttemptID      string

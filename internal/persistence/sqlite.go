@@ -377,6 +377,7 @@ func (s *Store) migrate() error {
 		source_revision TEXT NOT NULL DEFAULT '', test_attempt_id TEXT NOT NULL DEFAULT '',
 		artifact_ref TEXT NOT NULL DEFAULT '', parser_version TEXT NOT NULL DEFAULT '',
 		trace_format TEXT NOT NULL DEFAULT '', report_id TEXT NOT NULL DEFAULT '',
+		workflow_run_id TEXT NOT NULL DEFAULT '',
 		artifact_digest TEXT NOT NULL DEFAULT '', storage_ref TEXT NOT NULL DEFAULT '',
 		parser_name TEXT NOT NULL DEFAULT '', artifact_category TEXT NOT NULL DEFAULT '',
 		artifact_format TEXT NOT NULL DEFAULT '', decoder_status TEXT NOT NULL DEFAULT '',
@@ -384,7 +385,7 @@ func (s *Store) migrate() error {
 	)`); err != nil {
 		return fmt.Errorf("create runtime evidence metadata: %w", err)
 	}
-	for _, column := range []string{"report_id", "artifact_digest", "storage_ref", "parser_name", "artifact_category", "artifact_format", "decoder_status"} {
+	for _, column := range []string{"report_id", "workflow_run_id", "artifact_digest", "storage_ref", "parser_name", "artifact_category", "artifact_format", "decoder_status"} {
 		var present int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('evidence_runtime_metadata') WHERE name=?`, column).Scan(&present); err != nil {
 			return fmt.Errorf("inspect runtime evidence schema: %w", err)
@@ -566,7 +567,7 @@ func (s *Store) SaveEvidence(e domain.Evidence) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO evidence_runtime_metadata (evidence_id, execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET execution_id=excluded.execution_id, build_id=excluded.build_id, source_revision=excluded.source_revision, test_attempt_id=excluded.test_attempt_id, artifact_ref=excluded.artifact_ref, parser_version=excluded.parser_version, trace_format=excluded.trace_format, report_id=excluded.report_id, artifact_digest=excluded.artifact_digest, storage_ref=excluded.storage_ref, parser_name=excluded.parser_name, artifact_category=excluded.artifact_category, artifact_format=excluded.artifact_format, decoder_status=excluded.decoder_status`, e.ID, e.ExecutionID, e.BuildID, e.SourceRevision, e.TestAttemptID, e.ArtifactRef, e.ParserVersion, e.TraceFormat, e.ReportID, e.ArtifactDigest, e.StorageRef, e.ParserName, e.ArtifactCategory, e.ArtifactFormat, e.DecoderStatus)
+	_, err = s.db.Exec(`INSERT INTO evidence_runtime_metadata (evidence_id, execution_id, workflow_run_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET execution_id=excluded.execution_id, workflow_run_id=excluded.workflow_run_id, build_id=excluded.build_id, source_revision=excluded.source_revision, test_attempt_id=excluded.test_attempt_id, artifact_ref=excluded.artifact_ref, parser_version=excluded.parser_version, trace_format=excluded.trace_format, report_id=excluded.report_id, artifact_digest=excluded.artifact_digest, storage_ref=excluded.storage_ref, parser_name=excluded.parser_name, artifact_category=excluded.artifact_category, artifact_format=excluded.artifact_format, decoder_status=excluded.decoder_status`, e.ID, e.ExecutionID, e.WorkflowRunID, e.BuildID, e.SourceRevision, e.TestAttemptID, e.ArtifactRef, e.ParserVersion, e.TraceFormat, e.ReportID, e.ArtifactDigest, e.StorageRef, e.ParserName, e.ArtifactCategory, e.ArtifactFormat, e.DecoderStatus)
 	return err
 }
 
@@ -596,7 +597,7 @@ func (s *Store) ListEvidence(invID domain.ID) ([]domain.Evidence, error) {
 			return nil, err
 		}
 		_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, e.ID).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
-		_ = s.db.QueryRow(`SELECT execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status FROM evidence_runtime_metadata WHERE evidence_id=?`, e.ID).Scan(&e.ExecutionID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat, &e.ReportID, &e.ArtifactDigest, &e.StorageRef, &e.ParserName, &e.ArtifactCategory, &e.ArtifactFormat, &e.DecoderStatus)
+		_ = s.db.QueryRow(`SELECT execution_id, workflow_run_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status FROM evidence_runtime_metadata WHERE evidence_id=?`, e.ID).Scan(&e.ExecutionID, &e.WorkflowRunID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat, &e.ReportID, &e.ArtifactDigest, &e.StorageRef, &e.ParserName, &e.ArtifactCategory, &e.ArtifactFormat, &e.DecoderStatus)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -616,7 +617,7 @@ func (s *Store) GetEvidence(id domain.ID) (domain.Evidence, error) {
 	_ = s.db.QueryRow(`SELECT provenance FROM evidence_provenance WHERE evidence_id=?`, id).Scan(&provenance)
 	e.Provenance = provenance
 	_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, id).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
-	_ = s.db.QueryRow(`SELECT execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status FROM evidence_runtime_metadata WHERE evidence_id=?`, id).Scan(&e.ExecutionID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat, &e.ReportID, &e.ArtifactDigest, &e.StorageRef, &e.ParserName, &e.ArtifactCategory, &e.ArtifactFormat, &e.DecoderStatus)
+	_ = s.db.QueryRow(`SELECT execution_id, workflow_run_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format, report_id, artifact_digest, storage_ref, parser_name, artifact_category, artifact_format, decoder_status FROM evidence_runtime_metadata WHERE evidence_id=?`, id).Scan(&e.ExecutionID, &e.WorkflowRunID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat, &e.ReportID, &e.ArtifactDigest, &e.StorageRef, &e.ParserName, &e.ArtifactCategory, &e.ArtifactFormat, &e.DecoderStatus)
 	return e, nil
 }
 

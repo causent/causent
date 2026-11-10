@@ -33,6 +33,27 @@ func TestArtifactRegistryDetectsByContentAndPreservesRawProvenance(t *testing.T)
 	}
 }
 
+func TestArtifactLoadPreservesEstablishedCIContextWithoutSynthesizingExecution(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "failure.log")
+	if err := os.WriteFile(path, []byte("build failed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := LoadArtifactEvidenceWithContext(root, 10, 1024, ArtifactDescriptor{
+		Provider:       "github-actions",
+		WorkflowRunID:  "run-42",
+		BuildID:        "build-7",
+		SourceRevision: "abc123",
+	})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items = %#v, err = %v", items, err)
+	}
+	item := items[0]
+	if item.ExecutionID != "" || item.ReportID != "" || item.WorkflowRunID != "run-42" || item.BuildID != "build-7" || item.SourceRevision != "abc123" {
+		t.Fatalf("identity was synthesized or lost: %#v", item)
+	}
+}
+
 func TestArtifactIngestionStatusesAndIdempotency(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{

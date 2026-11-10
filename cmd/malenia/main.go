@@ -966,7 +966,12 @@ func writeJSON(value any) {
 }
 
 func loadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]diagnosis.EvidenceItem, error) {
-	return diagnosis.LoadArtifactEvidence(root, maxFiles, maxBytes)
+	return diagnosis.LoadArtifactEvidenceWithContext(root, maxFiles, maxBytes, diagnosis.ArtifactDescriptor{
+		Provider:       os.Getenv("MALENIA_CI_PROVIDER"),
+		WorkflowRunID:  os.Getenv("MALENIA_CI_RUN_ID"),
+		BuildID:        os.Getenv("MALENIA_CI_BUILD_ID"),
+		SourceRevision: os.Getenv("MALENIA_CI_HEAD_SHA"),
+	})
 }
 
 // stringList collects a repeatable string flag.

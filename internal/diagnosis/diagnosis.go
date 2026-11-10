@@ -113,6 +113,7 @@ type EvidenceItem struct {
 	RunID            string   `json:"run_id,omitempty"`
 	Ordering         string   `json:"ordering,omitempty"`
 	ExecutionID      string   `json:"execution_id,omitempty"`
+	WorkflowRunID    string   `json:"workflow_run_id,omitempty"`
 	BuildID          string   `json:"build_id,omitempty"`
 	SourceRevision   string   `json:"source_revision,omitempty"`
 	TestAttemptID    string   `json:"test_attempt_id,omitempty"`

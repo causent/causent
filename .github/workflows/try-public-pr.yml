@@ -243,6 +243,8 @@ jobs:
           MALENIA_INVESTIGATION_TIMEOUT_SECONDS: ${{ inputs.investigation_timeout_seconds }}
           MALENIA_CI_PROVIDER: ${{ steps.evidence.outputs.provider }}
           MALENIA_CI_RUN_ID: ${{ steps.evidence.outputs.run_id }}
+          MALENIA_CI_BUILD_ID: ${{ steps.evidence.outputs.build_id }}
+          MALENIA_CI_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           MALENIA_CI_PR_NUMBER: ${{ inputs.pull_request }}
           MALENIA_CI_SOURCE_URL: ${{ steps.evidence.outputs.source_url }}
           EVIDENCE_BOUNDED_LOG_PATH: ${{ steps.evidence.outputs.bounded_log_path }}

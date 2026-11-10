@@ -124,7 +124,23 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			if storageRef == "" {
 				storageRef = item.Source
 			}
-			part := IngestRuntimeRaceReportsWithProvenance(traces, ExecutionIdentity{WorkflowRunID: externalExecutionID, ReportID: item.ID, SourceRevision: env.HeadCommit}, RuntimeArtifactProvenance{ArtifactID: item.ID, Digest: item.Digest, StorageRef: storageRef, ParserName: "go-race-report-parser", ParserVersion: "p2.1"})
+			sourceRevision := item.SourceRevision
+			if sourceRevision == "" {
+				sourceRevision = env.HeadCommit
+			}
+			workflowRunID := item.WorkflowRunID
+			if workflowRunID == "" {
+				workflowRunID = externalExecutionID
+			}
+			artifactID := item.ArtifactID
+			if artifactID == "" {
+				artifactID = item.ID
+			}
+			artifactDigest := item.ArtifactDigest
+			if artifactDigest == "" {
+				artifactDigest = item.Digest
+			}
+			part := IngestRuntimeRaceReportsWithProvenance(traces, ExecutionIdentity{WorkflowRunID: workflowRunID, ReportID: item.ID, BuildID: item.BuildID, ExecutionID: item.ExecutionID, SourceRevision: sourceRevision, TestAttemptID: item.TestAttemptID}, RuntimeArtifactProvenance{ArtifactID: artifactID, Digest: artifactDigest, StorageRef: storageRef, ParserName: "go-race-report-parser", ParserVersion: "p2.1"})
 			if !runtimeGraphSet {
 				runtimeGraph = part
 				runtimeGraphSet = true

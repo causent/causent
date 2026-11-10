@@ -144,6 +144,9 @@ func decorateArtifactEvidence(item EvidenceItem, desc ArtifactDescriptor, detect
 	}
 	item.ArtifactCategory = string(detection.Category)
 	item.ArtifactFormat = detection.Format
+	item.WorkflowRunID = desc.WorkflowRunID
+	item.BuildID = desc.BuildID
+	item.SourceRevision = desc.SourceRevision
 	item.DecoderStatus = string(ArtifactDecoded)
 	item.ParserName = decoder.Name()
 	item.ParserVersion = decoder.Version()
@@ -151,6 +154,13 @@ func decorateArtifactEvidence(item EvidenceItem, desc ArtifactDescriptor, detect
 }
 
 func LoadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]EvidenceItem, error) {
+	return LoadArtifactEvidenceWithContext(root, maxFiles, maxBytes, ArtifactDescriptor{})
+}
+
+// LoadArtifactEvidenceWithContext is the provider-neutral file loader. The
+// context contains identities already established by the CI adapter; empty
+// identities remain empty and are never derived from filenames or digests.
+func LoadArtifactEvidenceWithContext(root string, maxFiles int, maxBytes int64, context ArtifactDescriptor) ([]EvidenceItem, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, err
@@ -188,7 +198,13 @@ func LoadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]Evidence
 		redacted := redactArtifact(data)
 		redactedSum := sha256.Sum256(redacted)
 		artifactID := "artifact:" + hex.EncodeToString(rawSum[:8])
-		desc := ArtifactDescriptor{ArtifactID: artifactID, Name: entry.Name(), Path: path, StorageRef: path, Digest: hex.EncodeToString(rawSum[:]), Size: int64(len(data))}
+		desc := context
+		desc.ArtifactID = artifactID
+		desc.Name = entry.Name()
+		desc.Path = path
+		desc.StorageRef = path
+		desc.Digest = hex.EncodeToString(rawSum[:])
+		desc.Size = int64(len(data))
 		result := registry.Ingest(desc, redacted)
 		if len(result.Evidence) == 0 {
 			result.Evidence = []EvidenceItem{{ID: "E-" + artifactID, Kind: "ci_artifact", Source: path, Detail: string(redacted), Digest: hex.EncodeToString(redactedSum[:]), Provenance: path, ArtifactCategory: string(result.Detection.Category), ArtifactFormat: result.Detection.Format, DecoderStatus: string(result.Status), ParserName: result.DecoderName, ParserVersion: result.DecoderVersion, Limitations: result.Limitations}}
