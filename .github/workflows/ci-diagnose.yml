@@ -316,7 +316,7 @@ jobs:
                 "**Likely files**:\n" + ((.localization.likely_files // []) | map("- `\(.)`") | join("\n"))
               else empty end),
               (if ((.candidates // []) | length) > 0 then
-                "**Inspected source candidates**:\n" + ((.candidates[0:5] // []) | map("- `" + (.location.file_path // "unknown") + "` — " + (.location.symbol_identity // "unresolved") + " (" + (.location.location_type // "unknown") + ")") | join("\n"))
+                "**Inspected source candidates**:\n" + ((.candidates[0:5] // []) | map("- `" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "` — " + (.location.symbol_identity // "unresolved") + " (" + (.location.provenance // .location.location_type // "unattributed") + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")") | join("\n"))
               else empty end),
               (if ((.execution_paths // []) | length) > 0 then
                 "**Execution paths**:\n" + ((.execution_paths[0:5] // []) | map("- " + .summary) | join("\n"))

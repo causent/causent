@@ -108,6 +108,15 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		return err
 	}
 	report.FailureEpisodes = failures
+	for _, item := range report.Evidence {
+		if !isCIEvidenceKind(item.Kind) {
+			continue
+		}
+		for _, race := range parseRaceReports(item.Detail) {
+			race.EvidenceIDs = []string{item.ID}
+			report.RaceReports = append(report.RaceReports, race)
+		}
+	}
 	stage.Count("episodes", len(failures))
 	stage.Done("completed", nil)
 

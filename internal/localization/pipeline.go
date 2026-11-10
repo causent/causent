@@ -12,10 +12,11 @@ import (
 )
 
 type Frame struct {
-	File        string
-	Line        int
-	EvidenceIDs []domain.ID
-	FailureIDs  []string
+	File        string      `json:"file"`
+	Line        int         `json:"line"`
+	EvidenceIDs []domain.ID `json:"evidence_ids,omitempty"`
+	FailureIDs  []string    `json:"failure_ids,omitempty"`
+	Provenance  string      `json:"provenance,omitempty"`
 }
 
 type Input struct {
@@ -63,6 +64,7 @@ func GenerateObserved(frames []Frame, input Input) ([]domain.CandidateLocation, 
 					StartLine:      frame.Line,
 					EndLine:        frame.Line,
 					LocationType:   "observed_frame",
+					Provenance:     "direct_stack_frame",
 				},
 				Status: "observed",
 			}
@@ -84,6 +86,7 @@ func GenerateObserved(frames []Frame, input Input) ([]domain.CandidateLocation, 
 				Type:            "MANIFESTED_AT",
 				RevisionID:      input.RevisionID,
 				EvidenceIDs:     appendUnique(append([]domain.ID{}, input.EvidenceIDs...), frame.EvidenceIDs...),
+				Metadata:        map[string]string{"provenance": "direct_stack_frame"},
 			})
 		}
 	}
@@ -142,7 +145,11 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 			if len(relations) >= maxRelationships {
 				break
 			}
-			relations = append(relations, domain.Relationship{ID: "failure:" + failureID + ":" + c.ID + ":" + relationType, InvestigationID: input.InvestigationID, SourceType: "failure_episode", SourceID: failureID, TargetType: "candidate_location", TargetID: c.ID, Type: relationType, RevisionID: n.RevisionID, EvidenceIDs: evidence})
+			provenance := c.Location.Provenance
+			if provenance == "" {
+				provenance = relationType
+			}
+			relations = append(relations, domain.Relationship{ID: "failure:" + failureID + ":" + c.ID + ":" + relationType, InvestigationID: input.InvestigationID, SourceType: "failure_episode", SourceID: failureID, TargetType: "candidate_location", TargetID: c.ID, Type: relationType, RevisionID: n.RevisionID, EvidenceIDs: evidence, Metadata: map[string]string{"provenance": provenance}})
 		}
 	}
 	for _, frame := range input.StackFrames {
@@ -155,22 +162,36 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 				}
 			}
 		}
-		for _, n := range matched {
+		// A frame is direct evidence for one most-specific enclosing symbol.
+		// Broader containers must not inherit the same execution claim.
+		var best *domain.ProgramNode
+		for i := range matched {
+			n := &matched[i]
 			if frame.Line > 0 && (frame.Line < n.StartLine || frame.Line > n.EndLine) {
 				continue
 			}
-			ev := append(append([]domain.ID{}, input.EvidenceIDs...), frame.EvidenceIDs...)
+			if best == nil || (n.EndLine-n.StartLine) < (best.EndLine-best.StartLine) {
+				best = n
+			}
+		}
+		if best != nil {
+			n := *best
+			ev := append([]domain.ID{}, frame.EvidenceIDs...)
 			scoreEvidence := frame.EvidenceIDs
 			if len(scoreEvidence) == 0 {
-				scoreEvidence = input.EvidenceIDs
+				scoreEvidence = nil
 			}
-			add(n, evaluateSignals(CandidateContext{Execution: true, Evidence: scoreEvidence}), ev, "MANIFESTED_AT", frame.FailureIDs)
+			score := domain.ScoreVector{ExecutionRelevance: 1, AvailableDimensions: []string{"execution"}, EvidenceByDimension: map[string][]domain.ID{"execution": scoreEvidence}, ScoringPolicyVersion: PolicyVersion}
+			add(n, score, ev, "MANIFESTED_AT", frame.FailureIDs)
+			c := candidates[n.ID]
+			c.Location.Provenance = "enclosing_symbol"
+			candidates[n.ID] = c
 		}
 	}
 	for _, n := range snapshot.Nodes {
 		if n.Type == "Test" && (strings.Contains(input.FailureText, n.Name) || strings.Contains(input.FailureText, n.FilePath)) {
 			ev := input.EvidenceIDs
-			add(n, evaluateSignals(CandidateContext{Execution: true, Behavioural: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
+			add(n, evaluateSignals(CandidateContext{Behavioural: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
 		}
 	}
 	for _, n := range snapshot.Nodes {
@@ -184,6 +205,9 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 			}
 			ev := input.EvidenceIDs
 			add(n, evaluateSignals(CandidateContext{Changed: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
+			if candidates[n.ID].Location.Provenance == "" {
+				candidates[n.ID].Location.Provenance = "changed_file"
+			}
 		}
 	}
 	// Expand every discovered symbol through typed program relationships. This
@@ -205,6 +229,13 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 					score = evaluateSignals(CandidateContext{Expanded: true, Behavioural: true, Evidence: ev})
 				}
 				add(target, score, ev, "RELATED_TO", input.FailureIDs)
+				if c := candidates[target.ID]; c != nil && c.Location.Provenance == "" {
+					if e.Type == "CALLS" || e.Type == "TESTS" {
+						c.Location.Provenance = "inferred_caller"
+					} else {
+						c.Location.Provenance = "dependency"
+					}
+				}
 			}
 		}
 	}

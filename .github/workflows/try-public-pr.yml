@@ -393,6 +393,18 @@ jobs:
               echo "$episodes"
               echo
             fi
+            candidates="$(jq -r '.candidates[0:8][]? | "- **" + (.location.symbol_identity // "unresolved location") + "** (`" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "`, " + (.location.provenance // .location.location_type // "unattributed") + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")"' "$report" 2>/dev/null || true)"
+            if [ -n "$candidates" ]; then
+              echo '**Inspected locations:**'
+              echo "$candidates"
+              echo
+            fi
+            races="$(jq -r '.race_reports[]? | "- race read: " + ((.read_stack[0].file // "unknown") + ":" + ((.read_stack[0].line // 0)|tostring)) + "; write: " + ((.write_stack[0].file // "unknown") + ":" + ((.write_stack[0].line // 0)|tostring))' "$report" 2>/dev/null || true)"
+            if [ -n "$races" ]; then
+              echo '**Race evidence:**'
+              echo "$races"
+              echo
+            fi
             if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then
               echo 'The source CI log, downloaded artifacts, and JSON report are attached as the workflow artifact.'
             else

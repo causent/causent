@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/causent/malenia/internal/domain"
 )
 
 func TestAnalyzeRevisionScopedGoGraph(t *testing.T) {
@@ -61,5 +63,58 @@ func TestCompareDetectsChangedSymbolsByRevision(t *testing.T) {
 	_, _, changed := Compare(old, newer)
 	if len(changed) == 0 {
 		t.Fatal("expected changed symbol")
+	}
+}
+
+func TestGoSymbolsUseASTDeclarationRanges(t *testing.T) {
+	root := t.TempDir()
+	source := `package cacher
+
+type Config struct {
+	 Name string
+}
+
+type Store interface {
+	 Get() error
+}
+
+func WithCodec[T any](codec T,
+	 option string) error {
+	 if option == "" { return nil }
+	 return nil
+}
+
+func newTimeBucketWatchers() {
+	for i := 0; i < 2; i++ { println(i) }
+}
+
+func after() {}
+`
+	if err := os.WriteFile(filepath.Join(root, "cacher.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := (Analyzer{}).Analyze(context.Background(), root, "repo", "rev", "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]domain.ProgramNode{}
+	for _, n := range snapshot.Nodes {
+		if n.FilePath == "cacher.go" {
+			byName[n.Name] = n
+		}
+	}
+	for _, name := range []string{"Config", "Store", "WithCodec", "newTimeBucketWatchers", "after"} {
+		if byName[name].StartLine == 0 {
+			t.Fatalf("missing symbol %s", name)
+		}
+	}
+	if byName["Config"].EndLine != 5 || byName["Store"].EndLine != 9 {
+		t.Fatalf("type ranges incorrect: config=%+v store=%+v", byName["Config"], byName["Store"])
+	}
+	if byName["WithCodec"].StartLine != 11 || byName["WithCodec"].EndLine != 15 {
+		t.Fatalf("function range incorrect: %+v", byName["WithCodec"])
+	}
+	if byName["newTimeBucketWatchers"].EndLine != 19 || byName["after"].StartLine != 21 || byName["newTimeBucketWatchers"].EndLine >= byName["after"].StartLine {
+		t.Fatalf("function ranges overlap: watcher=%+v after=%+v", byName["newTimeBucketWatchers"], byName["after"])
 	}
 }

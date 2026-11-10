@@ -7,6 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -177,8 +180,6 @@ func addEdge(s *Snapshot, source, sourceType, target, targetType, typ string) {
 }
 
 var (
-	goFunc   = regexp.MustCompile(`(?m)^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	goType   = regexp.MustCompile(`(?m)^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(struct|interface)\b`)
 	pyFunc   = regexp.MustCompile(`(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
 	pyClass  = regexp.MustCompile(`(?m)^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 	jsFunc   = regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
@@ -186,46 +187,80 @@ var (
 )
 
 func (a Analyzer) extractFile(data, rel, lang, fileID string, s *Snapshot) {
-	lines := strings.Split(data, "\n")
 	digest := sha256.Sum256([]byte(data))
 	contentDigest := hex.EncodeToString(digest[:])
-	addSymbol := func(name, typ string, line int) {
+	addSymbol := func(name, typ string, startLine, endLine int) {
 		identity := lang + ":" + rel + ":" + typ + ":" + name
 		id := nodeID(s.RepositoryID, s.RevisionID, "symbol", identity)
-		s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: typ, Name: name, Identity: identity, FilePath: rel, Language: lang, StartLine: line, EndLine: strings.Count(data, "\n") + 1, ContentDigest: contentDigest})
+		s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: typ, Name: name, Identity: identity, FilePath: rel, Language: lang, StartLine: startLine, EndLine: endLine, ContentDigest: contentDigest})
 		addEdge(s, fileID, "File", id, typ, "DEFINES")
 	}
-	var matches [][]int
 	switch lang {
 	case "go":
-		matches = goFunc.FindAllStringSubmatchIndex(data, -1)
-		for _, m := range matches {
-			addSymbol(data[m[2]:m[3]], symbolType(rel, data[m[0]:m[1]]), lineAt(data, m[0]))
-		}
-		for _, m := range goType.FindAllStringSubmatchIndex(data, -1) {
-			addSymbol(data[m[2]:m[3]], "Class", lineAt(data, m[0]))
-		}
+		extractGoSymbols(data, rel, fileID, s, addSymbol)
 	case "python":
 		for _, m := range pyFunc.FindAllStringSubmatchIndex(data, -1) {
-			addSymbol(data[m[2]:m[3]], testOr("Function", rel, data[m[2]:m[3]]), lineAt(data, m[0]))
+			line := lineAt(data, m[0])
+			addSymbol(data[m[2]:m[3]], testOr("Function", rel, data[m[2]:m[3]]), line, strings.Count(data, "\n")+1)
 		}
 		for _, m := range pyClass.FindAllStringSubmatchIndex(data, -1) {
-			addSymbol(data[m[2]:m[3]], "Class", lineAt(data, m[0]))
+			line := lineAt(data, m[0])
+			addSymbol(data[m[2]:m[3]], "Class", line, strings.Count(data, "\n")+1)
 		}
 	case "javascript":
 		for _, m := range jsFunc.FindAllStringSubmatchIndex(data, -1) {
-			addSymbol(data[m[2]:m[3]], "Function", lineAt(data, m[0]))
+			line := lineAt(data, m[0])
+			addSymbol(data[m[2]:m[3]], "Function", line, strings.Count(data, "\n")+1)
 		}
 	}
-	for _, m := range importRE.FindAllStringSubmatch(data, -1) {
-		if len(m) > 1 {
-			target := strings.Trim(m[1], "\"'")
-			id := nodeID(s.RepositoryID, s.RevisionID, "dependency", lang+":"+target)
-			s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: "Dependency", Name: target, Identity: lang + ":" + target, Language: lang})
-			addEdge(s, fileID, "File", id, "Dependency", "IMPORTS")
+	if lang != "go" {
+		for _, m := range importRE.FindAllStringSubmatch(data, -1) {
+			if len(m) > 1 {
+				target := strings.Trim(m[1], "\"'")
+				id := nodeID(s.RepositoryID, s.RevisionID, "dependency", lang+":"+target)
+				s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: "Dependency", Name: target, Identity: lang + ":" + target, Language: lang})
+				addEdge(s, fileID, "File", id, "Dependency", "IMPORTS")
+			}
 		}
 	}
-	_ = lines
+}
+
+// extractGoSymbols uses the Go parser's token positions. Regexes cannot
+// reliably find declaration ends because braces may occur in signatures,
+// comments, literals, generic constraints, and nested blocks.
+func extractGoSymbols(data, rel, fileID string, s *Snapshot, add func(string, string, int, int)) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, rel, data, parser.ParseComments)
+	if err != nil {
+		return
+	}
+	position := func(pos token.Pos) int { return fset.Position(pos).Line }
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			typ := symbolType(rel, d.Name.Name)
+			if d.Recv != nil {
+				typ = "Method"
+				if strings.HasSuffix(rel, "_test.go") && strings.HasPrefix(d.Name.Name, "Test") {
+					typ = "Test"
+				}
+			}
+			add(d.Name.Name, typ, position(d.Pos()), position(d.End()))
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch v := spec.(type) {
+				case *ast.TypeSpec:
+					add(v.Name.Name, "Class", position(v.Pos()), position(v.End()))
+				}
+			}
+		}
+	}
+	for _, imp := range file.Imports {
+		target := strings.Trim(imp.Path.Value, "\"")
+		id := nodeID(s.RepositoryID, s.RevisionID, "dependency", "go:"+target)
+		s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: "Dependency", Name: target, Identity: "go:" + target, Language: "go"})
+		addEdge(s, fileID, "File", id, "Dependency", "IMPORTS")
+	}
 }
 
 func lineAt(data string, offset int) int { return 1 + strings.Count(data[:offset], "\n") }

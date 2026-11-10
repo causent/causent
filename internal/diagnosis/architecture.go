@@ -29,6 +29,61 @@ type failureObservation struct {
 	Message string
 }
 
+func parseRaceReports(text string) []RaceReport {
+	if !raceFailure.MatchString(text) {
+		return nil
+	}
+	var reports []RaceReport
+	lines := strings.Split(text, "\n")
+	current := RaceReport{}
+	section := ""
+	flush := func() {
+		if len(current.ReadStack) > 0 || len(current.WriteStack) > 0 {
+			reports = append(reports, current)
+		}
+		current = RaceReport{}
+		section = ""
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "WARNING: DATA RACE"):
+			flush()
+		case strings.HasPrefix(trimmed, "Read at"):
+			section = "read"
+		case strings.HasPrefix(trimmed, "Previous write at"), strings.HasPrefix(trimmed, "Write at"):
+			section = "write"
+		case strings.Contains(trimmed, " created at:"):
+			section = "create"
+		case trimmed == "" && section != "create":
+			section = ""
+		default:
+			m := goFrame.FindStringSubmatch(trimmed)
+			if len(m) == 0 {
+				continue
+			}
+			frame := localization.Frame{File: normalizeEvidencePath(m[1]), Line: atoi(m[2]), Provenance: "direct_stack_frame"}
+			if frame.File == "" {
+				continue
+			}
+			switch section {
+			case "read":
+				current.ReadStack = append(current.ReadStack, frame)
+			case "write":
+				current.WriteStack = append(current.WriteStack, frame)
+			case "create":
+				if len(current.GoroutineCreationStacks) == 0 {
+					current.GoroutineCreationStacks = append(current.GoroutineCreationStacks, nil)
+				}
+				last := len(current.GoroutineCreationStacks) - 1
+				current.GoroutineCreationStacks[last] = append(current.GoroutineCreationStacks[last], frame)
+			}
+		}
+	}
+	flush()
+	return reports
+}
+
 func isCIEvidenceKind(kind string) bool {
 	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact"
 }

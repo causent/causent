@@ -81,3 +81,27 @@ func TestGenerateObservedCandidateIDsAreInvestigationScoped(t *testing.T) {
 		t.Fatalf("candidate IDs collided: %q", first[0].ID)
 	}
 }
+
+func TestGenerateMapsFrameToOnlyItsEnclosingSymbol(t *testing.T) {
+	snapshot := programrepo.Snapshot{RepositoryID: "repo", RevisionID: "rev", Nodes: []domain.ProgramNode{
+		{ID: "outer", Type: "Function", Name: "Outer", FilePath: "cache.go", StartLine: 10, EndLine: 30, Identity: "outer"},
+		{ID: "inner", Type: "Function", Name: "Inner", FilePath: "cache.go", StartLine: 20, EndLine: 22, Identity: "inner"},
+	}}
+	got, _ := Generate(snapshot, Input{InvestigationID: "inv", RepositoryID: "repo", RevisionID: "rev", StackFrames: []Frame{{File: "cache.go", Line: 21, EvidenceIDs: []domain.ID{"frame"}}}, MaxCandidates: 10})
+	if len(got) != 1 || got[0].Location.SymbolIdentity != "inner" {
+		t.Fatalf("frame mapped to broad or multiple symbols: %#v", got)
+	}
+	if got[0].Score.ExecutionRelevance == 0 || got[0].Location.Provenance != "enclosing_symbol" {
+		t.Fatalf("direct frame attribution missing: %#v", got[0])
+	}
+}
+
+func TestPackageAndChangedEvidenceDoNotCreateExecutionScore(t *testing.T) {
+	snapshot := programrepo.Snapshot{RepositoryID: "repo", RevisionID: "rev", Nodes: []domain.ProgramNode{
+		{ID: "changed", Type: "Function", Name: "Changed", FilePath: "cache.go", StartLine: 40, EndLine: 45, Identity: "changed", Changed: true},
+	}}
+	got, _ := Generate(snapshot, Input{InvestigationID: "inv", RepositoryID: "repo", RevisionID: "rev", ChangedIdentities: map[string]bool{"changed": true}, FailureText: "cache package failed", EvidenceIDs: []domain.ID{"ci"}, MaxCandidates: 10})
+	if len(got) != 0 {
+		t.Fatalf("unconnected changed symbol became candidate: %#v", got)
+	}
+}

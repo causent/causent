@@ -19,6 +19,7 @@ import (
 	"github.com/causent/malenia/internal/agent"
 	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/execution"
+	"github.com/causent/malenia/internal/localization"
 	"github.com/causent/malenia/internal/observability"
 	"github.com/causent/malenia/internal/persistence"
 	programrepo "github.com/causent/malenia/internal/repository"
@@ -104,6 +105,17 @@ type EvidenceItem struct {
 	Provenance  string   `json:"provenance,omitempty"`
 	Revision    string   `json:"revision,omitempty"`
 	Limitations []string `json:"limitations,omitempty"`
+}
+
+// RaceReport preserves the two sides of a Go race. A stack frame is evidence,
+// not itself a diagnosis; keeping the sides separate prevents attribution from
+// collapsing into a generic list of locations.
+type RaceReport struct {
+	Test                    string                 `json:"test,omitempty"`
+	ReadStack               []localization.Frame   `json:"read_stack,omitempty"`
+	WriteStack              []localization.Frame   `json:"write_stack,omitempty"`
+	GoroutineCreationStacks [][]localization.Frame `json:"goroutine_creation_stacks,omitempty"`
+	EvidenceIDs             []string               `json:"evidence_ids,omitempty"`
 }
 
 // Claim is a hypothesis. It must cite evidence and carries its own confidence.
@@ -199,6 +211,7 @@ type Report struct {
 	AgentError                 string                         `json:"agent_error,omitempty"`
 	Localization               Localization                   `json:"localization"`
 	Evidence                   []EvidenceItem                 `json:"evidence"`
+	RaceReports                []RaceReport                   `json:"race_reports,omitempty"`
 	NormalizedEvidence         *NormalizedEvidence            `json:"normalized_evidence,omitempty"`
 	Candidates                 []domain.CandidateLocation     `json:"candidates,omitempty"`
 	Deltas                     []domain.CodeDelta             `json:"deltas,omitempty"`

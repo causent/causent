@@ -67,6 +67,7 @@ type CodeLocation struct {
 	StartLine      int    `json:"start_line,omitempty"`
 	EndLine        int    `json:"end_line,omitempty"`
 	LocationType   string `json:"location_type"`
+	Provenance     string `json:"provenance,omitempty"`
 }
 
 // ProgramNode is a revision-scoped node in the repository/program graph.
