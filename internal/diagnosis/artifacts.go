@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
@@ -85,6 +86,9 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 	return &ArtifactDecoderRegistry{decoders: []ArtifactDecoder{
 		junitArtifactDecoder{},
 		raceArtifactDecoder{},
+		sarifArtifactDecoder{},
+		tapArtifactDecoder{},
+		coverageArtifactDecoder{},
 		jsonArtifactDecoder{},
 		textArtifactDecoder{},
 	}}
@@ -262,6 +266,104 @@ func (raceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detectio
 		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{"race marker found but no race report was parsed"}}
 	}
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "ci_artifact", ClaimKind: "RuntimeObservedRace", Basis: "RuntimeObserved", Detail: string(data), Provenance: desc.StorageRef}}}
+}
+
+type sarifArtifactDecoder struct{}
+
+func (sarifArtifactDecoder) Name() string    { return "sarif" }
+func (sarifArtifactDecoder) Version() string { return "v1" }
+func (sarifArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	var doc struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Tool struct {
+				Driver struct {
+					Name string `json:"name"`
+				} `json:"driver"`
+			} `json:"tool"`
+		} `json:"runs"`
+	}
+	if json.Unmarshal(data, &doc) != nil || len(doc.Runs) == 0 || doc.Version == "" || doc.Runs[0].Tool.Driver.Name == "" {
+		return ArtifactDetection{Confidence: "none"}
+	}
+	return ArtifactDetection{Format: "sarif", Category: ArtifactStatic, Confidence: "high", Reason: "SARIF version and tool driver fields"}
+}
+func (sarifArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				RuleID  string `json:"ruleId"`
+				Level   string `json:"level"`
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+	}
+	count := 0
+	for _, run := range doc.Runs {
+		count += len(run.Results)
+	}
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "static_analysis_report", ClaimKind: "static_analysis", Basis: "Observed", Detail: fmt.Sprintf("SARIF report with %d result(s): %s", count, string(data)), Provenance: desc.StorageRef}}}
+}
+
+type tapArtifactDecoder struct{}
+
+func (tapArtifactDecoder) Name() string    { return "tap" }
+func (tapArtifactDecoder) Version() string { return "v1" }
+func (tapArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	text := string(data)
+	if !strings.Contains(text, "TAP version") && !regexp.MustCompile(`(?m)^\s*(?:not )?ok\b`).MatchString(text) {
+		return ArtifactDetection{Confidence: "none"}
+	}
+	return ArtifactDetection{Format: "tap", Category: ArtifactTest, Confidence: "high", Reason: "TAP version or test result lines"}
+}
+func (tapArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	resultLine := regexp.MustCompile(`(?m)^\s*(not )?ok\b(?:\s+\d+)?(?:\s+-\s+)?([^\r\n]*)`)
+	matches := resultLine.FindAllStringSubmatch(string(data), -1)
+	if len(matches) == 0 {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{"TAP marker found but no test result lines were parsed"}}
+	}
+	failed := 0
+	for _, match := range matches {
+		if match[1] != "" {
+			failed++
+		}
+	}
+	detail := fmt.Sprintf("TAP report with %d test result(s), %d failure(s): %s", len(matches), failed, string(data))
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "tap_report", ClaimKind: "test_result", Basis: "Observed", Detail: detail, Provenance: desc.StorageRef}}}
+}
+
+type coverageArtifactDecoder struct{}
+
+func (coverageArtifactDecoder) Name() string    { return "coverage" }
+func (coverageArtifactDecoder) Version() string { return "v1" }
+func (coverageArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	text := strings.TrimSpace(string(data))
+	switch {
+	case strings.Contains(text, "SF:") && strings.Contains(text, "DA:"):
+		return ArtifactDetection{Format: "lcov", Category: ArtifactCoverage, Confidence: "high", Reason: "LCOV source and line records"}
+	case strings.HasPrefix(text, "<?xml") && strings.Contains(text, "<coverage"):
+		return ArtifactDetection{Format: "cobertura_xml", Category: ArtifactCoverage, Confidence: "high", Reason: "Cobertura coverage root"}
+	case strings.HasPrefix(text, "<?xml") && strings.Contains(text, "<report"):
+		return ArtifactDetection{Format: "jacoco_xml", Category: ArtifactCoverage, Confidence: "medium", Reason: "JaCoCo report root"}
+	default:
+		return ArtifactDetection{Confidence: "none"}
+	}
+}
+func (coverageArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	if detection.Format != "lcov" {
+		var document struct {
+			XMLName xml.Name
+		}
+		if err := xml.Unmarshal(data, &document); err != nil {
+			return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+		}
+	}
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "coverage_report", ClaimKind: "coverage_observation", Basis: "Observed", Detail: string(data), Provenance: desc.StorageRef}}}
 }
 
 type jsonArtifactDecoder struct{}

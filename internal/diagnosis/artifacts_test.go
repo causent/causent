@@ -94,3 +94,39 @@ func TestArtifactIngestionPreservesLimitations(t *testing.T) {
 		t.Fatalf("bounded artifact limitation missing: %#v", items)
 	}
 }
+
+func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   string
+		format string
+		kind   string
+		cat    ArtifactCategory
+	}{
+		{name: "sarif", data: `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"lint"}},"results":[{"ruleId":"R1","message":{"text":"bad"}}]}]}`, format: "sarif", kind: "static_analysis_report", cat: ArtifactStatic},
+		{name: "tap", data: "TAP version 13\n1..1\nok 1 - works\n", format: "tap", kind: "tap_report", cat: ArtifactTest},
+		{name: "lcov", data: "TN:\nSF:pkg/main.go\nDA:1,1\nend_of_record\n", format: "lcov", kind: "coverage_report", cat: ArtifactCoverage},
+		{name: "cobertura", data: `<?xml version="1.0"?><coverage><packages/></coverage>`, format: "cobertura_xml", kind: "coverage_report", cat: ArtifactCoverage},
+		{name: "jacoco", data: `<?xml version="1.0"?><report name="unit"><package name="pkg"/></report>`, format: "jacoco_xml", kind: "coverage_report", cat: ArtifactCoverage},
+	}
+	registry := NewArtifactDecoderRegistry()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := registry.Ingest(ArtifactDescriptor{ArtifactID: "artifact:" + tc.name, StorageRef: "artifact://" + tc.name, Name: tc.name}, []byte(tc.data))
+			if result.Status != ArtifactDecoded || len(result.Evidence) != 1 {
+				t.Fatalf("result = %#v", result)
+			}
+			item := result.Evidence[0]
+			if item.Kind != tc.kind || item.ArtifactFormat != tc.format || item.ArtifactCategory != string(tc.cat) || item.DecoderStatus != string(ArtifactDecoded) {
+				t.Fatalf("normalized evidence = %#v", item)
+			}
+		})
+	}
+}
+
+func TestArtifactRegistryMarksMalformedRecognizedFormat(t *testing.T) {
+	result := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:bad", Name: "results.xml"}, []byte(`<?xml version="1.0"?><coverage>`))
+	if result.Status != ArtifactMalformed || len(result.Evidence) != 0 {
+		t.Fatalf("malformed result = %#v", result)
+	}
+}
