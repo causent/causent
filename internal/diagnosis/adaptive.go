@@ -131,7 +131,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			if err := saveAdaptiveObjectives(d.cfg.Store, report, &state); err != nil {
 				return err
 			}
-			if allObjectivesResolved(report) {
+			if causalContractSatisfied(report) {
 				state.StoppingReason = "root_cause_established"
 				break
 			}
@@ -141,8 +141,9 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		state.Budget.IterationsUsed = state.Iterations
 		decision := investigation.Select(investigation.State{InvestigationID: invID, Hypotheses: report.Hypotheses, Objectives: state.Objectives, Questions: state.Questions, Activities: currentActivities, Experiments: currentExperiments, Budget: state.Budget}, registry, investigation.DefaultScorePolicy)
 		if decision.StoppingReason != "" {
-			if report.InvestigationObjective != nil && !allObjectivesResolved(report) {
-				state.StoppingReason = "investigation_blocked: " + decision.StoppingReason
+			if report.InvestigationObjective != nil && !causalContractSatisfied(report) {
+				state.StoppingReason = "investigation_blocked"
+				report.InvestigationObjective.StoppingReason = "controller had no eligible useful action: " + decision.StoppingReason
 			} else {
 				state.StoppingReason = decision.StoppingReason
 			}
@@ -214,12 +215,19 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		state.StoppingReason = ""
 	}
 	if state.StoppingReason == "" {
-		state.StoppingReason = "budget_exhausted: adaptive duration exhausted"
+		state.StoppingReason = "budget_exhausted"
+		if report.InvestigationObjective != nil && !causalContractSatisfied(report) {
+			report.InvestigationObjective.StoppingReason = "adaptive investigation duration or budget was exhausted"
+		}
 	}
 	if report.InvestigationObjective != nil {
 		switch {
+		case causalContractSatisfied(report):
+			report.InvestigationObjective.Status = "resolved"
+			report.InvestigationObjective.StoppingReason = "root cause contract satisfied"
 		case allObjectivesResolved(report):
-			report.InvestigationObjective.Status = "causal_review_required"
+			report.InvestigationObjective.Status = "resolved"
+			report.InvestigationObjective.StoppingReason = "all objective predicates resolved; causal contract remains incomplete"
 		case strings.HasPrefix(state.StoppingReason, "budget_exhausted"):
 			report.InvestigationObjective.Status = "blocked"
 			report.InvestigationObjective.StoppingReason = state.StoppingReason

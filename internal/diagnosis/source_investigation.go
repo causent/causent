@@ -25,15 +25,21 @@ var sourceIdentifierRE = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\b`)
 var sourceFieldRE = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b`)
 
 type sourceAccessTarget struct {
-	Access string
-	File   string
-	Line   int
+	Access      string
+	File        string
+	Line        int
+	Address     string
+	FrameRole   string
+	ExactSource bool
 }
 
 type sourceAccessObservation struct {
 	target                    sourceAccessTarget
 	line                      string
 	expression                string
+	exactMemory               bool
+	memoryIdentity            string
+	frameRole                 string
 	relatedIdentifiers        []string
 	synchronizationEvidenceID string
 	facts                     []string
@@ -84,6 +90,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 		if expression == "" {
 			expression = strings.TrimSpace(lines[target.Line-1])
 		}
+		exactMemory, memoryIdentity := sourceMemoryIdentity(path, target.Line, expression)
 		functionEvidence, err := d.recordSourceAction(ctx, report, persist, "InspectFunction", target.File+":"+fmt.Sprint(target.Line),
 			fmt.Sprintf("complete enclosing %s %s (%s:%d-%d)", node.Type, node.Name, target.File, start, end),
 			"source function", target.File, "access expression: "+expression+"\n"+functionText)
@@ -92,8 +99,8 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 		}
 		facts := []string{functionEvidence}
 		accessLine := lines[target.Line-1]
-		accesses = append(accesses, sourceAccessObservation{target: target, line: accessLine, expression: expression, facts: facts})
-		model.Accesses = append(model.Accesses, ConcurrencyAccess{Access: target.Access, File: target.File, Line: target.Line, Function: node.Identity, Expression: expression, StateIdentifiers: sourceStateIdentifiers(expression), EvidenceIDs: []string{functionEvidence}})
+		accesses = append(accesses, sourceAccessObservation{target: target, line: accessLine, expression: expression, exactMemory: exactMemory, memoryIdentity: memoryIdentity, frameRole: target.FrameRole, facts: facts})
+		model.Accesses = append(model.Accesses, ConcurrencyAccess{Access: target.Access, File: target.File, Line: target.Line, Function: node.Identity, Expression: expression, ExactMemory: exactMemory, MemoryIdentity: memoryIdentity, FrameRole: target.FrameRole, StateIdentifiers: sourceStateIdentifiers(expression), EvidenceIDs: []string{functionEvidence}})
 
 		variables := sourceVariables(accessLine)
 		trace := traceVariables(lines, variables)
@@ -163,7 +170,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 			}
 			accesses[len(accesses)-1].facts = append(accesses[len(accesses)-1].facts, id)
 		}
-		for _, related := range relatedSourceNodes(snapshot, node, expression) {
+		for _, related := range relatedImplementationNodes(snapshot, node, expression) {
 			relatedPath := filepath.Join(workspace, filepath.FromSlash(related.FilePath))
 			relatedData, readErr := os.ReadFile(relatedPath)
 			if readErr != nil {
@@ -413,7 +420,30 @@ func evaluateInvestigationObjectives(report *Report) {
 		if len(matching) < len(u.RequiredKinds) {
 			continue
 		}
+		if u.ID == "exact-memory" {
+			if report.Concurrency == nil || len(report.Concurrency.Accesses) < 2 {
+				continue
+			}
+			left, right := report.Concurrency.Accesses[0], report.Concurrency.Accesses[1]
+			if !left.ExactMemory || !right.ExactMemory || left.MemoryIdentity == "" || left.MemoryIdentity != right.MemoryIdentity {
+				u.Evaluation = "source frames identify calls or wrappers, but do not establish one concrete memory object or field for both accesses"
+				continue
+			}
+		}
 		if u.ID == "goroutine-ownership" {
+			if report.Concurrency == nil {
+				continue
+			}
+			verifiedOwnership := true
+			for _, owner := range report.Concurrency.GoroutineOwnership {
+				if strings.Contains(strings.ToLower(owner), "remains to be verified") || strings.Contains(strings.ToLower(owner), "unresolved") {
+					verifiedOwnership = false
+				}
+			}
+			if !verifiedOwnership {
+				u.Evaluation = "goroutine creation was observed, but ownership or completion edges remain unverified"
+				continue
+			}
 			lifecycle, cleanup := false, false
 			for _, ev := range matching {
 				text := strings.ToLower(ev.Detail)
@@ -512,29 +542,32 @@ func sourceActionStatus(detail string) string {
 func sourceInvestigationTargets(report *Report, candidates []domain.CandidateLocation) []sourceAccessTarget {
 	var targets []sourceAccessTarget
 	seen := map[string]bool{}
-	add := func(access, file string, line int) {
+	add := func(access, file string, line int, address, role string) {
 		file = filepath.ToSlash(strings.TrimSpace(file))
 		if file == "" || line <= 0 || filepath.IsAbs(file) || strings.HasPrefix(file, "../") {
 			return
 		}
+		if role == "" {
+			role = "enclosing_source_frame"
+		}
 		key := access + "\x00" + file + ":" + fmt.Sprint(line)
 		if !seen[key] {
 			seen[key] = true
-			targets = append(targets, sourceAccessTarget{Access: access, File: file, Line: line})
+			targets = append(targets, sourceAccessTarget{Access: access, File: file, Line: line, Address: address, FrameRole: role, ExactSource: role == "enclosing_source_frame"})
 		}
 	}
 	for _, race := range report.RaceReports {
 		if len(race.ReadStack) > 0 {
-			add("read", race.ReadStack[0].File, race.ReadStack[0].Line)
+			add("read", race.ReadStack[0].File, race.ReadStack[0].Line, race.ReadAddress, race.ReadFrameRole)
 		}
 		if len(race.WriteStack) > 0 {
-			add("write", race.WriteStack[0].File, race.WriteStack[0].Line)
+			add("write", race.WriteStack[0].File, race.WriteStack[0].Line, race.WriteAddress, race.WriteFrameRole)
 		}
 	}
 	if len(targets) == 0 {
 		for _, candidate := range candidates {
 			if candidate.Location.Provenance == "direct_stack_frame" || candidate.Location.Provenance == "observed_frame" {
-				add("observed", candidate.Location.FilePath, candidate.Location.StartLine)
+				add("observed", candidate.Location.FilePath, candidate.Location.StartLine, "", "enclosing_source_frame")
 			}
 			if len(targets) >= 4 {
 				break
@@ -735,19 +768,51 @@ func relatedSourceNodes(snapshot programrepo.Snapshot, node *domain.ProgramNode,
 	return related
 }
 
+// relatedImplementationNodes follows resolved static call edges in addition
+// to same-package name matches. This is what lets a cleanup call such as
+// rawCacher.Stop() reach the actual Cacher.Stop implementation without
+// presenting the call site itself as the implementation or memory access.
+func relatedImplementationNodes(snapshot programrepo.Snapshot, node *domain.ProgramNode, expression string) []domain.ProgramNode {
+	result := relatedSourceNodes(snapshot, node, expression)
+	seen := map[string]bool{node.ID: true}
+	for _, value := range result {
+		seen[value.ID] = true
+	}
+	method := ""
+	if dot := strings.LastIndex(expression, "."); dot >= 0 {
+		method = strings.TrimSuffix(strings.TrimSpace(expression[dot+1:]), "()")
+	}
+	for _, relation := range snapshot.Relationships {
+		if relation.Type != "CALLS" || relation.SourceID != node.ID || relation.Metadata["provenance"] != "verified_static_call" {
+			continue
+		}
+		for _, candidate := range snapshot.Nodes {
+			if candidate.ID != relation.TargetID || seen[candidate.ID] || (method != "" && candidate.Name != method) {
+				continue
+			}
+			if candidate.Type == "Function" || candidate.Type == "Method" {
+				result = append(result, candidate)
+				seen[candidate.ID] = true
+			}
+		}
+	}
+	return result
+}
+
 func sharedSourceState(accesses []sourceAccessObservation) []string {
 	if len(accesses) < 2 {
 		return nil
 	}
-	left := append(sourceVariables(accesses[0].expression), accesses[0].relatedIdentifiers...)
-	right := append(sourceVariables(accesses[1].expression), accesses[1].relatedIdentifiers...)
+	// Identifier overlap is not an alias proof. Only an independently
+	// resolved source identity can enter the concurrency model as shared state.
 	seen := map[string]bool{}
-	for _, value := range left {
-		for _, other := range right {
-			if value == other && len(value) > 2 {
-				seen[value] = true
-			}
+	for _, access := range accesses {
+		if !access.exactMemory || access.memoryIdentity == "" {
+			return nil
 		}
+	}
+	if accesses[0].memoryIdentity == accesses[1].memoryIdentity {
+		seen[accesses[0].memoryIdentity] = true
 	}
 	result := make([]string, 0, len(seen))
 	for value := range seen {
@@ -755,6 +820,26 @@ func sharedSourceState(accesses []sourceAccessObservation) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func sourceMemoryIdentity(path string, line int, expression string) (bool, string) {
+	text := strings.TrimSpace(expression)
+	if text == "" || strings.HasPrefix(text, "go ") || strings.Contains(text, "(") {
+		return false, ""
+	}
+	text = strings.TrimSpace(strings.TrimPrefix(text, "return "))
+	if index := strings.Index(text, "="); index >= 0 {
+		text = strings.TrimSpace(strings.TrimPrefix(text[:index], "*"))
+	}
+	if text == "" || !sourceIdentifierRE.MatchString(text) || strings.ContainsAny(text, " +-*/!<>[]") {
+		return false, ""
+	}
+	// The source line is part of the identity provenance; the current
+	// identity is intentionally conservative and does not infer pointer aliasing.
+	if _, err := os.Stat(path); err != nil || line <= 0 {
+		return false, ""
+	}
+	return true, text
 }
 
 func sourceTestContext(report *Report, snapshot programrepo.Snapshot) string {
@@ -818,6 +903,38 @@ func sourceRaceHypothesis(report *Report, accesses []sourceAccessObservation) *d
 		MissingEvidence:          []string{"verified happens-before or ownership ordering between both accesses", "a controlled experiment that distinguishes synchronization failure from benign concurrent access"},
 		Provenance:               "deterministic source investigation",
 	}
+}
+
+// raceHypotheses creates competing mechanisms, never candidate-location
+// claims. Each statement remains conditional until exact memory identity and
+// lifecycle/order evidence satisfy its missing requirements.
+func raceHypotheses(report *Report) []domain.Hypothesis {
+	var support []domain.ID
+	for _, incident := range report.FailureIncidents {
+		if incident.Category == "go_data_race" {
+			support = append(support, stringIDsToDomain(incident.EvidenceIDs)...)
+		}
+	}
+	if report.Concurrency != nil {
+		support = append(support, stringIDsToDomain(report.Concurrency.EvidenceIDs)...)
+	}
+	support = uniqueDomainIDs(support)
+	return []domain.Hypothesis{
+		{ID: domain.ID("hypothesis:race:lifecycle-ordering:" + report.InvestigationID), InvestigationID: domain.ID(report.InvestigationID), Statement: "The observed race is caused by a background goroutine accessing cacher-owned state after teardown begins because the relevant lifecycle completion is not ordered before cleanup.", Invariant: "A goroutine must complete before teardown releases or mutates the state it can access.", AffectedComponent: "cacher lifecycle", SupportingEvidenceIDs: support, PredictedObservations: []string{"The exact read and write resolve to the same object or field and the Stop path lacks a verified completion-before-cleanup edge."}, MissingEvidence: []string{"exact source-level memory identity", "verified lifecycle ordering or its absence"}, Confidence: 0.3, Status: domain.HypProposed, Provenance: "race evidence plus deterministic source facts", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
+		{ID: domain.ID("hypothesis:race:distinct-state:" + report.InvestigationID), InvestigationID: domain.ID(report.InvestigationID), Statement: "The race report's wrapper and cleanup frames do not identify the same source-level object; the apparent lifecycle relationship may be incidental and the conflicting accesses may belong to distinct state or an unresolved alias.", Invariant: "A race explanation requires proof that both accesses reach the same concrete memory object or field.", AffectedComponent: "unresolved source memory", SupportingEvidenceIDs: support, PredictedObservations: []string{"Source-level analysis fails to resolve one concrete identity or establishes different identities for the two access expressions."}, MissingEvidence: []string{"concrete memory identity and alias relationship"}, Confidence: 0.3, Status: domain.HypProposed, Provenance: "race frame semantics", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
+	}
+}
+
+func uniqueDomainIDs(values []domain.ID) []domain.ID {
+	seen := map[domain.ID]bool{}
+	out := make([]domain.ID, 0, len(values))
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func uniqueStrings(values []string) []string {

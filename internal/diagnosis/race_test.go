@@ -22,6 +22,12 @@ func TestParseRaceReportsPreservesReadWriteAndCreationStacks(t *testing.T) {
 	if reports[0].ReadStack[0].Line != 496 || reports[0].WriteStack[0].Line != 187 {
 		t.Fatalf("wrong race locations: %#v", reports[0])
 	}
+	if reports[0].ReadAddress != "0x00c0006135c0" || reports[0].WriteAddress != reports[0].ReadAddress {
+		t.Fatalf("race addresses were not preserved: %#v", reports[0])
+	}
+	if reports[0].ReadFrameRole != "goroutine_creation_or_wrapper" || reports[0].WriteFrameRole != "goroutine_creation_or_wrapper" {
+		t.Fatalf("wrapper frames were not classified: %#v", reports[0])
+	}
 	if len(reports[0].GoroutineCreationStacks) != 1 || len(reports[0].GoroutineCreationStacks[0]) < 2 {
 		t.Fatalf("creation stack missing: %#v", reports[0])
 	}
@@ -182,5 +188,18 @@ func TestRootCauseRequiresCompleteCausalContract(t *testing.T) {
 	assessment = assessRootCause(report)
 	if assessment.Status == "confirmed" {
 		t.Fatalf("incomplete ordering was incorrectly confirmed: %#v", assessment)
+	}
+}
+
+func TestRaceHypothesesAreMechanismsNotCandidateLocations(t *testing.T) {
+	report := Report{InvestigationID: "race-hyp", FailureIncidents: []FailureIncident{{Category: "go_data_race", EvidenceIDs: []string{"ci"}}}, Concurrency: &ConcurrencyModel{EvidenceIDs: []string{"source"}}}
+	hypotheses := raceHypotheses(&report)
+	if len(hypotheses) < 2 {
+		t.Fatalf("competing race hypotheses missing: %#v", hypotheses)
+	}
+	for _, hypothesis := range hypotheses {
+		if hypothesis.Invariant == "" || len(hypothesis.PredictedObservations) == 0 || len(hypothesis.SupportingEvidenceIDs) == 0 || strings.HasPrefix(hypothesis.Statement, "Candidate location") {
+			t.Fatalf("hypothesis lacks causal contract: %#v", hypothesis)
+		}
 	}
 }

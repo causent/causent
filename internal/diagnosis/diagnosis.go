@@ -112,8 +112,12 @@ type EvidenceItem struct {
 // collapsing into a generic list of locations.
 type RaceReport struct {
 	Test                    string                 `json:"test,omitempty"`
+	ReadAddress             string                 `json:"read_address,omitempty"`
+	WriteAddress            string                 `json:"write_address,omitempty"`
 	ReadAccessType          string                 `json:"read_access_type,omitempty"`
 	WriteAccessType         string                 `json:"write_access_type,omitempty"`
+	ReadFrameRole           string                 `json:"read_frame_role,omitempty"`
+	WriteFrameRole          string                 `json:"write_frame_role,omitempty"`
 	ReadStack               []localization.Frame   `json:"read_stack,omitempty"`
 	WriteStack              []localization.Frame   `json:"write_stack,omitempty"`
 	GoroutineCreationStacks [][]localization.Frame `json:"goroutine_creation_stacks,omitempty"`
@@ -260,6 +264,9 @@ type ConcurrencyAccess struct {
 	Line             int      `json:"line"`
 	Function         string   `json:"function,omitempty"`
 	Expression       string   `json:"expression,omitempty"`
+	ExactMemory      bool     `json:"exact_memory,omitempty"`
+	MemoryIdentity   string   `json:"memory_identity,omitempty"`
+	FrameRole        string   `json:"frame_role,omitempty"`
 	StateIdentifiers []string `json:"state_identifiers,omitempty"`
 	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
 }
@@ -796,7 +803,13 @@ func Run(ctx context.Context, cfg Config) (result Report, resultErr error) {
 			adaptStage.Done("completed", nil)
 		}
 	} else if report.StoppingReason == "" {
-		report.StoppingReason = "adaptive investigation skipped"
+		if report.InvestigationObjective != nil && !allObjectivesResolved(&report) {
+			report.StoppingReason = "investigation_blocked"
+			report.InvestigationObjective.Status = "blocked"
+			report.InvestigationObjective.StoppingReason = "adaptive investigation was unavailable or skipped; unresolved dependencies remain"
+		} else {
+			report.StoppingReason = "investigation_blocked"
+		}
 	}
 	// Root-cause assessment is intentionally deferred until the controller has
 	// evaluated its objective predicates and hypotheses. Preliminary findings
@@ -899,6 +912,11 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 		if err := d.persistArchitecture(ctx, &report, cfg.RepoPath, report.Baseline, report.Environment, report.Localization, false); err != nil {
 			report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
 		}
+	}
+	if report.InvestigationObjective != nil && !allObjectivesResolved(&report) {
+		report.InvestigationObjective.Status = "blocked"
+		report.InvestigationObjective.StoppingReason = "adaptive investigation was unavailable for evidence-first execution; unresolved dependencies remain"
+		report.StoppingReason = "investigation_blocked"
 	}
 	report.FailureIncidents = buildFailureIncidents(&report)
 	report.RootCause = assessRootCause(report)

@@ -34,6 +34,9 @@ func TestDiagnosisPersistsRepositoryGraphAndLocalization(t *testing.T) {
 	if len(report.Experiments) < 1 || report.AdaptiveIterations < 2 || report.StoppingReason == "" {
 		t.Fatalf("adaptive state missing: experiments=%d iterations=%d stop=%q hypotheses=%#v questions=%#v uncertainty=%v", len(report.Experiments), report.AdaptiveIterations, report.StoppingReason, report.Hypotheses, report.UnresolvedQuestions, report.Uncertainty)
 	}
+	if report.InvestigationObjective != nil && report.InvestigationObjective.Status == "investigating" {
+		t.Fatalf("completed controller left objective investigating: %#v stopping=%q", report.InvestigationObjective, report.StoppingReason)
+	}
 	if report.Metrics == nil || report.Metrics.InvestigationActions != len(report.InvestigationActions) {
 		t.Fatalf("metrics/action ledger mismatch: metrics=%+v actions=%d", report.Metrics, len(report.InvestigationActions))
 	}

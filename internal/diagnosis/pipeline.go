@@ -356,12 +356,11 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
-	if hasRaceIncident(report.FailureIncidents) && len(report.Hypotheses) == 0 {
-		// Candidate locations remain machine-readable supporting evidence. A
-		// generic candidate statement is not a falsifiable mechanism, so do not
-		// publish it as a hypothesis when the incident evidence cannot distinguish
-		// one mechanism from another.
-		report.Hypotheses = nil
+	if hasRaceIncident(report.FailureIncidents) {
+		// Candidate locations remain localization evidence. Race investigations
+		// receive mechanism hypotheses with predictions; a candidate function is
+		// never promoted to a causal hypothesis by itself.
+		report.Hypotheses = raceHypotheses(report)
 	} else {
 		report.Hypotheses = reasoning.Generate(domain.ID(report.InvestigationID), discovery.Groups, hypothesisCandidates)
 	}
@@ -504,7 +503,7 @@ func assessRootCause(report Report) RootCauseAssessment {
 			"a controlled observation distinguishing a synchronization defect from a benign concurrent access",
 		}
 	}
-	if allObjectivesResolved(&report) && report.Concurrency != nil && len(report.Concurrency.Accesses) >= 2 && len(report.Concurrency.SharedState) > 0 && len(report.Concurrency.HappensBefore) > 0 && len(report.Concurrency.MissingOrdering) == 0 {
+	if causalContractSatisfied(&report) {
 		ids := append([]string(nil), incident.EvidenceIDs...)
 		for _, id := range report.Concurrency.EvidenceIDs {
 			ids = appendUniqueString(ids, id)
@@ -517,6 +516,10 @@ func assessRootCause(report Report) RootCauseAssessment {
 		}
 	}
 	return assessment
+}
+
+func causalContractSatisfied(report *Report) bool {
+	return allObjectivesResolved(report) && report.Concurrency != nil && len(report.Concurrency.Accesses) >= 2 && len(report.Concurrency.SharedState) > 0 && len(report.Concurrency.HappensBefore) > 0 && len(report.Concurrency.MissingOrdering) == 0
 }
 
 func minInt(a, b int) int {

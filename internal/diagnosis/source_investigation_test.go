@@ -150,6 +150,21 @@ func TestObjectivePredicateRequiresEvidenceAndRevision(t *testing.T) {
 	}
 }
 
+func TestExactMemoryDoesNotResolveFromIdentifierOverlap(t *testing.T) {
+	report := &Report{Environment: Environment{HeadCommit: "head"}, InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{{
+		ID: "exact-memory", Question: "memory", Predicate: "same concrete object", RequiredKinds: []string{"source function", "source variable trace", "source references"}, Status: "unresolved", Revision: "head",
+	}}}, Concurrency: &ConcurrencyModel{Accesses: []ConcurrencyAccess{{Expression: "go cacher.startBackgroundResync()", FrameRole: "goroutine_creation_or_wrapper", ExactMemory: false}, {Expression: "rawCacher.Stop()", FrameRole: "goroutine_creation_or_wrapper", ExactMemory: false}}}}
+	report.Evidence = []EvidenceItem{
+		{ID: "function", Kind: "source function", Detail: "enclosing function", Revision: "head"},
+		{ID: "trace", Kind: "source variable trace", Detail: "cacher Stop startBackgroundResync", Revision: "head"},
+		{ID: "refs", Kind: "source references", Detail: "cacher Stop startBackgroundResync", Revision: "head"},
+	}
+	evaluateInvestigationObjectives(report)
+	if report.InvestigationObjective.Unknowns[0].Status == "resolved" {
+		t.Fatal("identifier overlap and complete evidence categories incorrectly resolved exact memory")
+	}
+}
+
 func New(c *C) {
 	go c.startBackgroundResync()
 }
@@ -209,8 +224,8 @@ func Teardown(c *C) {
 	if err := d.runSourceInvestigation(context.Background(), report, dir, snapshot, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	if report.Concurrency == nil || len(report.Concurrency.SharedState) == 0 {
-		t.Fatalf("shared shutdown state was not traced: %#v", report.Concurrency)
+	if report.Concurrency == nil || len(report.Concurrency.SharedState) != 0 {
+		t.Fatalf("wrapper/call-site overlap was incorrectly treated as shared memory: %#v", report.Concurrency)
 	}
 	if !containsSourceToken(report.Concurrency.Synchronization, "Add") || !containsSourceToken(report.Concurrency.Synchronization, "Wait") {
 		t.Fatalf("WaitGroup operations were not reconstructed: %#v", report.Concurrency)
