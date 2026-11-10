@@ -185,6 +185,19 @@ type Localization struct {
 	LikelyFileReasons map[string][]string `json:"likely_file_reasons,omitempty"`
 }
 
+// RootCauseAssessment keeps the observed incident separate from causal
+// interpretation. An unknown assessment is a valid terminal result when the
+// available evidence does not establish a mechanism.
+type RootCauseAssessment struct {
+	Status             string             `json:"status"`
+	Statement          string             `json:"statement"`
+	EvidenceIDs        []string           `json:"evidence_ids,omitempty"`
+	ObservedLocations  []IncidentLocation `json:"observed_locations,omitempty"`
+	MissingEvidence    []string           `json:"missing_evidence,omitempty"`
+	CausalityStatus    string             `json:"causality_status"`
+	VerificationStatus string             `json:"verification_status"`
+}
+
 // Environment is the bounded execution context. Secrets are never recorded.
 type Environment struct {
 	OS            string    `json:"os"`
@@ -249,6 +262,7 @@ type Report struct {
 	FailureGroups              []domain.FailureGroup          `json:"failure_groups,omitempty"`
 	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
 	FailureIncidents           []FailureIncident              `json:"failure_incidents,omitempty"`
+	RootCause                  RootCauseAssessment            `json:"root_cause"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
 	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
@@ -587,6 +601,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 			report.Partial = true
 		}
+		report.RootCause = assessRootCause(report)
 		return report, nil
 	}
 
@@ -684,6 +699,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Partial = true
 	}
 	report.FailureIncidents = buildFailureIncidents(&report)
+	report.RootCause = assessRootCause(report)
 
 	if !skipDeep && !cfg.SkipAdaptive {
 		adaptStage := d.metrics.Begin(observability.StageAdaptiveDeep)
@@ -806,6 +822,7 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 		}
 	}
 	report.FailureIncidents = buildFailureIncidents(&report)
+	report.RootCause = assessRootCause(report)
 	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)
 	report.Confidence = confidence(report.Classification, report.Localization, report.Uncertainty)
 	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, report.Localization)...)

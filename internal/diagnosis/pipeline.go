@@ -472,6 +472,28 @@ func hasRaceIncident(incidents []FailureIncident) bool {
 	return false
 }
 
+func assessRootCause(report Report) RootCauseAssessment {
+	assessment := RootCauseAssessment{
+		Status:             "unknown",
+		Statement:          "The available evidence establishes the failure observation but does not establish its root cause.",
+		CausalityStatus:    "unverified",
+		VerificationStatus: "not_attempted",
+		MissingEvidence: []string{
+			"a source-backed mechanism connecting the observed operation to the failure",
+			"verification that the proposed mechanism is the violated invariant",
+		},
+	}
+	if len(report.FailureIncidents) == 0 {
+		assessment.Statement = "No root cause was established because no structured failure incident was available."
+		assessment.MissingEvidence = []string{"a structured failure incident and source-backed explanation"}
+		return assessment
+	}
+	incident := report.FailureIncidents[0]
+	assessment.ObservedLocations = append([]IncidentLocation(nil), incident.ObservedLocations...)
+	assessment.EvidenceIDs = append([]string(nil), incident.EvidenceIDs...)
+	return assessment
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a

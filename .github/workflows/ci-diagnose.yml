@@ -312,8 +312,17 @@ jobs:
               else empty end),
               (if .refused then "**Refused**: \(.refusal_reason)  " else empty end),
               "",
-              (if ((.localization.likely_files // []) | length) > 0 then
-                "**Likely files**:\n" + ((.localization.likely_files // []) | map("- `\(.)`") | join("\n"))
+              (if ((.findings // []) | map(select(.kind == "incident_diagnosis")) | length) > 0 then
+                "**Primary diagnosis**:\n" + ((.findings // []) | map(select(.kind == "incident_diagnosis") | "- " + .statement) | join("\n"))
+              else empty end),
+              (if ((.failure_incidents // []) | length) > 0 then
+                "**Observed incident locations**:\n" + ((.failure_incidents // []) | map(.observed_locations // [] | map("- " + (.access // "access") + " `" + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "` (" + (.provenance // "unknown provenance") + ")") | join("\n")) | join("\n"))
+              else empty end),
+              (if ((.candidates // []) | length) > 0 then
+                "**Supporting candidate locations**:\n" + ((.candidates[0:8] // []) | map("- `" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "` — " + (.location.symbol_identity // "unresolved") + " (" + (if .location.provenance == "enclosing_symbol" then "enclosing symbol" elif .location.provenance == "inferred_caller" then "inferred structural candidate" elif .location.provenance == "direct_stack_frame" then "directly observed location" else (.location.provenance // "unattributed") end) + ")") | join("\n"))
+              else empty end),
+              (if ((.root_cause.statement // "") != "") then
+                "**Root cause**: [" + (.root_cause.status // "unknown") + "] " + .root_cause.statement + "\n**Causality**: " + (.root_cause.causality_status // "unverified") + "; verification: " + (.root_cause.verification_status // "not_attempted")
               else empty end),
               (if ((.failure_episodes // []) | length) > 0 then
                 "**Failure episodes**:\n" + ((.failure_episodes[0:12] // []) | map("- **" + (.test_identifier // "unknown test") + "** — " + (.failure_type // "observed failure") + ": " + (.failure_message // "no message")) | join("\n"))
@@ -328,8 +337,8 @@ jobs:
                 "**Static call paths (inferred, not observed runtime paths)**:\n" + ((.execution_paths[0:5] // []) | map("- [" + (.status // "inferred") + "] " + .summary) | join("\n"))
               else empty end),
               "",
-              (if ((.claims // []) | length) > 0 then
-                "**Hypotheses**:\n" + ((.claims // []) | map("- (confidence \(.confidence)) \(.statement)") | join("\n"))
+              (if ((.hypotheses // []) | map(select((.statement // "") != "" and ((.supporting_evidence_ids // []) | length) > 0 and ((.contradicting_evidence_ids // []) | length) > 0 and ((.predicted_observations // []) | length) > 0)) | length) > 0 then
+                "**Causal hypotheses**:\n" + ((.hypotheses // []) | map(select((.statement // "") != "" and ((.supporting_evidence_ids // []) | length) > 0 and ((.contradicting_evidence_ids // []) | length) > 0 and ((.predicted_observations // []) | length) > 0) | "- " + .statement) | join("\n"))
               else empty end),
               "",
               (if ((.uncertainty // []) | length) > 0 then
@@ -473,13 +482,15 @@ jobs:
           command="$(jq -r 'if (.command | type) == "array" then (.command | join(" ")) else (.command // "not configured") end' "$report")"
           base_passes="$(jq -r '.comparison.base.passes // 0' "$report")"
           base_attempts="$(jq -r '.comparison.base.attempts // 0' "$report")"
-          files="$(jq -r '(.localization.likely_file_reasons // {}) | to_entries | if length == 0 then "not localized" else map(.key + " (" + ((.value // []) | join(", ")) + ")") | join(", ") end' "$report")"
-          candidate="$(jq -r '(.localization.candidate_commits[0] // {}) | if .sha then ((.sha[0:7]) + " — " + (.subject // "")) else "not identified" end' "$report")"
+          locations="$(jq -r '(.failure_incidents // []) | map(.observed_locations // [] | map((.access // "access") + " " + (.file // "unknown") + ":" + ((.line // 0)|tostring) + " (" + (.provenance // "unknown provenance") + ")") | join("; ")) | join("\n")' "$report")"
+          candidates="$(jq -r '(.candidates[0:5] // []) | map((.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + " (" + (.location.provenance // "unattributed") + ")") | join("; ")' "$report")"
           groups="$(jq -r '(.failure_groups // []) | if length == 0 then "none recorded" else map("\(.status): \(.failure_ids | join(", "))") | join("; ") end' "$report")"
           episodes="$(jq -r '(.failure_episodes // []) | if length == 0 then "none recorded" else map((.test_identifier // "unknown test") + ": " + (.failure_message // "")) | .[0:10] | join("; ") end' "$report")"
           incidents="$(jq -r '(.failure_incidents // []) | if length == 0 then "none recorded" else map((.category // "failure") + " — tests: " + ((.affected_tests // []) | join(", ")) + "; " + (.observed_explanation // "") + "; PR: " + (.pr_relationship // "not established")) | join("\n") end' "$report")"
-          hypotheses="$(jq -r '(.hypotheses // []) | if length == 0 then "none recorded" else map("[\(.status)] \(.statement)") | .[0:3] | join("; ") end' "$report")"
-          paths="$(jq -r '(.execution_paths // []) | if length == 0 then "none reconstructed" else map(.summary) | .[0:3] | join("; ") end' "$report")"
+          hypotheses="$(jq -r '(.hypotheses // []) | map(select((.statement // "") != "" and ((.supporting_evidence_ids // []) | length) > 0 and ((.contradicting_evidence_ids // []) | length) > 0 and ((.predicted_observations // []) | length) > 0) | "[\(.status)] \(.statement)") | if length == 0 then "no causal hypothesis established" else .[0:3] | join("; ") end' "$report")"
+          paths="$(jq -r '(.execution_paths // []) | if length == 0 then "none reconstructed" else map("[" + (.status // "inferred") + "] " + .summary) | .[0:3] | join("; ") end' "$report")"
+          finding="$(jq -r '(.findings // []) | map(select(.kind == "incident_diagnosis") | .statement) | .[0] // "no primary incident finding"' "$report")"
+          root_cause="$(jq -r '(.root_cause // {}) | ((.status // "unknown") + ": " + (.statement // "not established") + "; causality=" + (.causality_status // "unverified") + "; verification=" + (.verification_status // "not_attempted"))' "$report")"
           confidence="$(jq -r '((.confidence // 0) * 100 | floor | tostring) + "%"' "$report")"
           failure="$(jq -r '.baseline.results[0].stderr_excerpt // ""' "$report" | grep -E -- '--- FAIL:|^FAIL' | head -3 | tr '\n' ' ' || true)"
           artifact_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -493,14 +504,17 @@ jobs:
           **Reproduction:** ${failures}/${attempts} head attempts failed; ${base_passes}/${base_attempts} base attempts passed.
           **Refused:** ${refused}
 
-          **Likely changed files:** ${files}<br>
-          **Candidate commit:** ${candidate}
+          **Primary diagnosis:** ${finding}
+          **Observed locations:** ${locations:-not recorded}<br>
+          **Supporting candidates:** ${candidates:-none recorded}
 
           **Failure groups:** ${groups}
 
           **Failed tests/episodes:** ${episodes}
 
           **Failure incident:** ${incidents}
+
+          **Root cause assessment:** ${root_cause}
 
           **Hypotheses:** ${hypotheses}
 

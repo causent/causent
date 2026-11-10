@@ -21,6 +21,12 @@ The deterministic diagnosis workflow is the primary product. Repair is
 experimental and opt-in. Malenia does not silently modify a repository, create
 pull requests, merge changes, or deploy anything.
 
+Every report separates observed incidents, source-backed interpretation, causal
+hypotheses, and root-cause verification. When the evidence does not establish a
+mechanism, `root_cause.status` remains `unknown`, causality remains
+`unverified`, and the GitHub summary says so instead of promoting candidates or
+stack locations into a diagnosis.
+
 ## Requirements
 
 Development requires:

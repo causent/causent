@@ -147,3 +147,23 @@ func TestBuildFailureIncidentOmitsUnknownExecutionContext(t *testing.T) {
 		t.Fatalf("malformed unknown execution context: %#v", incidents)
 	}
 }
+
+func TestRaceIncidentLeavesRootCauseUnknown(t *testing.T) {
+	report := Report{
+		FailureIncidents: []FailureIncident{{
+			Category: "go_data_race",
+			ObservedLocations: []IncidentLocation{
+				{Access: "read", File: "cacher.go", Line: 496, Provenance: "direct_stack_frame"},
+				{Access: "write", File: "setup.go", Line: 187, Provenance: "direct_stack_frame"},
+			},
+			EvidenceIDs: []string{"ci-race"},
+		}},
+	}
+	assessment := assessRootCause(report)
+	if assessment.Status != "unknown" || assessment.CausalityStatus != "unverified" || assessment.VerificationStatus != "not_attempted" {
+		t.Fatalf("race root cause was overclaimed: %#v", assessment)
+	}
+	if len(assessment.ObservedLocations) != 2 || len(assessment.EvidenceIDs) != 1 {
+		t.Fatalf("root cause assessment lost incident provenance: %#v", assessment)
+	}
+}

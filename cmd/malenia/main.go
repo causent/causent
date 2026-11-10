@@ -705,6 +705,13 @@ func diagnosisText(report diagnosis.Report) string {
 			}
 		}
 	}
+	if report.RootCause.Statement != "" {
+		fmt.Fprintf(&b, "\nroot cause: [%s] %s\n", valueOr(report.RootCause.Status, "unknown"), report.RootCause.Statement)
+		if len(report.RootCause.MissingEvidence) > 0 {
+			fmt.Fprintf(&b, "  missing evidence: %s\n", strings.Join(report.RootCause.MissingEvidence, "; "))
+		}
+		fmt.Fprintf(&b, "  causality: %s; verification: %s\n", valueOr(report.RootCause.CausalityStatus, "unknown"), valueOr(report.RootCause.VerificationStatus, "unknown"))
+	}
 	usefulHypotheses := make([]domain.Hypothesis, 0, len(report.Hypotheses))
 	for _, hypothesis := range report.Hypotheses {
 		if isFalsifiableHypothesis(hypothesis) {
