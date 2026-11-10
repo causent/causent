@@ -171,6 +171,7 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "container-log", data: "{\"time\":\"2026-01-01T00:00:00Z\",\"stream\":\"stderr\",\"log\":\"failure\\n\"}\n", format: "container_json_log", kind: "container_log_observation", cat: ArtifactInfra},
 		{name: "profile", data: "main;worker;run 10\nmain;worker;wait 2\n", format: "collapsed_stacks", kind: "performance_profile", cat: ArtifactPerformance},
 		{name: "compiler", data: "src/main.rs:12:5: error: cannot find value `missing`\n", format: "compiler_diagnostics", kind: "build_diagnostic", cat: ArtifactBuild},
+		{name: "nunit", data: `<?xml version="1.0"?><test-run><test-suite result="Failed"><test-case result="Failed"/></test-suite></test-run>`, format: "xml_test_report", kind: "test_report", cat: ArtifactTest},
 	}
 	registry := NewArtifactDecoderRegistry()
 	for _, tc := range tests {
@@ -267,6 +268,17 @@ func TestBuildDiagnosticArtifactParticipatesInCIFailureClassification(t *testing
 	observations := parseFailureObservations(text)
 	if len(observations) != 1 || observations[0].Test != "compiler diagnostic" {
 		t.Fatalf("build diagnostic was not normalized: %#v", observations)
+	}
+}
+
+func TestNonJUnitTestReportParticipatesInCIFailureClassification(t *testing.T) {
+	text := `<test-run><test-case result="Failed"><failure>bad</failure></test-case></test-run>`
+	if !isCIEvidenceKind("test_report") {
+		t.Fatal("test report is not recognized as CI evidence")
+	}
+	observations := parseFailureObservations(text)
+	if len(observations) != 1 || observations[0].Test != "test report" {
+		t.Fatalf("test report failure was not normalized: %#v", observations)
 	}
 }
 

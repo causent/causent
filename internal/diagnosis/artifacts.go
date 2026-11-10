@@ -171,6 +171,7 @@ func DiscoverArtifactDescriptors(root string, maxFiles int, context ArtifactDesc
 func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 	return &ArtifactDecoderRegistry{decoders: []ArtifactDecoder{
 		junitArtifactDecoder{},
+		nonJUnitTestReportArtifactDecoder{},
 		raceArtifactDecoder{},
 		runtimeExceptionArtifactDecoder{},
 		sarifArtifactDecoder{},
@@ -347,6 +348,29 @@ func (junitArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detecti
 		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
 	}
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "junit_report", ClaimKind: "test_result", Basis: "Observed", Detail: string(data), Provenance: desc.StorageRef}}}
+}
+
+type nonJUnitTestReportArtifactDecoder struct{}
+
+func (nonJUnitTestReportArtifactDecoder) Name() string    { return "xml-test-report" }
+func (nonJUnitTestReportArtifactDecoder) Version() string { return "v1" }
+func (nonJUnitTestReportArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	text := strings.TrimSpace(string(data))
+	for _, root := range []string{"<test-run", "<test-results", "<testResults", "<assemblies", "<test-runner"} {
+		if strings.Contains(text, root) {
+			return ArtifactDetection{Format: "xml_test_report", Category: ArtifactTest, Confidence: "high", Reason: "non-JUnit test runner XML root"}
+		}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (nonJUnitTestReportArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	var document struct {
+		XMLName xml.Name
+	}
+	if err := xml.Unmarshal(data, &document); err != nil {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+	}
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "test_report", ClaimKind: "test_result", Basis: "Observed", Detail: string(data), Provenance: desc.StorageRef}}}
 }
 
 type raceArtifactDecoder struct{}
