@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/causent/malenia/internal/domain"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -101,11 +102,12 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 }
 func completed(state State, kind string) bool {
 	for _, a := range state.Activities {
-		// Source-stage activities carry an input target. They must not block a
-		// later adaptive action of the same kind when the controller is pursuing
-		// a different unresolved dependency. Adaptive activities have no input
-		// target here and remain idempotently completed.
-		if a.Type == kind && a.Status == domain.ActivityCompleted && len(a.InputRefs) == 0 {
+		// Source-stage activities carry input targets and must not block a later
+		// adaptive action of the same kind. Adaptive activities are identified by
+		// their durable ID, not by whether they have input references: adaptive
+		// targets are required for provenance and therefore are non-empty.
+		adaptive := strings.Contains(a.ID, ":adaptive:")
+		if a.Type == kind && a.Status == domain.ActivityCompleted && (adaptive || len(a.InputRefs) == 0) {
 			return true
 		}
 	}

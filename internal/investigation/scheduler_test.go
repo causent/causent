@@ -54,3 +54,19 @@ func TestSelectChangesWithObjectiveEvidence(t *testing.T) {
 		t.Fatalf("selected %s after evidence change, want InspectSynchronization: %#v", second.Selected.ActionType, second)
 	}
 }
+
+func TestSelectDoesNotRepeatCompletedAdaptiveActionWithTarget(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "InspectSynchronization"}); err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectSynchronization"}}},
+		Activities: []domain.Activity{{ID: "activity:inv:adaptive:1", Type: "InspectSynchronization", Status: domain.ActivityCompleted, InputRefs: []string{"cacher.go:1389:Cacher.Stop"}}},
+		Budget:     domain.InvestigationBudget{MaxIterations: 2},
+	}
+	decision := Select(state, r, DefaultScorePolicy)
+	if decision.StoppingReason == "" || decision.Selected.ActionType != "" {
+		t.Fatalf("completed targeted adaptive action was selected again: %#v", decision)
+	}
+}
