@@ -62,7 +62,8 @@ func adaptiveOutcome(res domain.ExecutionResult) string {
 // deciding whether another iteration is justified.
 func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspace string) error {
 	if d.cfg.Store == nil {
-		report.StoppingReason = "investigation state persistence unavailable"
+		report.StoppingReason = "execution_unavailable"
+		ensureTerminalInvestigation(report, report.StoppingReason, domain.InvestigationBudget{})
 		return nil
 	}
 	invID := domain.ID(report.InvestigationID)
@@ -75,6 +76,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			report.InvestigationObjective = objectiveFromCheckpoint(prior.Objectives)
 		}
 		state.Budget = budget
+		state.TerminalExplanation = prior.TerminalExplanation
 	}
 	registry := investigation.NewRegistry()
 	register := func(action investigation.Action) error { return registry.Register(action) }
@@ -163,7 +165,10 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		if execErr != nil && len(out.Evidence) == 0 {
 			failed := investigation.Fail(activity, execErr)
 			_ = d.cfg.Store.SaveActivity(failed)
-			state.StoppingReason = "selected action failed: " + execErr.Error()
+			state.StoppingReason = "execution_unavailable"
+			if report.InvestigationObjective != nil {
+				report.InvestigationObjective.StoppingReason = "selected action failed: " + execErr.Error()
+			}
 			break
 		}
 		for _, evidence := range out.Evidence {
@@ -227,6 +232,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			report.InvestigationObjective.StoppingReason = "adaptive investigation duration or budget was exhausted"
 		}
 	}
+	state.StoppingReason = canonicalStoppingReason(state.StoppingReason)
 	if report.InvestigationObjective != nil {
 		switch {
 		case causalContractSatisfied(report):
@@ -260,7 +266,88 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs})
 		}
 	}
+	ensureTerminalInvestigation(report, state.StoppingReason, state.Budget)
+	state.TerminalExplanation = report.TerminalInvestigation
 	return d.cfg.Store.SaveAdaptiveState(state)
+}
+
+func canonicalStoppingReason(reason string) string {
+	switch reason {
+	case "root_cause_established", "investigation_blocked", "budget_exhausted", "execution_unavailable", "user_cancelled":
+		return reason
+	default:
+		if strings.Contains(reason, "budget") {
+			return "budget_exhausted"
+		}
+		return "investigation_blocked"
+	}
+}
+
+// ensureTerminalInvestigation materializes the stop decision as structured
+// state. A string stopping reason is insufficient because it cannot explain
+// whether an unresolved dependency was unavailable, blocked, or simply left
+// behind by the budget.
+func ensureTerminalInvestigation(report *Report, reason string, budget domain.InvestigationBudget) {
+	if reason == "" {
+		reason = "investigation_blocked"
+	}
+	terminal := &domain.TerminalInvestigationState{
+		Reason:  reason,
+		Budget:  budget,
+		Summary: "investigation stopped before all causal dependencies were established",
+	}
+	if reason == "root_cause_established" {
+		terminal.Summary = "causal contract satisfied and investigation terminated"
+	} else if reason == "budget_exhausted" {
+		terminal.Summary = "investigation stopped because the configured budget was exhausted"
+	} else if reason == "execution_unavailable" {
+		terminal.Summary = "investigation stopped because required execution or persistence was unavailable"
+	}
+	if report.InvestigationObjective != nil {
+		attempted := map[string]bool{}
+		for _, action := range report.InvestigationActions {
+			attempted[action.Type] = true
+		}
+		for _, unknown := range report.InvestigationObjective.Unknowns {
+			if unknown.Status == "resolved" {
+				continue
+			}
+			terminal.UnresolvedDependencies = append(terminal.UnresolvedDependencies, domain.InvestigationDependency{
+				ID: unknown.ID, Predicate: unknown.Predicate, Status: unknown.Status,
+				RequiredEvidence: append([]string(nil), unknown.RequiredKinds...),
+				Evaluation:       unknown.Evaluation, NextAction: unknown.NextAction,
+			})
+			for _, action := range unknown.CandidateActions {
+				if attempted[action] {
+					continue
+				}
+				status, explanation := "blocked", "dependency remained unresolved when the controller stopped"
+				switch reason {
+				case "execution_unavailable":
+					status, explanation = "unavailable", "the execution or persistence capability required by this action was unavailable"
+				case "budget_exhausted":
+					status, explanation = "excluded_by_budget", "the action was useful but could not be selected after the budget was exhausted"
+				}
+				terminal.ActionsNotAttempted = appendUniqueDisposition(terminal.ActionsNotAttempted, domain.InvestigationDisposition{
+					ActionType: action, Status: status, Reason: explanation, UnknownIDs: []string{unknown.ID},
+				})
+			}
+		}
+	}
+	if reason == "root_cause_established" {
+		terminal.UnresolvedDependencies = nil
+		terminal.ActionsNotAttempted = nil
+	}
+	report.TerminalInvestigation = terminal
+}
+
+func appendUniqueDisposition(values []domain.InvestigationDisposition, value domain.InvestigationDisposition) []domain.InvestigationDisposition {
+	for _, existing := range values {
+		if existing.ActionType == value.ActionType && existing.Status == value.Status && strings.Join(existing.UnknownIDs, ",") == strings.Join(value.UnknownIDs, ",") {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func allObjectivesResolved(report *Report) bool {

@@ -326,57 +326,58 @@ type Comparison struct {
 
 // Report is the final diagnosis.
 type Report struct {
-	InvestigationID            string                         `json:"investigation_id"`
-	RepoPath                   string                         `json:"repo_path"`
-	Command                    []string                       `json:"command"`
-	Classification             Classification                 `json:"classification"`
-	Environment                Environment                    `json:"environment"`
-	Baseline                   Baseline                       `json:"baseline"`
-	Comparison                 *Comparison                    `json:"comparison,omitempty"`
-	Agent                      *agent.Report                  `json:"agent,omitempty"`
-	AgentStatus                string                         `json:"agent_status"`
-	AgentError                 string                         `json:"agent_error,omitempty"`
-	Localization               Localization                   `json:"localization"`
-	Evidence                   []EvidenceItem                 `json:"evidence"`
-	RaceReports                []RaceReport                   `json:"race_reports,omitempty"`
-	NormalizedEvidence         *NormalizedEvidence            `json:"normalized_evidence,omitempty"`
-	Candidates                 []domain.CandidateLocation     `json:"candidates,omitempty"`
-	Deltas                     []domain.CodeDelta             `json:"deltas,omitempty"`
-	ExecutionPaths             []domain.ExecutionPath         `json:"execution_paths,omitempty"`
-	Relationships              []domain.Relationship          `json:"relationships,omitempty"`
-	FailureGroups              []domain.FailureGroup          `json:"failure_groups,omitempty"`
-	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
-	FailureIncidents           []FailureIncident              `json:"failure_incidents,omitempty"`
-	RootCause                  RootCauseAssessment            `json:"root_cause"`
-	Repair                     *RepairAssessment              `json:"repair,omitempty"`
-	InvestigationActions       []InvestigationAction          `json:"investigation_actions,omitempty"`
-	InvestigationObjective     *InvestigationObjective        `json:"investigation_objective,omitempty"`
-	Concurrency                *ConcurrencyModel              `json:"concurrency_model,omitempty"`
-	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
-	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
-	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
-	Overview                   *programrepo.Overview          `json:"overview,omitempty"`
-	Metrics                    *observability.Metrics         `json:"metrics,omitempty"`
-	IndexingMode               string                         `json:"indexing_mode,omitempty"`
-	CoverageNotes              []string                       `json:"coverage_notes,omitempty"`
-	Partial                    bool                           `json:"partial,omitempty"`
-	Experiments                []domain.Experiment            `json:"experiments,omitempty"`
-	UnresolvedQuestions        []domain.InvestigationQuestion `json:"unresolved_questions,omitempty"`
-	StoppingReason             string                         `json:"stopping_reason,omitempty"`
-	AdaptiveIterations         int                            `json:"adaptive_iterations,omitempty"`
-	HistoricalContext          []domain.HistoricalReference   `json:"historical_context,omitempty"`
-	Claims                     []Claim                        `json:"claims"`
-	Confidence                 float64                        `json:"confidence"`
-	Uncertainty                []string                       `json:"uncertainty"`
-	Refused                    bool                           `json:"refused"`
-	RefusalReason              string                         `json:"refusal_reason,omitempty"`
-	Probes                     []Probe                        `json:"probes,omitempty"`
-	BundlePath                 string                         `json:"bundle_path,omitempty"`
-	ReplayCommand              string                         `json:"replay_command,omitempty"`
-	ReproductionStatus         string                         `json:"reproduction_status,omitempty"`
-	ReproductionDeferredReason string                         `json:"reproduction_deferred_reason,omitempty"`
-	ReproductionDecision       ReproductionDecision           `json:"reproduction_decision,omitempty"`
-	CreatedAt                  time.Time                      `json:"created_at"`
+	InvestigationID            string                             `json:"investigation_id"`
+	RepoPath                   string                             `json:"repo_path"`
+	Command                    []string                           `json:"command"`
+	Classification             Classification                     `json:"classification"`
+	Environment                Environment                        `json:"environment"`
+	Baseline                   Baseline                           `json:"baseline"`
+	Comparison                 *Comparison                        `json:"comparison,omitempty"`
+	Agent                      *agent.Report                      `json:"agent,omitempty"`
+	AgentStatus                string                             `json:"agent_status"`
+	AgentError                 string                             `json:"agent_error,omitempty"`
+	Localization               Localization                       `json:"localization"`
+	Evidence                   []EvidenceItem                     `json:"evidence"`
+	RaceReports                []RaceReport                       `json:"race_reports,omitempty"`
+	NormalizedEvidence         *NormalizedEvidence                `json:"normalized_evidence,omitempty"`
+	Candidates                 []domain.CandidateLocation         `json:"candidates,omitempty"`
+	Deltas                     []domain.CodeDelta                 `json:"deltas,omitempty"`
+	ExecutionPaths             []domain.ExecutionPath             `json:"execution_paths,omitempty"`
+	Relationships              []domain.Relationship              `json:"relationships,omitempty"`
+	FailureGroups              []domain.FailureGroup              `json:"failure_groups,omitempty"`
+	FailureEpisodes            []domain.FailureEpisode            `json:"failure_episodes,omitempty"`
+	FailureIncidents           []FailureIncident                  `json:"failure_incidents,omitempty"`
+	RootCause                  RootCauseAssessment                `json:"root_cause"`
+	Repair                     *RepairAssessment                  `json:"repair,omitempty"`
+	InvestigationActions       []InvestigationAction              `json:"investigation_actions,omitempty"`
+	InvestigationObjective     *InvestigationObjective            `json:"investigation_objective,omitempty"`
+	TerminalInvestigation      *domain.TerminalInvestigationState `json:"terminal_investigation,omitempty"`
+	Concurrency                *ConcurrencyModel                  `json:"concurrency_model,omitempty"`
+	Hypotheses                 []domain.Hypothesis                `json:"hypotheses,omitempty"`
+	Findings                   []domain.DiagnosticFinding         `json:"findings,omitempty"`
+	Preliminary                *domain.DiagnosticFinding          `json:"preliminary,omitempty"`
+	Overview                   *programrepo.Overview              `json:"overview,omitempty"`
+	Metrics                    *observability.Metrics             `json:"metrics,omitempty"`
+	IndexingMode               string                             `json:"indexing_mode,omitempty"`
+	CoverageNotes              []string                           `json:"coverage_notes,omitempty"`
+	Partial                    bool                               `json:"partial,omitempty"`
+	Experiments                []domain.Experiment                `json:"experiments,omitempty"`
+	UnresolvedQuestions        []domain.InvestigationQuestion     `json:"unresolved_questions,omitempty"`
+	StoppingReason             string                             `json:"stopping_reason,omitempty"`
+	AdaptiveIterations         int                                `json:"adaptive_iterations,omitempty"`
+	HistoricalContext          []domain.HistoricalReference       `json:"historical_context,omitempty"`
+	Claims                     []Claim                            `json:"claims"`
+	Confidence                 float64                            `json:"confidence"`
+	Uncertainty                []string                           `json:"uncertainty"`
+	Refused                    bool                               `json:"refused"`
+	RefusalReason              string                             `json:"refusal_reason,omitempty"`
+	Probes                     []Probe                            `json:"probes,omitempty"`
+	BundlePath                 string                             `json:"bundle_path,omitempty"`
+	ReplayCommand              string                             `json:"replay_command,omitempty"`
+	ReproductionStatus         string                             `json:"reproduction_status,omitempty"`
+	ReproductionDeferredReason string                             `json:"reproduction_deferred_reason,omitempty"`
+	ReproductionDecision       ReproductionDecision               `json:"reproduction_decision,omitempty"`
+	CreatedAt                  time.Time                          `json:"created_at"`
 }
 
 // Config controls one diagnosis run.
@@ -942,6 +943,10 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 		report.InvestigationObjective.StoppingReason = "adaptive investigation was skipped or unavailable; unresolved dependencies remain"
 		report.StoppingReason = "investigation_blocked"
 	}
+	if report.StoppingReason == "" {
+		report.StoppingReason = "investigation_blocked"
+	}
+	ensureTerminalInvestigation(&report, report.StoppingReason, domain.InvestigationBudget{})
 	report.FailureIncidents = buildFailureIncidents(&report)
 	report.RootCause = assessRootCause(report)
 	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)
@@ -1135,6 +1140,13 @@ func baselineInconclusive(baseline Baseline) bool {
 // investigation status. It is safe to call after cancellation: already collected
 // evidence and preliminary findings are preserved.
 func finish(report *Report, d *Diagnoser, workspace string) {
+	if report.StoppingReason == "" {
+		report.StoppingReason = "investigation_blocked"
+	}
+	report.StoppingReason = canonicalStoppingReason(report.StoppingReason)
+	if report.TerminalInvestigation == nil {
+		ensureTerminalInvestigation(report, report.StoppingReason, domain.InvestigationBudget{})
+	}
 	var bundleStage *observability.StageHandle
 	if d.metrics != nil {
 		bundleStage = d.metrics.Begin(observability.StageBundlePublish)

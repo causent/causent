@@ -67,6 +67,22 @@ func TestEvidenceFirstContinuesIntoAdaptiveController(t *testing.T) {
 	if !adaptivePersisted {
 		t.Fatalf("persisted activities did not include an adaptive selection: %#v", activities)
 	}
+	if report.TerminalInvestigation == nil || report.TerminalInvestigation.Reason == "" {
+		t.Fatalf("terminal explanation was not published: %#v", report.TerminalInvestigation)
+	}
+	if report.TerminalInvestigation.Reason != report.StoppingReason {
+		t.Fatalf("terminal reason mismatch: report=%q explanation=%q", report.StoppingReason, report.TerminalInvestigation.Reason)
+	}
+	if len(report.TerminalInvestigation.UnresolvedDependencies) == 0 {
+		t.Fatalf("fixture should retain unresolved dependencies: %#v", report.TerminalInvestigation)
+	}
+	checkpoint, err := store.GetAdaptiveState(domain.ID(report.InvestigationID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.TerminalExplanation == nil || checkpoint.TerminalExplanation.Reason != report.StoppingReason {
+		t.Fatalf("terminal explanation was not durably checkpointed: %#v", checkpoint.TerminalExplanation)
+	}
 }
 
 func TestDiagnosisPersistsRepositoryGraphAndLocalization(t *testing.T) {

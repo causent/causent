@@ -211,13 +211,43 @@ type InvestigationQuestion struct {
 // loop. It is separate from repository knowledge and from individual
 // activities so a resumed process can reconstruct its decision context.
 type AdaptiveState struct {
-	InvestigationID ID
-	Questions       []InvestigationQuestion
-	Objectives      []AdaptiveObjective
-	Budget          InvestigationBudget
-	StoppingReason  string
-	Iterations      int
-	UpdatedAt       time.Time
+	InvestigationID     ID                          `json:"investigation_id"`
+	Questions           []InvestigationQuestion     `json:"questions,omitempty"`
+	Objectives          []AdaptiveObjective         `json:"objectives,omitempty"`
+	Budget              InvestigationBudget         `json:"budget"`
+	StoppingReason      string                      `json:"stopping_reason,omitempty"`
+	TerminalExplanation *TerminalInvestigationState `json:"terminal_explanation,omitempty"`
+	Iterations          int                         `json:"iterations"`
+	UpdatedAt           time.Time                   `json:"updated_at"`
+}
+
+// TerminalInvestigationState is the durable, machine-readable explanation for
+// why a controller stopped. It deliberately records unresolved dependencies
+// separately from actions that were not run, so an incomplete diagnosis cannot
+// be mistaken for a completed one.
+type TerminalInvestigationState struct {
+	Reason                 string                     `json:"reason"`
+	Summary                string                     `json:"summary,omitempty"`
+	UnresolvedDependencies []InvestigationDependency  `json:"unresolved_dependencies,omitempty"`
+	ActionsNotAttempted    []InvestigationDisposition `json:"actions_not_attempted,omitempty"`
+	Budget                 InvestigationBudget        `json:"budget"`
+}
+
+type InvestigationDependency struct {
+	ID               string   `json:"id"`
+	Predicate        string   `json:"predicate,omitempty"`
+	Status           string   `json:"status"`
+	RequiredEvidence []string `json:"required_evidence,omitempty"`
+	Evaluation       string   `json:"evaluation,omitempty"`
+	NextAction       string   `json:"next_action,omitempty"`
+}
+
+type InvestigationDisposition struct {
+	ActionType string   `json:"action_type"`
+	Target     string   `json:"target,omitempty"`
+	Status     string   `json:"status"` // unavailable, blocked, excluded_by_budget
+	Reason     string   `json:"reason"`
+	UnknownIDs []string `json:"unknown_ids,omitempty"`
 }
 
 // AdaptiveObjective is the durable checkpoint for one causal unknown.
