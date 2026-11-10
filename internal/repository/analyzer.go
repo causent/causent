@@ -158,7 +158,9 @@ func (a Analyzer) buildVerifiedGoCalls(contents map[string]string, s *Snapshot) 
 			nodesByName[node.Name] = append(nodesByName[node.Name], node)
 		}
 	}
-	seen := map[string]bool{}
+	typeInfo := map[string]goTypeInfo{}
+	methods := map[string]map[string][]domain.ProgramNode{}
+	parsed := map[string]*ast.File{}
 	for path, data := range contents {
 		if filepath.Ext(path) != ".go" {
 			continue
@@ -167,30 +169,70 @@ func (a Analyzer) buildVerifiedGoCalls(contents map[string]string, s *Snapshot) 
 		if err != nil {
 			continue
 		}
+		parsed[path] = file
+		collectGoTypeInfo(file, typeInfo)
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil {
+				continue
+			}
+			receiver := goReceiverType(fn.Recv)
+			if receiver == "" {
+				continue
+			}
+			for _, node := range nodesByFile[path] {
+				if node.Type == "Method" && node.Name == fn.Name.Name && strings.HasSuffix(node.Identity, ":Method:"+receiver+"."+fn.Name.Name) {
+					if methods[receiver] == nil {
+						methods[receiver] = map[string][]domain.ProgramNode{}
+					}
+					methods[receiver][fn.Name.Name] = append(methods[receiver][fn.Name.Name], node)
+				}
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for path, data := range contents {
+		if filepath.Ext(path) != ".go" {
+			continue
+		}
+		file := parsed[path]
+		var err error
+		if file == nil {
+			file, err = parser.ParseFile(token.NewFileSet(), path, data, 0)
+		}
+		if err != nil {
+			continue
+		}
 		for _, declaration := range file.Decls {
 			fn, ok := declaration.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			var sources []domain.ProgramNode
-			for _, node := range nodesByFile[path] {
-				if node.Name == fn.Name.Name {
-					sources = append(sources, node)
-				}
-			}
+			sources := verifiedGoSources(nodesByFile[path], fn)
 			if len(sources) != 1 {
 				continue
 			}
+			variableTypes := goFunctionVariableTypes(fn)
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				ident, ok := call.Fun.(*ast.Ident)
-				if !ok {
+				var targets []domain.ProgramNode
+				verification := "Go AST CallExpr with uniquely resolved identifier"
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					targets = nodesByName[fun.Name]
+				case *ast.SelectorExpr:
+					receiver := goSelectorReceiverType(fun.X, variableTypes, typeInfo)
+					if receiver == "" || typeInfo[receiver].Interface {
+						return true
+					}
+					targets = methods[receiver][fun.Sel.Name]
+					verification = "Go AST selector CallExpr with uniquely resolved concrete receiver"
+				default:
 					return true
 				}
-				targets := nodesByName[ident.Name]
 				if len(targets) != 1 || targets[0].ID == sources[0].ID {
 					return true
 				}
@@ -199,11 +241,172 @@ func (a Analyzer) buildVerifiedGoCalls(contents map[string]string, s *Snapshot) 
 					return true
 				}
 				seen[key] = true
-				s.Relationships = append(s.Relationships, domain.Relationship{ID: edgeID(sources[0].ID, "CALLS", targets[0].ID), SourceType: sources[0].Type, SourceID: sources[0].ID, TargetType: targets[0].Type, TargetID: targets[0].ID, Type: "CALLS", RevisionID: s.RevisionID, Metadata: map[string]string{"provenance": "verified_static_call", "verification": "Go AST CallExpr with uniquely resolved identifier"}})
+				s.Relationships = append(s.Relationships, domain.Relationship{ID: edgeID(sources[0].ID, "CALLS", targets[0].ID), SourceType: sources[0].Type, SourceID: sources[0].ID, TargetType: targets[0].Type, TargetID: targets[0].ID, Type: "CALLS", RevisionID: s.RevisionID, Metadata: map[string]string{"provenance": "verified_static_call", "verification": verification}})
 				return true
 			})
 		}
 	}
+}
+
+type goTypeInfo struct {
+	Fields    map[string]string
+	Interface bool
+}
+
+func collectGoTypeInfo(file *ast.File, types map[string]goTypeInfo) {
+	for _, declaration := range file.Decls {
+		gen, ok := declaration.(*ast.GenDecl)
+		if !ok || gen.Tok.String() != "type" {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			info := goTypeInfo{Fields: map[string]string{}}
+			switch expr := typeSpec.Type.(type) {
+			case *ast.InterfaceType:
+				info.Interface = true
+			case *ast.StructType:
+				for _, field := range expr.Fields.List {
+					fieldType := goExprTypeName(field.Type)
+					for _, name := range field.Names {
+						info.Fields[name.Name] = fieldType
+					}
+				}
+			}
+			types[typeSpec.Name.Name] = info
+		}
+	}
+}
+
+func verifiedGoSources(nodes []domain.ProgramNode, fn *ast.FuncDecl) []domain.ProgramNode {
+	var sources []domain.ProgramNode
+	receiver := goReceiverType(fn.Recv)
+	for _, node := range nodes {
+		if node.Name != fn.Name.Name {
+			continue
+		}
+		if receiver == "" && node.Type != "Method" {
+			sources = append(sources, node)
+			continue
+		}
+		if receiver != "" && node.Type == "Method" && strings.HasSuffix(node.Identity, ":Method:"+receiver+"."+fn.Name.Name) {
+			sources = append(sources, node)
+		}
+	}
+	return sources
+}
+
+func goReceiverType(fields *ast.FieldList) string {
+	if fields == nil || len(fields.List) != 1 {
+		return ""
+	}
+	return goExprTypeName(fields.List[0].Type)
+}
+
+func goExprTypeName(expr ast.Expr) string {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		return value.Name
+	case *ast.StarExpr:
+		return goExprTypeName(value.X)
+	case *ast.SelectorExpr:
+		left := goExprTypeName(value.X)
+		if left == "" {
+			return ""
+		}
+		return left + "." + value.Sel.Name
+	case *ast.IndexExpr:
+		return goExprTypeName(value.X)
+	case *ast.IndexListExpr:
+		return goExprTypeName(value.X)
+	case *ast.ParenExpr:
+		return goExprTypeName(value.X)
+	}
+	return ""
+}
+
+func goFunctionVariableTypes(fn *ast.FuncDecl) map[string]string {
+	types := map[string]string{}
+	if receiver := goReceiverType(fn.Recv); receiver != "" && fn.Recv != nil && len(fn.Recv.List[0].Names) == 1 {
+		types[fn.Recv.List[0].Names[0].Name] = receiver
+	}
+	if fn.Type.Params != nil {
+		for _, field := range fn.Type.Params.List {
+			for _, name := range field.Names {
+				types[name.Name] = goExprTypeName(field.Type)
+			}
+		}
+	}
+	if fn.Body == nil {
+		return types
+	}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		switch statement := node.(type) {
+		case *ast.DeclStmt:
+			if declaration, ok := statement.Decl.(*ast.GenDecl); ok {
+				for _, spec := range declaration.Specs {
+					if value, ok := spec.(*ast.ValueSpec); ok {
+						for index, name := range value.Names {
+							typeName := goExprTypeName(value.Type)
+							if typeName == "" && index < len(value.Values) {
+								typeName = goValueTypeName(value.Values[index])
+							}
+							types[name.Name] = typeName
+						}
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			if statement.Tok.String() == ":=" || statement.Tok.String() == "=" {
+				for index, left := range statement.Lhs {
+					name, ok := left.(*ast.Ident)
+					if !ok || index >= len(statement.Rhs) {
+						continue
+					}
+					types[name.Name] = goValueTypeName(statement.Rhs[index])
+				}
+			}
+		}
+		return true
+	})
+	return types
+}
+
+func goValueTypeName(expr ast.Expr) string {
+	switch value := expr.(type) {
+	case *ast.CompositeLit:
+		return goExprTypeName(value.Type)
+	case *ast.UnaryExpr:
+		if value.Op.String() == "&" {
+			return goExprTypeName(value.X)
+		}
+	case *ast.CallExpr:
+		return goExprTypeName(value.Fun)
+	case *ast.ParenExpr:
+		return goValueTypeName(value.X)
+	}
+	return ""
+}
+
+func goSelectorReceiverType(expr ast.Expr, variables map[string]string, types map[string]goTypeInfo) string {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		return variables[value.Name]
+	case *ast.SelectorExpr:
+		base := goSelectorReceiverType(value.X, variables, types)
+		if base == "" {
+			return ""
+		}
+		return types[base].Fields[value.Sel.Name]
+	case *ast.ParenExpr:
+		return goSelectorReceiverType(value.X, variables, types)
+	case *ast.StarExpr:
+		return goSelectorReceiverType(value.X, variables, types)
+	}
+	return ""
 }
 
 func excludedDir(name string) bool {
@@ -255,8 +458,12 @@ var (
 func (a Analyzer) extractFile(data, rel, lang, fileID string, s *Snapshot) {
 	digest := sha256.Sum256([]byte(data))
 	contentDigest := hex.EncodeToString(digest[:])
-	addSymbol := func(name, typ string, startLine, endLine int) {
-		identity := lang + ":" + rel + ":" + typ + ":" + name
+	addSymbol := func(name, typ string, startLine, endLine int, qualified ...string) {
+		identityName := name
+		if len(qualified) > 0 && qualified[0] != "" {
+			identityName = qualified[0]
+		}
+		identity := lang + ":" + rel + ":" + typ + ":" + identityName
 		id := nodeID(s.RepositoryID, s.RevisionID, "symbol", identity)
 		s.Nodes = append(s.Nodes, domain.ProgramNode{ID: id, RepositoryID: s.RepositoryID, RevisionID: s.RevisionID, Type: typ, Name: name, Identity: identity, FilePath: rel, Language: lang, StartLine: startLine, EndLine: endLine, ContentDigest: contentDigest})
 		addEdge(s, fileID, "File", id, typ, "DEFINES")
@@ -294,7 +501,7 @@ func (a Analyzer) extractFile(data, rel, lang, fileID string, s *Snapshot) {
 // extractGoSymbols uses the Go parser's token positions. Regexes cannot
 // reliably find declaration ends because braces may occur in signatures,
 // comments, literals, generic constraints, and nested blocks.
-func extractGoSymbols(data, rel, fileID string, s *Snapshot, add func(string, string, int, int)) {
+func extractGoSymbols(data, rel, fileID string, s *Snapshot, add func(string, string, int, int, ...string)) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, rel, data, parser.ParseComments)
 	if err != nil {
@@ -311,7 +518,13 @@ func extractGoSymbols(data, rel, fileID string, s *Snapshot, add func(string, st
 					typ = "Test"
 				}
 			}
-			add(d.Name.Name, typ, position(d.Pos()), position(d.End()))
+			qualified := ""
+			if d.Recv != nil {
+				if receiver := goReceiverType(d.Recv); receiver != "" {
+					qualified = receiver + "." + d.Name.Name
+				}
+			}
+			add(d.Name.Name, typ, position(d.Pos()), position(d.End()), qualified)
 		case *ast.GenDecl:
 			for _, spec := range d.Specs {
 				switch v := spec.(type) {
