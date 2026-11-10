@@ -8,3 +8,10 @@ func TestValidateContractRejectsUnknownEvidence(t *testing.T) {
 		t.Fatal("expected contract failure")
 	}
 }
+
+func TestValidateContractRejectsClaimsWithoutSupportingEvidence(t *testing.T) {
+	err := ValidateContract(Report{Evidence: []EvidenceItem{{ID: "E1"}}, Claims: []Claim{{ID: "H1", Statement: "x", Confidence: .5}}})
+	if err == nil {
+		t.Fatal("expected unsupported claim failure")
+	}
+}

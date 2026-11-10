@@ -1,0 +1,24 @@
+{
+  "classification": "test_failure_observed",
+  "claims": [
+    {"id": "H-classification", "statement": "CI evidence shows that a test or step failed in the recorded execution. This does not establish that the current change introduced the failure.", "confidence": 0.5, "supporting_evidence": ["E-classification"]},
+    {"id": "H-affected-files", "statement": "The most likely affected files are staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/watcher_test.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/ready.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/watch_cache.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/compactor.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/time_budget.go, staging/src/k8s.io/apiserver/pkg/storage/cacher/lister_watcher.go", "confidence": 0.5, "supporting_evidence": []}
+  ],
+  "evidence": [
+    {"id": "E-classification", "kind": "classification", "source": "CI", "detail": "test failure observed"}
+  ],
+  "localization": {
+    "likely_files": [
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go",
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go",
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/ready.go",
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/compactor.go"
+    ],
+    "likely_file_reasons": {
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go": ["direct race read location"],
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go": ["direct race write location"],
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/ready.go": ["inferred_caller"],
+      "staging/src/k8s.io/apiserver/pkg/storage/cacher/compactor.go": ["inferred_caller"]
+    }
+  }
+}
