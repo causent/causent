@@ -179,6 +179,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		structuredTraceArtifactDecoder{},
 		openTelemetryArtifactDecoder{},
 		nativeGoTraceArtifactDecoder{},
+		coreDumpArtifactDecoder{},
 		containerLogArtifactDecoder{},
 		flamegraphArtifactDecoder{},
 		jsonArtifactDecoder{},
@@ -580,6 +581,33 @@ func (nativeGoTraceArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte)
 }
 func (nativeGoTraceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
 	return ArtifactIngestionResult{Status: ArtifactUnsupported, Limitations: []string{"native Go execution trace binary detected; version-aware binary parser is not available, so no lifecycle or causal observations were produced"}, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "execution_trace_artifact", ClaimKind: "ExecutionTraceArtifact", Basis: "Observed", Detail: "Native Go execution trace artifact preserved without parsing", Provenance: desc.StorageRef}}}
+}
+
+type coreDumpArtifactDecoder struct{}
+
+func (coreDumpArtifactDecoder) Name() string    { return "core-dump-detector" }
+func (coreDumpArtifactDecoder) Version() string { return "detector-v1" }
+func (coreDumpArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	if len(data) >= 20 && bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'}) {
+		// ELF e_type is at byte 16. ET_CORE is 4 for both 32- and 64-bit ELF.
+		littleEndian := data[5] == 1
+		var objectType uint16
+		if littleEndian {
+			objectType = uint16(data[16]) | uint16(data[17])<<8
+		} else {
+			objectType = uint16(data[16])<<8 | uint16(data[17])
+		}
+		if objectType == 4 {
+			return ArtifactDetection{Format: "elf_core_dump", Category: ArtifactMemory, Confidence: "high", Reason: "ELF ET_CORE header"}
+		}
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte("MDMP")) {
+		return ArtifactDetection{Format: "minidump", Category: ArtifactMemory, Confidence: "high", Reason: "minidump signature"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (coreDumpArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	return ArtifactIngestionResult{Status: ArtifactUnsupported, Limitations: []string{"memory dump detected; debugger- and platform-specific dump parser is not available, so no process-state or object-identity claims were produced"}, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "memory_dump_artifact", ClaimKind: "MemoryDiagnosticArtifact", Basis: "Observed", Detail: "Memory diagnostic artifact preserved without parsing", Provenance: desc.StorageRef}}}
 }
 
 type containerLogArtifactDecoder struct{}

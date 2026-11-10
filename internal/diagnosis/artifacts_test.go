@@ -216,6 +216,26 @@ func TestNativeGoTraceIsExplicitlyUnsupported(t *testing.T) {
 	}
 }
 
+func TestMemoryDumpIsExplicitlyUnsupported(t *testing.T) {
+	elfCore := make([]byte, 20)
+	copy(elfCore[:4], []byte{0x7f, 'E', 'L', 'F'})
+	elfCore[4] = 2  // ELFCLASS64
+	elfCore[5] = 1  // little endian
+	elfCore[16] = 4 // ET_CORE
+	result := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:core", StorageRef: "artifact://core"}, elfCore)
+	if result.Status != ArtifactUnsupported || result.DecoderName != "core-dump-detector" || len(result.Evidence) != 1 {
+		t.Fatalf("core dump result = %#v", result)
+	}
+	if result.Evidence[0].ClaimKind == "RuntimeObjectIdentity" || result.Evidence[0].ClaimKind == "HappensBefore" || len(result.Limitations) == 0 {
+		t.Fatalf("core dump made unsupported claims: %#v", result)
+	}
+
+	minidump := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:minidump"}, []byte("MDMP\x00\x00"))
+	if minidump.Status != ArtifactUnsupported || minidump.Detection.Format != "minidump" {
+		t.Fatalf("minidump result = %#v", minidump)
+	}
+}
+
 func TestTAPArtifactParticipatesInCIFailureClassification(t *testing.T) {
 	text := "TAP version 13\n1..1\nnot ok 1 - parser rejects input\n"
 	if !isCIEvidenceKind("tap_report") {
