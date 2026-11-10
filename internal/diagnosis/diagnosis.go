@@ -97,14 +97,21 @@ func (a Attempt) Passed() bool {
 // EvidenceItem is a fact recorded during the diagnosis. Hypotheses reference
 // these by ID; they never replace them.
 type EvidenceItem struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Source      string   `json:"source"`
-	Digest      string   `json:"digest"`
-	Detail      string   `json:"detail"`
-	Provenance  string   `json:"provenance,omitempty"`
-	Revision    string   `json:"revision,omitempty"`
-	Limitations []string `json:"limitations,omitempty"`
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Source        string   `json:"source"`
+	Digest        string   `json:"digest"`
+	Detail        string   `json:"detail"`
+	Provenance    string   `json:"provenance,omitempty"`
+	Revision      string   `json:"revision,omitempty"`
+	Limitations   []string `json:"limitations,omitempty"`
+	ClaimKind     string   `json:"claim_kind,omitempty"`
+	Basis         string   `json:"basis,omitempty"`
+	DeclarationID string   `json:"declaration_id,omitempty"`
+	AccessID      string   `json:"access_id,omitempty"`
+	InstanceID    string   `json:"instance_id,omitempty"`
+	RunID         string   `json:"run_id,omitempty"`
+	Ordering      string   `json:"ordering,omitempty"`
 }
 
 // RaceReport preserves the two sides of a Go race. A stack frame is evidence,
@@ -235,22 +242,39 @@ type InvestigationAction struct {
 	UnknownIDs  []string `json:"unknown_ids,omitempty"`
 	Result      string   `json:"result,omitempty"`
 	Revision    string   `json:"revision,omitempty"`
+	Executed    bool     `json:"executed"`
+	Advanced    bool     `json:"advanced"`
+	Resolved    bool     `json:"resolved"`
+	Refuted     bool     `json:"refuted"`
+	Missing     []string `json:"missing,omitempty"`
 }
 
 type InvestigationUnknown struct {
-	ID               string   `json:"id"`
-	Question         string   `json:"question"`
-	Predicate        string   `json:"resolution_predicate"`
-	RequiredKinds    []string `json:"required_evidence_kinds,omitempty"`
-	Status           string   `json:"status"`
-	CandidateActions []string `json:"candidate_actions,omitempty"`
-	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
-	ResolutionIDs    []string `json:"resolution_evidence_ids,omitempty"`
-	Evaluation       string   `json:"predicate_evaluation,omitempty"`
-	Revision         string   `json:"revision,omitempty"`
-	NextAction       string   `json:"next_action,omitempty"`
-	Target           string   `json:"target,omitempty"`
-	TargetSymbol     string   `json:"target_symbol,omitempty"`
+	ID                  string                `json:"id"`
+	Question            string                `json:"question"`
+	Predicate           string                `json:"resolution_predicate"`
+	RequiredKinds       []string              `json:"required_evidence_kinds,omitempty"`
+	Status              string                `json:"status"`
+	CandidateActions    []string              `json:"candidate_actions,omitempty"`
+	EvidenceIDs         []string              `json:"evidence_ids,omitempty"`
+	ResolutionIDs       []string              `json:"resolution_evidence_ids,omitempty"`
+	Evaluation          string                `json:"predicate_evaluation,omitempty"`
+	Revision            string                `json:"revision,omitempty"`
+	NextAction          string                `json:"next_action,omitempty"`
+	Target              string                `json:"target,omitempty"`
+	TargetSymbol        string                `json:"target_symbol,omitempty"`
+	Requirements        []EvidenceRequirement `json:"requirements,omitempty"`
+	MissingRequirements []string              `json:"missing_requirements,omitempty"`
+	RefutedBy           []string              `json:"refuted_by,omitempty"`
+}
+
+type EvidenceRequirement struct {
+	ClaimKind    string `json:"claim_kind"`
+	Subject      string `json:"subject,omitempty"`
+	MinimumBasis string `json:"minimum_basis,omitempty"`
+	Revision     string `json:"revision,omitempty"`
+	SameInstance bool   `json:"same_instance,omitempty"`
+	Ordering     string `json:"ordering,omitempty"`
 }
 
 type InvestigationObjective struct {

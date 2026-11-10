@@ -327,7 +327,7 @@ func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, pers
 	hash := sha256.Sum256([]byte(report.InvestigationID + "\x00" + actionType + "\x00" + target + "\x00" + detail))
 	digest := hex.EncodeToString(hash[:])
 	evidenceID := "E-investigation-" + digest[:12]
-	evidence := EvidenceItem{ID: evidenceID, Kind: kind, Source: source, Digest: digest, Detail: detail, Provenance: "deterministic source inspection of checked-out revision", Revision: report.Environment.HeadCommit}
+	evidence := EvidenceItem{ID: evidenceID, Kind: kind, ClaimKind: kind, Basis: "SourceVerified", Source: source, Digest: digest, Detail: detail, Provenance: "deterministic source inspection of checked-out revision", Revision: report.Environment.HeadCommit, DeclarationID: target}
 	report.Evidence = append(report.Evidence, evidence)
 	status := sourceActionStatus(detail)
 	action := InvestigationAction{ID: "action:" + digest[:16], Type: actionType, Target: target, Status: status, Summary: summary, EvidenceIDs: []string{evidenceID}, UnknownIDs: sourceUnknownsForAction(actionType), Revision: report.Environment.HeadCommit}
@@ -340,7 +340,7 @@ func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, pers
 	if d.cfg.Store == nil {
 		return evidenceID, nil
 	}
-	if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(evidenceID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceSourceCode, Source: source, Timestamp: report.CreatedAt, ContentRef: kind, Digest: digest, Payload: detail, Provenance: evidence.Provenance}); err != nil {
+	if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(evidenceID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceSourceCode, Source: source, Timestamp: report.CreatedAt, ContentRef: kind, Digest: digest, Payload: detail, Provenance: evidence.Provenance, ClaimKind: evidence.ClaimKind, Basis: evidence.Basis, DeclarationID: evidence.DeclarationID, Revision: evidence.Revision}); err != nil {
 		return "", err
 	}
 	now := time.Now().UTC()
@@ -366,10 +366,10 @@ func beginInvestigationObjective(report *Report) {
 	}
 	objective := "Explain the observed CI failure from source-backed facts and determine whether a causal mechanism is established."
 	unknowns := []InvestigationUnknown{
-		{ID: "exact-memory", Question: "What exact expression and shared memory identity did each conflicting access use?", Predicate: "source function plus variable/reference facts identify the same concrete state for both accesses", RequiredKinds: []string{"source function", "source variable trace", "source references"}, CandidateActions: []string{"InspectFunction", "TraceVariable", "FindReferences"}, NextAction: "TraceVariable", Revision: report.Environment.HeadCommit},
-		{ID: "goroutine-ownership", Question: "Which goroutine owns each access, and how is its lifecycle terminated?", Predicate: "lifecycle and cleanup facts identify creation, execution, cancellation, completion, and ownership without unresolved edges", RequiredKinds: []string{"source lifecycle", "source cleanup"}, CandidateActions: []string{"InspectFunction", "InspectGoroutineLifecycle", "InspectCleanup"}, NextAction: "InspectGoroutineLifecycle", Revision: report.Environment.HeadCommit},
-		{ID: "shutdown-ordering", Question: "Does shutdown wait for the background goroutine before it can overlap the access?", Predicate: "source facts establish registration-before-wait and completion-before-shutdown for the relevant goroutine", RequiredKinds: []string{"source lifecycle", "source cleanup", "source synchronization"}, CandidateActions: []string{"InspectGoroutineLifecycle", "InspectCleanup", "InspectSynchronization"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
-		{ID: "happens-before", Question: "What verified synchronization or happens-before edge orders the two accesses?", Predicate: "a synchronization fact explicitly establishes an edge between the exact conflicting accesses", RequiredKinds: []string{"source synchronization"}, CandidateActions: []string{"InspectSynchronization", "TraceCallers", "TraceCallees"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
+		{ID: "exact-memory", Question: "What exact expression and shared memory identity did each conflicting access use?", Predicate: "source function plus variable/reference facts identify the same concrete state for both accesses", RequiredKinds: []string{"source function", "source variable trace", "source references"}, Requirements: []EvidenceRequirement{{ClaimKind: "source function", MinimumBasis: "SourceVerified"}, {ClaimKind: "source variable trace", MinimumBasis: "SourceVerified"}, {ClaimKind: "source references", MinimumBasis: "SourceVerified"}, {ClaimKind: "same-runtime-instance", MinimumBasis: "RuntimeObserved", SameInstance: true}}, CandidateActions: []string{"InspectFunction", "TraceVariable", "FindReferences"}, NextAction: "TraceVariable", Revision: report.Environment.HeadCommit},
+		{ID: "goroutine-ownership", Question: "Which goroutine owns each access, and how is its lifecycle terminated?", Predicate: "lifecycle and cleanup facts identify creation, execution, cancellation, completion, and ownership without unresolved edges", RequiredKinds: []string{"source lifecycle", "source cleanup"}, Requirements: []EvidenceRequirement{{ClaimKind: "source lifecycle", MinimumBasis: "SourceVerified"}, {ClaimKind: "source cleanup", MinimumBasis: "SourceVerified"}}, CandidateActions: []string{"InspectFunction", "InspectGoroutineLifecycle", "InspectCleanup"}, NextAction: "InspectGoroutineLifecycle", Revision: report.Environment.HeadCommit},
+		{ID: "shutdown-ordering", Question: "Does shutdown wait for the background goroutine before it can overlap the access?", Predicate: "source facts establish registration-before-wait and completion-before-shutdown for the relevant goroutine", RequiredKinds: []string{"source lifecycle", "source cleanup", "source synchronization"}, Requirements: []EvidenceRequirement{{ClaimKind: "source lifecycle", MinimumBasis: "SourceVerified"}, {ClaimKind: "source cleanup", MinimumBasis: "SourceVerified"}, {ClaimKind: "synchronization-ordering", MinimumBasis: "SourceVerified", Ordering: "happens-before"}}, CandidateActions: []string{"InspectGoroutineLifecycle", "InspectCleanup", "InspectSynchronization"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
+		{ID: "happens-before", Question: "What verified synchronization or happens-before edge orders the two accesses?", Predicate: "a synchronization fact explicitly establishes an edge between the exact conflicting accesses", RequiredKinds: []string{"source synchronization"}, Requirements: []EvidenceRequirement{{ClaimKind: "synchronization-ordering", MinimumBasis: "SourceVerified", Ordering: "happens-before"}}, CandidateActions: []string{"InspectSynchronization", "TraceCallers", "TraceCallees"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
 	}
 	if !hasRaceIncident(report.FailureIncidents) && len(report.RaceReports) == 0 {
 		objective = "Explain the observed CI failure from source-backed facts and identify the missing mechanism or verification needed for a causal diagnosis."
@@ -426,11 +426,30 @@ func applyInvestigationAction(report *Report, action InvestigationAction) {
 			for _, evidenceID := range action.EvidenceIDs {
 				unknown.EvidenceIDs = appendUniqueString(unknown.EvidenceIDs, evidenceID)
 			}
-			unknown.Status = "investigating"
+			if unknown.Status != "resolved" && unknown.Status != "refuted" {
+				unknown.Status = "investigating"
+			}
 			unknown.Evaluation = "action completed; objective predicate has not yet been evaluated"
 		}
 	}
 	evaluateInvestigationObjectives(report)
+	for index := range report.InvestigationActions {
+		if report.InvestigationActions[index].ID != action.ID {
+			continue
+		}
+		relevant := false
+		for _, unknownID := range action.UnknownIDs {
+			for _, unknown := range report.InvestigationObjective.Unknowns {
+				if unknown.ID == unknownID {
+					relevant = true
+					report.InvestigationActions[index].Resolved = report.InvestigationActions[index].Resolved || unknown.Status == "resolved"
+					report.InvestigationActions[index].Missing = append([]string(nil), unknown.MissingRequirements...)
+				}
+			}
+		}
+		report.InvestigationActions[index].Executed = true
+		report.InvestigationActions[index].Advanced = relevant && (len(report.InvestigationActions[index].Missing) == 0 || report.InvestigationActions[index].Resolved)
+	}
 }
 
 // evaluateInvestigationObjectives is deliberately conservative. It checks
@@ -449,8 +468,25 @@ func evaluateInvestigationObjectives(report *Report) {
 		}
 		u.Status = "unresolved"
 		u.Evaluation = "required evidence is missing, ambiguous, stale, or inferred"
+		u.MissingRequirements = nil
 		if u.Revision != "" && report.Environment.HeadCommit != "" && u.Revision != report.Environment.HeadCommit {
 			u.Evaluation = "objective evidence belongs to a different source revision"
+			continue
+		}
+		if len(u.Requirements) > 0 {
+			result := evaluateStrictObjective(*u, report.Evidence, report.Environment.HeadCommit)
+			for _, id := range result.EvidenceIDs {
+				u.EvidenceIDs = appendUniqueString(u.EvidenceIDs, id)
+			}
+			u.MissingRequirements = result.Missing
+			u.Evaluation = result.Evaluation
+			if result.Resolved {
+				for _, id := range result.EvidenceIDs {
+					u.ResolutionIDs = appendUniqueString(u.ResolutionIDs, id)
+				}
+				u.Status = "resolved"
+				u.NextAction = ""
+			}
 			continue
 		}
 		var matching []EvidenceItem
@@ -528,6 +564,63 @@ func evaluateInvestigationObjectives(report *Report) {
 	}
 }
 
+type objectiveEvaluation struct {
+	Resolved    bool
+	EvidenceIDs []string
+	Missing     []string
+	Evaluation  string
+}
+
+var evidenceBasisRank = map[string]int{"Observed": 1, "Inferred": 1, "SourceVerified": 2, "RuntimeObserved": 3, "Experimental": 4}
+
+func evaluateStrictObjective(objective InvestigationUnknown, evidence []EvidenceItem, revision string) objectiveEvaluation {
+	result := objectiveEvaluation{Evaluation: "required evidence is missing, unrelated, inferred, stale, or insufficiently proven"}
+	for _, requirement := range objective.Requirements {
+		found := false
+		for _, item := range evidence {
+			claim := item.ClaimKind
+			if claim == "" {
+				claim = item.Kind
+			}
+			if claim != requirement.ClaimKind || (revision != "" && item.Revision != "" && item.Revision != revision) {
+				continue
+			}
+			if requirement.Subject != "" && requirement.Subject != item.DeclarationID && requirement.Subject != item.AccessID && requirement.Subject != item.InstanceID {
+				continue
+			}
+			if evidenceBasisRank[item.Basis] < evidenceBasisRank[requirement.MinimumBasis] || item.Basis == "Inferred" {
+				continue
+			}
+			if requirement.SameInstance && item.InstanceID == "" {
+				continue
+			}
+			if requirement.Ordering != "" && item.Ordering != requirement.Ordering {
+				continue
+			}
+			result.EvidenceIDs = appendUniqueString(result.EvidenceIDs, item.ID)
+			found = true
+			break
+		}
+		if !found {
+			missing := requirement.ClaimKind
+			if requirement.Subject != "" {
+				missing += " for subject " + requirement.Subject
+			}
+			if requirement.Ordering != "" {
+				missing += " (" + requirement.Ordering + ")"
+			}
+			result.Missing = append(result.Missing, missing)
+		}
+	}
+	if len(result.Missing) == 0 {
+		result.Resolved = true
+		result.Evaluation = "typed objective requirements satisfied by qualifying evidence"
+	} else {
+		result.Evaluation = "missing qualifying evidence: " + strings.Join(result.Missing, "; ")
+	}
+	return result
+}
+
 func sourceDetailUnresolved(detail string) bool {
 	text := strings.ToLower(detail)
 	for _, marker := range []string{"unresolved", "not proof", "no explicit", "no synchronization", "could not be resolved", "remains to be verified"} {
@@ -544,7 +637,7 @@ func (d *Diagnoser) saveInvestigationCheckpoint(report *Report) error {
 	}
 	objectives := make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, u := range report.InvestigationObjective.Unknowns {
-		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...), RequiredEvidence: append([]string(nil), u.RequiredKinds...), Target: u.Target, TargetSymbol: u.TargetSymbol})
+		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...), RequiredEvidence: append([]string(nil), u.RequiredKinds...), Requirements: domainRequirements(u.Requirements), MissingRequirements: append([]string(nil), u.MissingRequirements...), RefutedBy: stringIDsToDomain(u.RefutedBy), Target: u.Target, TargetSymbol: u.TargetSymbol})
 	}
 	state, err := d.cfg.Store.GetAdaptiveState(domain.ID(report.InvestigationID))
 	if err != nil {
@@ -553,6 +646,14 @@ func (d *Diagnoser) saveInvestigationCheckpoint(report *Report) error {
 	state.Objectives = objectives
 	state.UpdatedAt = time.Now().UTC()
 	return d.cfg.Store.SaveAdaptiveState(state)
+}
+
+func domainRequirements(values []EvidenceRequirement) []domain.EvidenceRequirement {
+	out := make([]domain.EvidenceRequirement, 0, len(values))
+	for _, value := range values {
+		out = append(out, domain.EvidenceRequirement{ClaimKind: value.ClaimKind, Subject: value.Subject, MinimumBasis: value.MinimumBasis, Revision: value.Revision, SameInstance: value.SameInstance, Ordering: value.Ordering})
+	}
+	return out
 }
 
 func finishInvestigationObjective(report *Report) {

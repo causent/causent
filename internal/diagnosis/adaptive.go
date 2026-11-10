@@ -196,9 +196,32 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
 				return fmt.Errorf("save adaptive evidence: %w", err)
 			}
-			report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload, Provenance: evidence.Provenance, Revision: report.Environment.HeadCommit})
+			report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), ClaimKind: evidence.ClaimKind, Basis: evidence.Basis, DeclarationID: evidence.DeclarationID, AccessID: evidence.AccessID, InstanceID: evidence.InstanceID, RunID: evidence.RunID, Ordering: evidence.Ordering, Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload, Provenance: evidence.Provenance, Revision: evidence.Revision})
 		}
 		completed := investigation.Complete(activity, out.References)
+		completed.Executed = true
+		if report.InvestigationObjective != nil && decision.Selected.ObjectiveID != "" {
+			evaluateInvestigationObjectives(report)
+			for _, unknown := range report.InvestigationObjective.Unknowns {
+				if unknown.ID != decision.Selected.ObjectiveID {
+					continue
+				}
+				for _, id := range unknown.EvidenceIDs {
+					for _, ev := range out.Evidence {
+						if id == string(ev.ID) {
+							completed.Advanced = true
+						}
+					}
+				}
+				completed.Resolved = unknown.Status == "resolved"
+				completed.Missing = append([]string(nil), unknown.MissingRequirements...)
+				if completed.Resolved {
+					out.Metadata["progress"] = "resolved"
+				} else if !completed.Advanced {
+					out.Metadata["progress"] = "none"
+				}
+			}
+		}
 		if execErr != nil {
 			completed.Error = execErr.Error()
 		}
@@ -294,7 +317,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			}
 		}
 		if !seen {
-			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs})
+			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs, Executed: activity.Executed, Advanced: activity.Advanced, Resolved: activity.Resolved, Refuted: activity.Refuted, Missing: append([]string(nil), activity.Missing...)})
 		}
 	}
 	ensureTerminalInvestigation(report, state.StoppingReason, state.Budget)
@@ -399,7 +422,15 @@ func objectiveFromCheckpoint(values []domain.AdaptiveObjective) *InvestigationOb
 	}
 	out := &InvestigationObjective{FailureObjective: "Resume the persisted causal investigation", Status: "investigating"}
 	for _, value := range values {
-		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, RequiredKinds: append([]string(nil), value.RequiredEvidence...), EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
+		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, RequiredKinds: append([]string(nil), value.RequiredEvidence...), Requirements: localRequirements(value.Requirements), MissingRequirements: append([]string(nil), value.MissingRequirements...), RefutedBy: domainIDsToStrings(value.RefutedBy), EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
+	}
+	return out
+}
+
+func localRequirements(values []domain.EvidenceRequirement) []EvidenceRequirement {
+	out := make([]EvidenceRequirement, 0, len(values))
+	for _, value := range values {
+		out = append(out, EvidenceRequirement{ClaimKind: value.ClaimKind, Subject: value.Subject, MinimumBasis: value.MinimumBasis, Revision: value.Revision, SameInstance: value.SameInstance, Ordering: value.Ordering})
 	}
 	return out
 }
@@ -418,7 +449,7 @@ func saveAdaptiveObjectives(store *persistence.Store, report *Report, state *dom
 	}
 	state.Objectives = make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, unknown := range report.InvestigationObjective.Unknowns {
-		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), RequiredEvidence: append([]string(nil), unknown.RequiredKinds...), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
+		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), RequiredEvidence: append([]string(nil), unknown.RequiredKinds...), Requirements: domainRequirements(unknown.Requirements), MissingRequirements: append([]string(nil), unknown.MissingRequirements...), RefutedBy: stringIDsToDomain(unknown.RefutedBy), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
 	}
 	state.UpdatedAt = time.Now().UTC()
 	return store.SaveAdaptiveState(*state)

@@ -30,8 +30,8 @@ func TestOpenCreatesSchemaAtVersionOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("expected version 6, got %d", version)
+	if version != 7 {
+		t.Fatalf("expected version 7, got %d", version)
 	}
 }
 
@@ -67,6 +67,25 @@ func TestGetInvestigationNotFound(t *testing.T) {
 	s := openTestStore(t)
 	if _, err := s.GetInvestigation("missing"); err == nil {
 		t.Fatal("expected error for missing investigation")
+	}
+}
+
+func TestEvidenceContractRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	inv := domain.Investigation{ID: "evidence-contract", RepoPath: "/repo", Status: domain.StatusCreated, CreatedAt: nowForTest(), UpdatedAt: nowForTest()}
+	if err := s.SaveInvestigation(inv); err != nil {
+		t.Fatal(err)
+	}
+	want := domain.Evidence{ID: "e-contract", InvestigationID: inv.ID, Type: domain.EvidenceSourceCode, Source: "test", Timestamp: nowForTest(), Payload: "proof", Provenance: "fixture", ClaimKind: "synchronization-ordering", Basis: "SourceVerified", DeclarationID: "pkg.Cacher.stopWg", AccessID: "access:1", InstanceID: "instance:1", RunID: "run:1", Ordering: "happens-before", Revision: "head"}
+	if err := s.SaveEvidence(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetEvidence(want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClaimKind != want.ClaimKind || got.Basis != want.Basis || got.DeclarationID != want.DeclarationID || got.InstanceID != want.InstanceID || got.Ordering != want.Ordering || got.Revision != want.Revision {
+		t.Fatalf("contract metadata lost: got=%+v", got)
 	}
 }
 
@@ -114,8 +133,8 @@ func TestMigrationUpgradesExistingDatabaseWithoutDataLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("expected version 6 after upgrade, got %d", version)
+	if version != 7 {
+		t.Fatalf("expected version 7 after upgrade, got %d", version)
 	}
 
 	// Re-opening must be idempotent and must not drop data.

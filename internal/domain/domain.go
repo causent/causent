@@ -39,6 +39,14 @@ type Evidence struct {
 	RelatedHypotheses  []ID
 	RelatedExperiments []ID
 	Provenance         string
+	ClaimKind          string
+	Basis              string
+	DeclarationID      string
+	AccessID           string
+	InstanceID         string
+	RunID              string
+	Ordering           string
+	Revision           string
 }
 
 // EvidenceType enumerates the types of evidence.

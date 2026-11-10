@@ -188,6 +188,11 @@ type Activity struct {
 	Error           string         `json:"error,omitempty"`
 	StartedAt       *time.Time     `json:"started_at,omitempty"`
 	CompletedAt     *time.Time     `json:"completed_at,omitempty"`
+	Executed        bool           `json:"executed"`
+	Advanced        bool           `json:"advanced"`
+	Resolved        bool           `json:"resolved"`
+	Refuted         bool           `json:"refuted"`
+	Missing         []string       `json:"missing,omitempty"`
 }
 
 type InvestigationBudget struct {
@@ -254,19 +259,33 @@ type InvestigationDisposition struct {
 // AdaptiveObjective is the durable checkpoint for one causal unknown.
 // Objective resolution is independent from action completion.
 type AdaptiveObjective struct {
-	ID                 string   `json:"id"`
-	Question           string   `json:"question"`
-	Predicate          string   `json:"predicate"`
-	Status             string   `json:"status"`
-	EvidenceIDs        []ID     `json:"evidence_ids,omitempty"`
-	ResolutionEvidence []ID     `json:"resolution_evidence_ids,omitempty"`
-	Evaluation         string   `json:"evaluation,omitempty"`
-	Revision           string   `json:"revision,omitempty"`
-	NextAction         string   `json:"next_action,omitempty"`
-	CandidateActions   []string `json:"candidate_actions,omitempty"`
-	RequiredEvidence   []string `json:"required_evidence,omitempty"`
-	Target             string   `json:"target,omitempty"`
-	TargetSymbol       string   `json:"target_symbol,omitempty"`
+	ID                  string                `json:"id"`
+	Question            string                `json:"question"`
+	Predicate           string                `json:"predicate"`
+	Status              string                `json:"status"`
+	EvidenceIDs         []ID                  `json:"evidence_ids,omitempty"`
+	ResolutionEvidence  []ID                  `json:"resolution_evidence_ids,omitempty"`
+	Evaluation          string                `json:"evaluation,omitempty"`
+	Revision            string                `json:"revision,omitempty"`
+	NextAction          string                `json:"next_action,omitempty"`
+	CandidateActions    []string              `json:"candidate_actions,omitempty"`
+	RequiredEvidence    []string              `json:"required_evidence,omitempty"`
+	Target              string                `json:"target,omitempty"`
+	TargetSymbol        string                `json:"target_symbol,omitempty"`
+	Requirements        []EvidenceRequirement `json:"requirements,omitempty"`
+	MissingRequirements []string              `json:"missing_requirements,omitempty"`
+	RefutedBy           []ID                  `json:"refuted_by,omitempty"`
+}
+
+// EvidenceRequirement is an optional strict contract for causal objectives.
+// Legacy objectives continue to use RequiredEvidence.
+type EvidenceRequirement struct {
+	ClaimKind    string `json:"claim_kind"`
+	Subject      string `json:"subject,omitempty"`
+	MinimumBasis string `json:"minimum_basis,omitempty"`
+	Revision     string `json:"revision,omitempty"`
+	SameInstance bool   `json:"same_instance,omitempty"`
+	Ordering     string `json:"ordering,omitempty"`
 }
 
 // HistoricalReference points at prior repository knowledge without asserting

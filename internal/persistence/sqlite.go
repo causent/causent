@@ -294,6 +294,13 @@ func (s *Store) migrate() error {
 			missing_evidence TEXT NOT NULL DEFAULT '[]',
 			FOREIGN KEY(hypothesis_id) REFERENCES hypotheses(id)
 		)`},
+		{7, `CREATE TABLE IF NOT EXISTS evidence_contract (
+			evidence_id TEXT PRIMARY KEY,
+			claim_kind TEXT NOT NULL DEFAULT '', basis TEXT NOT NULL DEFAULT '',
+			declaration_id TEXT NOT NULL DEFAULT '', access_id TEXT NOT NULL DEFAULT '',
+			instance_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '',
+			ordering TEXT NOT NULL DEFAULT '', revision TEXT NOT NULL DEFAULT ''
+		)`},
 	}
 
 	for i := 0; i < len(migrations); {
@@ -525,6 +532,10 @@ func (s *Store) SaveEvidence(e domain.Evidence) error {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO evidence_provenance (evidence_id, provenance) VALUES (?,?) ON CONFLICT(evidence_id) DO UPDATE SET provenance=excluded.provenance`, e.ID, e.Provenance)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO evidence_contract (evidence_id, claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET claim_kind=excluded.claim_kind, basis=excluded.basis, declaration_id=excluded.declaration_id, access_id=excluded.access_id, instance_id=excluded.instance_id, run_id=excluded.run_id, ordering=excluded.ordering, revision=excluded.revision`, e.ID, e.ClaimKind, e.Basis, e.DeclarationID, e.AccessID, e.InstanceID, e.RunID, e.Ordering, e.Revision)
 	return err
 }
 
@@ -553,6 +564,7 @@ func (s *Store) ListEvidence(invID domain.ID) ([]domain.Evidence, error) {
 		if err := s.db.QueryRow(`SELECT provenance FROM evidence_provenance WHERE evidence_id=?`, e.ID).Scan(&e.Provenance); err != nil && err != sql.ErrNoRows {
 			return nil, err
 		}
+		_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, e.ID).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -571,6 +583,7 @@ func (s *Store) GetEvidence(id domain.ID) (domain.Evidence, error) {
 	var provenance string
 	_ = s.db.QueryRow(`SELECT provenance FROM evidence_provenance WHERE evidence_id=?`, id).Scan(&provenance)
 	e.Provenance = provenance
+	_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, id).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
 	return e, nil
 }
 
