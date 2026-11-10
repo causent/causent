@@ -1,0 +1,40 @@
+{
+  "findings": [
+    {
+      "id": "finding:incident:race:1",
+      "kind": "incident_diagnosis",
+      "statement": "The Go race detector directly observed a read at staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go:496 and a write at staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go:187. This establishes conflicting concurrent accesses, not their root cause.",
+      "evidence_ids": ["ci-evidence-d64c88c2758e"]
+    }
+  ],
+  "failure_incidents": [
+    {
+      "id": "incident:race:1",
+      "category": "go_data_race",
+      "affected_tests": ["TestWatch/WatchCacheStallResume=true/WatchWithoutPrevKV=true/ClusterScopedWatch"],
+      "observed_locations": [
+        {"access": "read", "file": "staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go", "line": 496, "function": "k8s.io/apiserver/pkg/storage/cacher.NewCacherFromConfig.gowrap3()", "provenance": "direct_stack_frame"},
+        {"access": "write", "file": "staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go", "line": 187, "function": "k8s.io/apiserver/pkg/storage/cacher/testing/setup.SetupWithCacher.func1()", "provenance": "direct_stack_frame"}
+      ],
+      "observed_explanation": "The Go race detector directly observed a read at staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go:496 and a write at staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go:187. This establishes conflicting concurrent accesses, not their root cause.",
+      "proposed_explanation": "The observed stacks are consistent with concurrent lifecycle activity, but stack proximity alone does not establish which synchronization rule is violated.",
+      "pr_relationship": "No demonstrated PR relationship; base-versus-head verification is unavailable.",
+      "observed_confidence": 1,
+      "explanation_confidence": 0.35,
+      "causality_confidence": 0,
+      "evidence_ids": ["ci-evidence-d64c88c2758e"]
+    }
+  ],
+  "hypotheses": [
+    {"statement": "Candidate location X may explain the observed failure episode(s)"},
+    {"statement": "Candidate location Y may explain the observed failure episode(s)"},
+    {"statement": "Candidate location Z may explain the observed failure episode(s)"},
+    {"statement": "Candidate location W may explain the observed failure episode(s)"}
+  ],
+  "candidates": [
+    {"location": {"symbol_identity": "go:...:Function:NewCacherFromConfig", "file_path": "staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go", "start_line": 371, "provenance": "enclosing_symbol"}, "score": {"execution_relevance": 1}},
+    {"location": {"symbol_identity": "go:...:Function:SetupWithCacher", "file_path": "staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go", "start_line": 130, "provenance": "enclosing_symbol"}, "score": {"execution_relevance": 1}},
+    {"location": {"symbol_identity": "go:...:Function:newTimeBudget", "file_path": "staging/src/k8s.io/apiserver/pkg/storage/cacher/time_budget.go", "start_line": 60, "provenance": "inferred_caller"}, "score": {"execution_relevance": 0}},
+    {"location": {"symbol_identity": "go:...:Function:newCompactor", "file_path": "staging/src/k8s.io/apiserver/pkg/storage/cacher/compactor.go", "start_line": 33, "provenance": "inferred_caller"}, "score": {"execution_relevance": 0}}
+  ]
+}

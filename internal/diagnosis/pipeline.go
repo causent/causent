@@ -350,7 +350,15 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			}
 		}
 	}
-	report.Hypotheses = reasoning.Generate(domain.ID(report.InvestigationID), discovery.Groups, hypothesisCandidates)
+	if hasRaceIncident(report.FailureIncidents) {
+		// Candidate locations remain machine-readable supporting evidence. A
+		// generic candidate statement is not a falsifiable mechanism, so do not
+		// publish it as a hypothesis when the incident evidence cannot distinguish
+		// one mechanism from another.
+		report.Hypotheses = nil
+	} else {
+		report.Hypotheses = reasoning.Generate(domain.ID(report.InvestigationID), discovery.Groups, hypothesisCandidates)
+	}
 	evidenceMap := map[domain.ID]domain.Evidence{}
 	for _, item := range report.Evidence {
 		evidenceMap[domain.ID(item.ID)] = domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind)}
@@ -453,6 +461,15 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	d.emit(EventPreliminaryDiagnosis, domain.StatusFormingHypotheses, "preliminary diagnosis available")
 	d.refreshProgressiveBundle(report)
 	return nil
+}
+
+func hasRaceIncident(incidents []FailureIncident) bool {
+	for _, incident := range incidents {
+		if incident.Category == "go_data_race" {
+			return true
+		}
+	}
+	return false
 }
 
 func minInt(a, b int) int {

@@ -348,6 +348,7 @@ jobs:
       - name: Write run summary
         env:
           PR_URL: ${{ steps.pr.outputs.pr_url }}
+          SOURCE_URL: ${{ steps.evidence.outputs.source_url }}
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           PULL_NUMBER: ${{ inputs.pull_request }}
         run: |
@@ -368,17 +369,27 @@ jobs:
               echo "**Reproduced:** $(jq -r '(.baseline.failures // 0|tostring) + "/" + (.baseline.attempts // 0|tostring)' "$report") attempts failed"
             fi
             echo
-            # Extract and display specific lint/test failures from normalized evidence
-            findings="$(jq -r '.normalized_evidence.executions[]?.tests[]? | "- **" + (.name // "unknown test") + "**" + (if .file then ": `" + .file + (if .line then ":" + (.line|tostring) else "" end) + "`" else "" end) + (if .message then " — " + .message else "" end)' "$report" 2>/dev/null || true)"
-            if [ -n "$findings" ]; then
-              echo '**Findings:**'
-              echo "$findings"
-              echo
-            fi
-            incidents="$(jq -r '.failure_incidents[]? | "### Failure\n" + (.category // "observed failure") + "\n\n**Affected tests:** " + ((.affected_tests // []) | join(", ")) + "\n\n**Observed conflict:** " + ((.observed_locations // []) | map((.access // "access") + ": `" + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "`" + (if .function then " (" + .function + ")" else "" end)) | join("; ")) + "\n\n" + (.observed_explanation // "Observed failure evidence preserved.") + "\n\n**Relevant code:** " + (.proposed_explanation // "No mechanism established.") + "\n\n**PR relationship:** " + (.pr_relationship // "Not established.") + "\n\n**Confidence:** observed=" + ((.observed_confidence // 0)|tostring) + ", explanation=" + ((.explanation_confidence // 0)|tostring) + ", causality=" + ((.causality_confidence // 0)|tostring)' "$report" 2>/dev/null || true)"
-            if [ -n "$incidents" ]; then
-              echo '**Failure incident:**'
-              echo "$incidents"
+            primary="$(jq -r '
+              . as $report
+              | $report.findings[]?
+              | select(.kind == "incident_diagnosis") as $finding
+              | ($report.failure_incidents[]? | select(("finding:" + .id) == $finding.id)) as $incident
+              | "### " + ($incident.category // "Observed incident")
+                + "\n\n**Affected tests:** " + (($incident.affected_tests // []) | join(", "))
+                + "\n\n**Observed locations:** "
+                + (($incident.observed_locations // []) | map((.access // "access") + ": `" + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "`" + (if .function then " (" + .function + ")" else "" end)) | join("; "))
+                + "\n\n" + ($finding.statement // $incident.observed_explanation // "Observed incident evidence preserved.")
+                + "\n\n**Relevant code:** " + ($incident.proposed_explanation // "No mechanism established.")
+                + "\n\n**PR relationship:** " + ($incident.pr_relationship // "Not established.")
+                + "\n\n**Evidence IDs:** " + (($finding.evidence_ids // $incident.evidence_ids // []) | join(", "))
+                + "\n\n**Confidence:** observed=" + (($incident.observed_confidence // 0)|tostring) + ", explanation=" + (($incident.explanation_confidence // 0)|tostring) + ", causality=" + (($incident.causality_confidence // 0)|tostring)' "$report" 2>/dev/null || true)"
+            if [ -n "$primary" ]; then
+              echo '**Primary diagnosis:**'
+              echo "$primary"
+              if [ -n "$SOURCE_URL" ]; then
+                echo
+                echo "**Original CI evidence:** $SOURCE_URL"
+              fi
               echo
             fi
             files="$(jq -r '(.localization.likely_file_reasons // {}) | to_entries[]? | "- `" + .key + "` — " + ((.value // []) | join(", "))' "$report")"
@@ -399,9 +410,9 @@ jobs:
               echo "$episodes"
               echo
             fi
-            candidates="$(jq -r '.candidates[0:8][]? | "- **" + (.location.symbol_identity // "unresolved location") + "** (`" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "`, " + (.location.provenance // .location.location_type // "unattributed") + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")"' "$report" 2>/dev/null || true)"
+            candidates="$(jq -r '.candidates[0:12][]? | "- **" + (.location.symbol_identity // "unresolved location") + "** (`" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "`, " + (if .location.provenance == "enclosing_symbol" then "enclosing symbol" elif .location.provenance == "inferred_caller" then "inferred structural candidate" elif .location.provenance == "dependency" then "dependency candidate" elif .location.provenance == "direct_stack_frame" then "directly observed location" else (.location.provenance // .location.location_type // "unattributed") end) + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")"' "$report" 2>/dev/null || true)"
             if [ -n "$candidates" ]; then
-              echo '**Inspected locations:**'
+              echo '**Supporting candidate locations:**'
               echo "$candidates"
               echo
             fi

@@ -700,11 +700,17 @@ func diagnosisText(report diagnosis.Report) string {
 			if len(incident.Uncertainty) > 0 {
 				fmt.Fprintf(&b, "    uncertainty: %s\n", strings.Join(incident.Uncertainty, "; "))
 			}
+			if len(incident.EvidenceIDs) > 0 {
+				fmt.Fprintf(&b, "    evidence: %s\n", strings.Join(incident.EvidenceIDs, ", "))
+			}
 		}
 	}
 	if len(report.Hypotheses) > 0 {
-		b.WriteString("\nassessed hypotheses (candidate relevance, not causal probability):\n")
+		b.WriteString("\nassessed hypotheses (falsifiable mechanisms only):\n")
 		for _, hypothesis := range report.Hypotheses {
+			if !isFalsifiableHypothesis(hypothesis) {
+				continue
+			}
 			fmt.Fprintf(&b, "  %s v%d [%s relevance %.2f]: %s\n    supporting evidence: %s\n", hypothesis.ID, hypothesis.Version, hypothesis.Status, hypothesis.Relevance, hypothesis.Statement, strings.Join(idsToStrings(hypothesis.SupportingEvidenceIDs), ", "))
 		}
 	}
@@ -739,6 +745,14 @@ func diagnosisText(report diagnosis.Report) string {
 		}
 	}
 	return b.String()
+}
+
+func isFalsifiableHypothesis(hypothesis domain.Hypothesis) bool {
+	return hypothesis.Statement != "" &&
+		len(hypothesis.SupportingEvidenceIDs) > 0 &&
+		len(hypothesis.ContradictingEvidenceIDs) > 0 &&
+		len(hypothesis.PredictedObservations) > 0 &&
+		!strings.HasPrefix(hypothesis.Statement, "Candidate location ")
 }
 
 func idsToStrings(ids []domain.ID) []string {
