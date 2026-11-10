@@ -170,6 +170,7 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "python-exception", data: "Traceback (most recent call last):\n  File \"app.py\", line 4\nValueError: bad input\n", format: "runtime_exception_text", kind: "runtime_exception_report", cat: ArtifactRuntime},
 		{name: "container-log", data: "{\"time\":\"2026-01-01T00:00:00Z\",\"stream\":\"stderr\",\"log\":\"failure\\n\"}\n", format: "container_json_log", kind: "container_log_observation", cat: ArtifactInfra},
 		{name: "profile", data: "main;worker;run 10\nmain;worker;wait 2\n", format: "collapsed_stacks", kind: "performance_profile", cat: ArtifactPerformance},
+		{name: "compiler", data: "src/main.rs:12:5: error: cannot find value `missing`\n", format: "compiler_diagnostics", kind: "build_diagnostic", cat: ArtifactBuild},
 	}
 	registry := NewArtifactDecoderRegistry()
 	for _, tc := range tests {
@@ -255,6 +256,17 @@ func TestRuntimeExceptionArtifactParticipatesInCIFailureClassification(t *testin
 	observations := parseFailureObservations(text)
 	if len(observations) != 1 || observations[0].Test != "runtime exception" {
 		t.Fatalf("runtime exception was not normalized: %#v", observations)
+	}
+}
+
+func TestBuildDiagnosticArtifactParticipatesInCIFailureClassification(t *testing.T) {
+	text := "src/main.go:12:3: undefined: missing\n"
+	if !isCIEvidenceKind("build_diagnostic") {
+		t.Fatal("build diagnostic is not recognized as CI evidence")
+	}
+	observations := parseFailureObservations(text)
+	if len(observations) != 1 || observations[0].Test != "compiler diagnostic" {
+		t.Fatalf("build diagnostic was not normalized: %#v", observations)
 	}
 }
 

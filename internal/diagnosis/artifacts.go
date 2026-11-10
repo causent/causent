@@ -180,6 +180,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		openTelemetryArtifactDecoder{},
 		nativeGoTraceArtifactDecoder{},
 		coreDumpArtifactDecoder{},
+		buildDiagnosticArtifactDecoder{},
 		containerLogArtifactDecoder{},
 		flamegraphArtifactDecoder{},
 		jsonArtifactDecoder{},
@@ -608,6 +609,23 @@ func (coreDumpArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) Arti
 }
 func (coreDumpArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
 	return ArtifactIngestionResult{Status: ArtifactUnsupported, Limitations: []string{"memory dump detected; debugger- and platform-specific dump parser is not available, so no process-state or object-identity claims were produced"}, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "memory_dump_artifact", ClaimKind: "MemoryDiagnosticArtifact", Basis: "Observed", Detail: "Memory diagnostic artifact preserved without parsing", Provenance: desc.StorageRef}}}
+}
+
+type buildDiagnosticArtifactDecoder struct{}
+
+var buildDiagnosticLine = regexp.MustCompile(`(?m)^(?:[^\r\n:]+:)?[^\r\n]*:[0-9]+(?::[0-9]+)?:\s*(?:fatal\s+)?(?:error\b|undefined:|cannot find|undeclared|no required module)|^error(?:\[[^\r\n\]]+\])?:\s+`)
+
+func (buildDiagnosticArtifactDecoder) Name() string    { return "compiler-diagnostic" }
+func (buildDiagnosticArtifactDecoder) Version() string { return "v1" }
+func (buildDiagnosticArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	if len(buildDiagnosticLine.FindAllString(string(data), -1)) > 0 {
+		return ArtifactDetection{Format: "compiler_diagnostics", Category: ArtifactBuild, Confidence: "high", Reason: "compiler diagnostic error locations"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (buildDiagnosticArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	count := len(buildDiagnosticLine.FindAllString(string(data), -1))
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "build_diagnostic", ClaimKind: "BuildDiagnosticObservation", Basis: "Observed", Detail: fmt.Sprintf("compiler/build report with %d diagnostic error(s): %s", count, string(data)), Provenance: desc.StorageRef}}}
 }
 
 type containerLogArtifactDecoder struct{}
