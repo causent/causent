@@ -10,6 +10,33 @@ run_id="${SOURCE_RUN_ID:-}"
 source_url="${SOURCE_CI_URL:-}"
 status_file="$RUNNER_TEMP/source-evidence-status.txt"
 mkdir -p "$RUNNER_TEMP/source-artifacts"
+
+write_github_artifact_manifest() {
+  local metadata="$RUNNER_TEMP/source-artifacts/.github-artifacts.json"
+  local entries="$RUNNER_TEMP/source-artifacts/.malenia-artifact-entries.ndjson"
+  if ! gh api "repos/$TARGET_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" > "$metadata"; then
+    echo "artifact_manifest=unavailable" >> "$status_file"
+    return 0
+  fi
+  : > "$entries"
+  while IFS=$'\t' read -r artifact_id artifact_name artifact_digest artifact_ref; do
+    [ -n "$artifact_name" ] || continue
+    artifact_dir="$RUNNER_TEMP/source-artifacts/$artifact_name"
+    [ -d "$artifact_dir" ] || continue
+    while IFS= read -r -d '' file; do
+      relative="${file#"$RUNNER_TEMP/source-artifacts/"}"
+      jq -cn \
+        --arg path "$relative" \
+        --arg artifact_id "github-actions:$artifact_id" \
+        --arg digest "$artifact_digest" \
+        --arg storage_ref "$artifact_ref" \
+        '{path:$path, artifact_id:$artifact_id, digest:$digest, storage_ref:$storage_ref}' >> "$entries"
+    done < <(find "$artifact_dir" -type f -print0)
+  done < <(jq -r '.artifacts[]? | [(.id|tostring), .name, (.digest // ""), (.archive_download_url // "")] | @tsv' "$metadata")
+  jq -s '{artifacts: .}' "$entries" > "$RUNNER_TEMP/source-artifacts/.malenia-artifacts.json"
+  rm -f "$metadata" "$entries"
+  echo "artifact_manifest=created" >> "$status_file"
+}
 {
   echo "target_repository=$TARGET_REPOSITORY"
   echo "head_sha=$HEAD_SHA"
@@ -66,6 +93,7 @@ else
   fi
   gh run download "$run_id" --repo "$TARGET_REPOSITORY" \
     --dir "$RUNNER_TEMP/source-artifacts" || echo "artifact_download=failed" >> "$status_file"
+  write_github_artifact_manifest
   {
     echo "provider=github-actions"
     echo "run_id=$run_id"
