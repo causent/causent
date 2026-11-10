@@ -213,10 +213,26 @@ type InvestigationQuestion struct {
 type AdaptiveState struct {
 	InvestigationID ID
 	Questions       []InvestigationQuestion
+	Objectives      []AdaptiveObjective
 	Budget          InvestigationBudget
 	StoppingReason  string
 	Iterations      int
 	UpdatedAt       time.Time
+}
+
+// AdaptiveObjective is the durable checkpoint for one causal unknown.
+// Objective resolution is independent from action completion.
+type AdaptiveObjective struct {
+	ID                 string   `json:"id"`
+	Question           string   `json:"question"`
+	Predicate          string   `json:"predicate"`
+	Status             string   `json:"status"`
+	EvidenceIDs        []ID     `json:"evidence_ids,omitempty"`
+	ResolutionEvidence []ID     `json:"resolution_evidence_ids,omitempty"`
+	Evaluation         string   `json:"evaluation,omitempty"`
+	Revision           string   `json:"revision,omitempty"`
+	NextAction         string   `json:"next_action,omitempty"`
+	CandidateActions   []string `json:"candidate_actions,omitempty"`
 }
 
 // HistoricalReference points at prior repository knowledge without asserting

@@ -11,6 +11,7 @@ import (
 type State struct {
 	InvestigationID domain.ID
 	Hypotheses      []domain.Hypothesis
+	Objectives      []domain.AdaptiveObjective
 	Questions       []domain.InvestigationQuestion
 	Activities      []domain.Activity
 	Experiments     []domain.Experiment
@@ -62,10 +63,22 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 				unresolved++
 			}
 		}
+		objectiveMatch := 0
+		for _, objective := range state.Objectives {
+			if objective.Status == "resolved" || objective.Status == "rejected" || objective.Status == "not_applicable" {
+				continue
+			}
+			unresolved++
+			for _, action := range objective.CandidateActions {
+				if action == definition.Type {
+					objectiveMatch++
+				}
+			}
+		}
 		if unresolved == 0 {
 			continue
 		}
-		score := ActionScore{DiagnosticRelevance: float64(unresolved), UncertaintyReduction: 1, Discrimination: .5, EvidenceQuality: 1, ExecutionCost: 1, ExecutionRisk: 1, ExpectedLatency: 1}
+		score := ActionScore{DiagnosticRelevance: float64(unresolved), UncertaintyReduction: 1 + float64(objectiveMatch), Discrimination: .5, EvidenceQuality: 1, ExecutionCost: 1, ExecutionRisk: 1, ExpectedLatency: 1}
 		switch definition.Type {
 		case "CompareBaseAndHead", "CompareRevisions":
 			score.Discrimination = 1
@@ -78,7 +91,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			score.UncertaintyReduction = 1.2
 		}
 		score.Total = score.DiagnosticRelevance*policy.Relevance + score.UncertaintyReduction*policy.Uncertainty + score.Discrimination*policy.Discrimination + score.EvidenceQuality*policy.Quality - score.ExecutionCost*policy.Cost - score.ExecutionRisk*policy.Risk - score.ExpectedLatency*policy.Latency
-		considered = append(considered, ActionCandidate{ActionType: definition.Type, Score: score, Reason: fmt.Sprintf("%d unresolved hypothesis(es); expected uncertainty reduction %.2f at cost %.2f", unresolved, score.UncertaintyReduction, score.ExecutionCost)})
+		considered = append(considered, ActionCandidate{ActionType: definition.Type, Score: score, Reason: fmt.Sprintf("%d unresolved objective(s), %d matching predicates; expected information gain %.2f at cost %.2f", unresolved, objectiveMatch, score.UncertaintyReduction, score.ExecutionCost)})
 	}
 	if len(considered) == 0 {
 		return Decision{StoppingReason: "no useful uncompleted actions remain"}

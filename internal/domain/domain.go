@@ -45,12 +45,17 @@ type Evidence struct {
 type EvidenceType string
 
 const (
-	EvidenceReproduction    EvidenceType = "reproduction"
-	EvidenceGitDiff         EvidenceType = "git_diff"
-	EvidenceSourceCode      EvidenceType = "source_code"
-	EvidenceStackTrace      EvidenceType = "stack_trace"
-	EvidenceBaselineCompare EvidenceType = "baseline_compare"
-	EvidenceHistorical      EvidenceType = "historical_context"
+	EvidenceReproduction           EvidenceType = "reproduction"
+	EvidenceGitDiff                EvidenceType = "git_diff"
+	EvidenceSourceCode             EvidenceType = "source_code"
+	EvidenceStackTrace             EvidenceType = "stack_trace"
+	EvidenceBaselineCompare        EvidenceType = "baseline_compare"
+	EvidenceHistorical             EvidenceType = "historical_context"
+	EvidenceStaticAnalysis         EvidenceType = "static_analysis"
+	EvidenceLocalReproduction      EvidenceType = "local_reproduction"
+	EvidenceSyntheticVerification  EvidenceType = "synthetic_verification"
+	EvidenceCIVerification         EvidenceType = "original_ci_verification"
+	EvidenceRegressionVerification EvidenceType = "regression_verification"
 )
 
 // Hypothesis represents a hypothesis about the cause of a failure.

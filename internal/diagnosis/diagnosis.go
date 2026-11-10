@@ -191,7 +191,10 @@ type Localization struct {
 type RootCauseAssessment struct {
 	Status             string             `json:"status"`
 	Statement          string             `json:"statement"`
+	CausalSequence     []string           `json:"causal_sequence,omitempty"`
+	ViolatedInvariant  string             `json:"violated_invariant,omitempty"`
 	EvidenceIDs        []string           `json:"evidence_ids,omitempty"`
+	ContradictingIDs   []string           `json:"contradicting_evidence,omitempty"`
 	ObservedLocations  []IncidentLocation `json:"observed_locations,omitempty"`
 	MissingEvidence    []string           `json:"missing_evidence,omitempty"`
 	CausalityStatus    string             `json:"causality_status"`
@@ -225,6 +228,30 @@ type InvestigationAction struct {
 	Status      string   `json:"status"`
 	Summary     string   `json:"summary"`
 	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	UnknownIDs  []string `json:"unknown_ids,omitempty"`
+	Result      string   `json:"result,omitempty"`
+	Revision    string   `json:"revision,omitempty"`
+}
+
+type InvestigationUnknown struct {
+	ID               string   `json:"id"`
+	Question         string   `json:"question"`
+	Predicate        string   `json:"resolution_predicate"`
+	RequiredKinds    []string `json:"required_evidence_kinds,omitempty"`
+	Status           string   `json:"status"`
+	CandidateActions []string `json:"candidate_actions,omitempty"`
+	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
+	ResolutionIDs    []string `json:"resolution_evidence_ids,omitempty"`
+	Evaluation       string   `json:"predicate_evaluation,omitempty"`
+	Revision         string   `json:"revision,omitempty"`
+	NextAction       string   `json:"next_action,omitempty"`
+}
+
+type InvestigationObjective struct {
+	FailureObjective string                 `json:"failure_objective"`
+	Unknowns         []InvestigationUnknown `json:"unknowns,omitempty"`
+	Status           string                 `json:"status"`
+	StoppingReason   string                 `json:"stopping_reason,omitempty"`
 }
 
 type ConcurrencyAccess struct {
@@ -316,6 +343,7 @@ type Report struct {
 	RootCause                  RootCauseAssessment            `json:"root_cause"`
 	Repair                     *RepairAssessment              `json:"repair,omitempty"`
 	InvestigationActions       []InvestigationAction          `json:"investigation_actions,omitempty"`
+	InvestigationObjective     *InvestigationObjective        `json:"investigation_objective,omitempty"`
 	Concurrency                *ConcurrencyModel              `json:"concurrency_model,omitempty"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
@@ -770,6 +798,10 @@ func Run(ctx context.Context, cfg Config) (result Report, resultErr error) {
 	} else if report.StoppingReason == "" {
 		report.StoppingReason = "adaptive investigation skipped"
 	}
+	// Root-cause assessment is intentionally deferred until the controller has
+	// evaluated its objective predicates and hypotheses. Preliminary findings
+	// must not freeze the final causal status.
+	report.RootCause = assessRootCause(report)
 	d.emit(EventLocalizationCompleted, domain.StatusFormingHypotheses, locStatus(localization))
 
 	report.Claims = buildClaims(report.Classification, localization, report.Evidence)

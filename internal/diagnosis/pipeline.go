@@ -504,6 +504,18 @@ func assessRootCause(report Report) RootCauseAssessment {
 			"a controlled observation distinguishing a synchronization defect from a benign concurrent access",
 		}
 	}
+	if allObjectivesResolved(&report) && report.Concurrency != nil && len(report.Concurrency.Accesses) >= 2 && len(report.Concurrency.SharedState) > 0 && len(report.Concurrency.HappensBefore) > 0 && len(report.Concurrency.MissingOrdering) == 0 {
+		ids := append([]string(nil), incident.EvidenceIDs...)
+		for _, id := range report.Concurrency.EvidenceIDs {
+			ids = appendUniqueString(ids, id)
+		}
+		return RootCauseAssessment{
+			Status: "confirmed", Statement: "The source-backed concurrency model establishes the conflicting accesses, the shared state, and a verified ordering relationship that explains the observed failure.",
+			CausalSequence:    []string{"CI observed conflicting concurrent accesses", "source analysis identified the shared state and participating execution contexts", "the verified synchronization/lifecycle relationship establishes the violated ordering invariant"},
+			ViolatedInvariant: "The conflicting accesses must obey the verified ownership and synchronization invariant.",
+			EvidenceIDs:       ids, ObservedLocations: append([]IncidentLocation(nil), incident.ObservedLocations...), CausalityStatus: "established", VerificationStatus: "not_attempted",
+		}
+	}
 	return assessment
 }
 

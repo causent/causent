@@ -31,3 +31,26 @@ func TestSelectChoosesInspectableActionAndStopsOnBudget(t *testing.T) {
 		t.Fatal("expected budget stop")
 	}
 }
+
+func TestSelectChangesWithObjectiveEvidence(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "InspectSynchronization"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(testAction{kind: "TraceVariable"}); err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Objectives: []domain.AdaptiveObjective{{ID: "memory", Status: "unresolved", CandidateActions: []string{"TraceVariable"}}},
+		Budget:     domain.InvestigationBudget{MaxIterations: 2},
+	}
+	first := Select(state, r, DefaultScorePolicy)
+	if first.Selected.ActionType != "TraceVariable" {
+		t.Fatalf("selected %s, want TraceVariable: %#v", first.Selected.ActionType, first)
+	}
+	state.Objectives[0].CandidateActions = []string{"InspectSynchronization"}
+	second := Select(state, r, DefaultScorePolicy)
+	if second.Selected.ActionType != "InspectSynchronization" {
+		t.Fatalf("selected %s after evidence change, want InspectSynchronization: %#v", second.Selected.ActionType, second)
+	}
+}

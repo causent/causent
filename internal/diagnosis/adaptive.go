@@ -61,8 +61,8 @@ func adaptiveOutcome(res domain.ExecutionResult) string {
 // executes it, feeds its evidence back into reasoning, and checkpoints before
 // deciding whether another iteration is justified.
 func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspace string) error {
-	if d.cfg.Store == nil || len(report.Hypotheses) == 0 {
-		report.StoppingReason = "no unresolved hypotheses"
+	if d.cfg.Store == nil {
+		report.StoppingReason = "investigation state persistence unavailable"
 		return nil
 	}
 	invID := domain.ID(report.InvestigationID)
@@ -71,6 +71,9 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	if prior, err := d.cfg.Store.GetAdaptiveState(invID); err == nil {
 		state.Iterations = prior.Iterations
 		state.Questions = prior.Questions
+		if report.InvestigationObjective == nil && len(prior.Objectives) > 0 {
+			report.InvestigationObjective = objectiveFromCheckpoint(prior.Objectives)
+		}
 		state.Budget = budget
 	}
 	registry := investigation.NewRegistry()
@@ -123,12 +126,26 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	currentActivities, currentExperiments := activities, experiments
 	start := time.Now()
 	for !investigation.TimedOut(start, state.Budget) {
+		if report.InvestigationObjective != nil {
+			evaluateInvestigationObjectives(report)
+			if err := saveAdaptiveObjectives(d.cfg.Store, report, &state); err != nil {
+				return err
+			}
+			if allObjectivesResolved(report) {
+				state.StoppingReason = "root_cause_established"
+				break
+			}
+		}
 		state.Questions = questionsFor(report.Hypotheses)
 		report.UnresolvedQuestions = state.Questions
 		state.Budget.IterationsUsed = state.Iterations
-		decision := investigation.Select(investigation.State{InvestigationID: invID, Hypotheses: report.Hypotheses, Questions: state.Questions, Activities: currentActivities, Experiments: currentExperiments, Budget: state.Budget}, registry, investigation.DefaultScorePolicy)
+		decision := investigation.Select(investigation.State{InvestigationID: invID, Hypotheses: report.Hypotheses, Objectives: state.Objectives, Questions: state.Questions, Activities: currentActivities, Experiments: currentExperiments, Budget: state.Budget}, registry, investigation.DefaultScorePolicy)
 		if decision.StoppingReason != "" {
-			state.StoppingReason = decision.StoppingReason
+			if report.InvestigationObjective != nil && !allObjectivesResolved(report) {
+				state.StoppingReason = "investigation_blocked: " + decision.StoppingReason
+			} else {
+				state.StoppingReason = decision.StoppingReason
+			}
 			break
 		}
 		decision.Selected.Input.InvestigationID = invID
@@ -191,10 +208,25 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		}
 		currentActivities = append(currentActivities, completed)
 		currentExperiments = append(currentExperiments, ex)
+		if err := saveAdaptiveObjectives(d.cfg.Store, report, &state); err != nil {
+			return err
+		}
 		state.StoppingReason = ""
 	}
 	if state.StoppingReason == "" {
-		state.StoppingReason = "adaptive duration exhausted"
+		state.StoppingReason = "budget_exhausted: adaptive duration exhausted"
+	}
+	if report.InvestigationObjective != nil {
+		switch {
+		case allObjectivesResolved(report):
+			report.InvestigationObjective.Status = "causal_review_required"
+		case strings.HasPrefix(state.StoppingReason, "budget_exhausted"):
+			report.InvestigationObjective.Status = "blocked"
+			report.InvestigationObjective.StoppingReason = state.StoppingReason
+		default:
+			report.InvestigationObjective.Status = "blocked"
+			report.InvestigationObjective.StoppingReason = state.StoppingReason
+		}
 	}
 	state.UpdatedAt = time.Now().UTC()
 	report.StoppingReason, report.AdaptiveIterations = state.StoppingReason, state.Iterations
@@ -214,6 +246,49 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		}
 	}
 	return d.cfg.Store.SaveAdaptiveState(state)
+}
+
+func allObjectivesResolved(report *Report) bool {
+	if report.InvestigationObjective == nil || len(report.InvestigationObjective.Unknowns) == 0 {
+		return false
+	}
+	for _, unknown := range report.InvestigationObjective.Unknowns {
+		if unknown.Status != "resolved" {
+			return false
+		}
+	}
+	return true
+}
+
+func objectiveFromCheckpoint(values []domain.AdaptiveObjective) *InvestigationObjective {
+	if len(values) == 0 {
+		return nil
+	}
+	out := &InvestigationObjective{FailureObjective: "Resume the persisted causal investigation", Status: "investigating"}
+	for _, value := range values {
+		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...)})
+	}
+	return out
+}
+
+func domainIDsToStrings(values []domain.ID) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	return out
+}
+
+func saveAdaptiveObjectives(store *persistence.Store, report *Report, state *domain.AdaptiveState) error {
+	if report.InvestigationObjective == nil {
+		return nil
+	}
+	state.Objectives = make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
+	for _, unknown := range report.InvestigationObjective.Unknowns {
+		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...)})
+	}
+	state.UpdatedAt = time.Now().UTC()
+	return store.SaveAdaptiveState(*state)
 }
 
 func (d *Diagnoser) reassessHypotheses(report *Report, evidence []domain.Evidence, ex domain.Experiment) error {

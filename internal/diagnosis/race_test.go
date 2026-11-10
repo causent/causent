@@ -167,3 +167,20 @@ func TestRaceIncidentLeavesRootCauseUnknown(t *testing.T) {
 		t.Fatalf("root cause assessment lost incident provenance: %#v", assessment)
 	}
 }
+
+func TestRootCauseRequiresCompleteCausalContract(t *testing.T) {
+	report := Report{
+		FailureIncidents:       []FailureIncident{{EvidenceIDs: []string{"ci-race"}, ObservedLocations: []IncidentLocation{{Access: "read", File: "cacher.go", Line: 10}, {Access: "write", File: "setup.go", Line: 20}}}},
+		InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{{ID: "memory", Status: "resolved"}}},
+		Concurrency:            &ConcurrencyModel{Accesses: []ConcurrencyAccess{{Access: "read"}, {Access: "write"}}, SharedState: []string{"cacher.state"}, HappensBefore: []string{"verified ordering"}, EvidenceIDs: []string{"source"}},
+	}
+	assessment := assessRootCause(report)
+	if assessment.Status != "confirmed" || assessment.CausalityStatus != "established" || assessment.ViolatedInvariant == "" || len(assessment.CausalSequence) == 0 {
+		t.Fatalf("complete causal contract was not confirmed: %#v", assessment)
+	}
+	report.Concurrency.MissingOrdering = []string{"ordering remains unverified"}
+	assessment = assessRootCause(report)
+	if assessment.Status == "confirmed" {
+		t.Fatalf("incomplete ordering was incorrectly confirmed: %#v", assessment)
+	}
+}

@@ -388,6 +388,8 @@ func runDiagnose(args []string) {
 			repairResult.Limitations = []string{"repair requires a configured failing command"}
 		} else if report.Refused {
 			repairResult.Limitations = []string{"repair was not attempted because the diagnosis was refused: " + report.RefusalReason}
+		} else if report.RootCause.Status != "supported" && report.RootCause.Status != "confirmed" {
+			repairResult.Limitations = []string{"repair was not attempted because the diagnosis did not establish a supported causal root cause: " + report.RootCause.Statement}
 		} else {
 			provider := engine.ProviderFromEnvironment()
 			repairInvestigator := &engine.Investigator{

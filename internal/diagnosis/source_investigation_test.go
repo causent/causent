@@ -83,6 +83,14 @@ func Write(value int) {
 	if len(report.InvestigationActions) < 6 || len(report.Hypotheses) != 1 {
 		t.Fatalf("source investigation was incomplete: actions=%d hypotheses=%#v", len(report.InvestigationActions), report.Hypotheses)
 	}
+	if report.InvestigationObjective == nil || report.InvestigationObjective.Status == "causal_review_required" || report.InvestigationObjective.StoppingReason == "" {
+		t.Fatalf("investigation loop did not preserve unresolved objective: %#v", report.InvestigationObjective)
+	}
+	for _, action := range report.InvestigationActions {
+		if len(action.UnknownIDs) == 0 || action.Result == "" {
+			t.Fatalf("action was not selected/evaluated against an unknown: %#v", action)
+		}
+	}
 	if report.Concurrency == nil || len(report.Concurrency.Accesses) != 2 || report.Concurrency.Accesses[0].Expression == "" || len(report.Concurrency.SharedState) != 1 || report.Concurrency.SharedState[0] != "shared" {
 		t.Fatalf("semantic concurrency model is incomplete: %#v", report.Concurrency)
 	}
@@ -118,6 +126,28 @@ import "sync"
 type C struct {
 	stopWg sync.WaitGroup
 	stopCh chan struct{}
+}
+
+func TestObjectivePredicateRequiresEvidenceAndRevision(t *testing.T) {
+	report := &Report{Environment: Environment{HeadCommit: "head"}, InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{{
+		ID: "happens-before", Question: "ordering", Predicate: "verified edge", RequiredKinds: []string{"source synchronization"}, Status: "unresolved", Revision: "head",
+	}}}}
+	report.Evidence = []EvidenceItem{{ID: "sync", Kind: "source synchronization", Detail: "WaitGroup Add and Wait were found; this is not proof of ordering", Revision: "head"}}
+	evaluateInvestigationObjectives(report)
+	if report.InvestigationObjective.Unknowns[0].Status == "resolved" {
+		t.Fatal("primitive discovery incorrectly resolved synchronization objective")
+	}
+	report.Evidence[0].Detail = "verified happens-before: completion precedes shutdown ordering established"
+	evaluateInvestigationObjectives(report)
+	if report.InvestigationObjective.Unknowns[0].Status != "resolved" {
+		t.Fatalf("verified predicate was not resolved: %#v", report.InvestigationObjective.Unknowns[0])
+	}
+	report.InvestigationObjective.Unknowns[0].Status = "unresolved"
+	report.InvestigationObjective.Unknowns[0].Revision = "other"
+	evaluateInvestigationObjectives(report)
+	if report.InvestigationObjective.Unknowns[0].Status == "resolved" || !strings.Contains(report.InvestigationObjective.Unknowns[0].Evaluation, "different source revision") {
+		t.Fatalf("stale source evidence was accepted: %#v", report.InvestigationObjective.Unknowns[0])
+	}
 }
 
 func New(c *C) {

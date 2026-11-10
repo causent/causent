@@ -40,9 +40,9 @@ type sourceAccessObservation struct {
 }
 
 // runSourceInvestigation performs bounded, deterministic inspection after
-// localization. It is intentionally independent of model planning: every
-// action below reads a revision-scoped file or graph fact and records its
-// output as evidence before any hypothesis is formed.
+// localization. Actions are evidence-producing observations; objective
+// predicates, evaluated after each observation, decide whether they resolved
+// anything. Retrieval and action completion are never treated as proof.
 func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, workspace string, snapshot programrepo.Snapshot, candidates []domain.CandidateLocation, persist bool) error {
 	if workspace == "" || ctx.Err() != nil {
 		return ctx.Err()
@@ -51,6 +51,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 	if len(targets) == 0 {
 		return nil
 	}
+	beginInvestigationObjective(report)
 	var accesses []sourceAccessObservation
 	model := &ConcurrencyModel{}
 
@@ -237,6 +238,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 		}
 		model.EvidenceIDs = uniqueStrings(model.EvidenceIDs)
 		report.Concurrency = model
+		evaluateInvestigationObjectives(report)
 	}
 
 	if len(accesses) >= 2 && hasRaceIncident(report.FailureIncidents) {
@@ -252,6 +254,8 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 			}
 		}
 	}
+	evaluateInvestigationObjectives(report)
+	finishInvestigationObjective(report)
 	return nil
 }
 
@@ -271,8 +275,10 @@ func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, pers
 	evidence := EvidenceItem{ID: evidenceID, Kind: kind, Source: source, Digest: digest, Detail: detail, Provenance: "deterministic source inspection of checked-out revision", Revision: report.Environment.HeadCommit}
 	report.Evidence = append(report.Evidence, evidence)
 	status := sourceActionStatus(detail)
-	action := InvestigationAction{ID: "action:" + digest[:16], Type: actionType, Target: target, Status: status, Summary: summary, EvidenceIDs: []string{evidenceID}}
+	action := InvestigationAction{ID: "action:" + digest[:16], Type: actionType, Target: target, Status: status, Summary: summary, EvidenceIDs: []string{evidenceID}, UnknownIDs: sourceUnknownsForAction(actionType), Revision: report.Environment.HeadCommit}
+	action.Result = sourceActionResult(actionType, status, detail)
 	report.InvestigationActions = append(report.InvestigationActions, action)
+	applyInvestigationAction(report, action)
 	if !persist {
 		return evidenceID, nil
 	}
@@ -291,7 +297,206 @@ func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, pers
 	if err := d.cfg.Store.SaveActivity(activity); err != nil {
 		return "", err
 	}
+	// Checkpoint after each meaningful action. The activity/evidence rows and
+	// this derived objective state are written before the next action begins.
+	if err := d.saveInvestigationCheckpoint(report); err != nil {
+		return "", err
+	}
 	return evidenceID, nil
+}
+
+func beginInvestigationObjective(report *Report) {
+	if report.InvestigationObjective != nil {
+		return
+	}
+	objective := "Explain the observed CI failure from source-backed facts and determine whether a causal mechanism is established."
+	unknowns := []InvestigationUnknown{
+		{ID: "exact-memory", Question: "What exact expression and shared memory identity did each conflicting access use?", Predicate: "source function plus variable/reference facts identify the same concrete state for both accesses", RequiredKinds: []string{"source function", "source variable trace", "source references"}, CandidateActions: []string{"InspectFunction", "TraceVariable", "FindReferences"}, NextAction: "TraceVariable", Revision: report.Environment.HeadCommit},
+		{ID: "goroutine-ownership", Question: "Which goroutine owns each access, and how is its lifecycle terminated?", Predicate: "lifecycle and cleanup facts identify creation, execution, cancellation, completion, and ownership without unresolved edges", RequiredKinds: []string{"source lifecycle", "source cleanup"}, CandidateActions: []string{"InspectFunction", "InspectGoroutineLifecycle", "InspectCleanup"}, NextAction: "InspectGoroutineLifecycle", Revision: report.Environment.HeadCommit},
+		{ID: "shutdown-ordering", Question: "Does shutdown wait for the background goroutine before it can overlap the access?", Predicate: "source facts establish registration-before-wait and completion-before-shutdown for the relevant goroutine", RequiredKinds: []string{"source lifecycle", "source cleanup", "source synchronization"}, CandidateActions: []string{"InspectGoroutineLifecycle", "InspectCleanup", "InspectSynchronization"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
+		{ID: "happens-before", Question: "What verified synchronization or happens-before edge orders the two accesses?", Predicate: "a synchronization fact explicitly establishes an edge between the exact conflicting accesses", RequiredKinds: []string{"source synchronization"}, CandidateActions: []string{"InspectSynchronization", "TraceCallers", "TraceCallees"}, NextAction: "InspectSynchronization", Revision: report.Environment.HeadCommit},
+	}
+	if !hasRaceIncident(report.FailureIncidents) && len(report.RaceReports) == 0 {
+		objective = "Explain the observed CI failure from source-backed facts and identify the missing mechanism or verification needed for a causal diagnosis."
+		unknowns = unknowns[:1]
+	}
+	for i := range unknowns {
+		unknowns[i].Status = "unresolved"
+	}
+	report.InvestigationObjective = &InvestigationObjective{FailureObjective: objective, Unknowns: unknowns, Status: "investigating"}
+}
+
+func sourceUnknownsForAction(actionType string) []string {
+	switch actionType {
+	case "TraceVariable", "FindReferences":
+		return []string{"exact-memory"}
+	case "InspectGoroutineLifecycle":
+		return []string{"goroutine-ownership", "shutdown-ordering"}
+	case "InspectCleanup":
+		return []string{"goroutine-ownership", "shutdown-ordering"}
+	case "InspectSynchronization":
+		return []string{"shutdown-ordering", "happens-before"}
+	case "InspectFunction":
+		return []string{"exact-memory", "goroutine-ownership"}
+	case "TraceCallers", "TraceCallees":
+		return []string{"happens-before"}
+	default:
+		return nil
+	}
+}
+
+func sourceActionResult(actionType, status, detail string) string {
+	if status != "completed" {
+		return "partial: substantive evidence was collected, but the action did not resolve its assigned unknown"
+	}
+	if actionType == "InspectSynchronization" && !strings.Contains(strings.ToLower(detail), "verified") {
+		return "evidence collected; synchronization was observed but not verified as a happens-before edge"
+	}
+	if strings.Contains(strings.ToLower(detail), "unresolved") || strings.Contains(strings.ToLower(detail), "not proof") || strings.Contains(strings.ToLower(detail), "no synchronization") {
+		return "evidence collected; the assigned unknown remains unresolved"
+	}
+	return "evidence collected for the assigned unknown"
+}
+
+func applyInvestigationAction(report *Report, action InvestigationAction) {
+	if report.InvestigationObjective == nil {
+		return
+	}
+	for _, unknownID := range action.UnknownIDs {
+		for i := range report.InvestigationObjective.Unknowns {
+			unknown := &report.InvestigationObjective.Unknowns[i]
+			if unknown.ID != unknownID {
+				continue
+			}
+			for _, evidenceID := range action.EvidenceIDs {
+				unknown.EvidenceIDs = appendUniqueString(unknown.EvidenceIDs, evidenceID)
+			}
+			unknown.Status = "investigating"
+			unknown.Evaluation = "action completed; objective predicate has not yet been evaluated"
+		}
+	}
+	evaluateInvestigationObjectives(report)
+}
+
+// evaluateInvestigationObjectives is deliberately conservative. It checks
+// persisted source facts, not action status or the presence of a primitive.
+// The synchronization predicates require an explicit verified edge, so a
+// discovered WaitGroup/lock/channel remains unresolved until ordering is
+// actually established.
+func evaluateInvestigationObjectives(report *Report) {
+	if report.InvestigationObjective == nil {
+		return
+	}
+	for index := range report.InvestigationObjective.Unknowns {
+		u := &report.InvestigationObjective.Unknowns[index]
+		if u.Status == "rejected" || u.Status == "not_applicable" {
+			continue
+		}
+		u.Status = "unresolved"
+		u.Evaluation = "required evidence is missing, ambiguous, stale, or inferred"
+		if u.Revision != "" && report.Environment.HeadCommit != "" && u.Revision != report.Environment.HeadCommit {
+			u.Evaluation = "objective evidence belongs to a different source revision"
+			continue
+		}
+		var matching []EvidenceItem
+		for _, ev := range report.Evidence {
+			if ev.Revision != "" && report.Environment.HeadCommit != "" && ev.Revision != report.Environment.HeadCommit {
+				continue
+			}
+			for _, kind := range u.RequiredKinds {
+				if ev.Kind == kind && !sourceDetailUnresolved(ev.Detail) {
+					matching = append(matching, ev)
+					break
+				}
+			}
+		}
+		if len(matching) < len(u.RequiredKinds) {
+			continue
+		}
+		if u.ID == "goroutine-ownership" {
+			lifecycle, cleanup := false, false
+			for _, ev := range matching {
+				text := strings.ToLower(ev.Detail)
+				if ev.Kind == "source lifecycle" && (strings.Contains(text, "goroutine") || strings.Contains(text, "go ") || strings.Contains(text, "wait")) {
+					lifecycle = true
+				}
+				if ev.Kind == "source cleanup" && (strings.Contains(text, "close") || strings.Contains(text, "stop") || strings.Contains(text, "cleanup") || strings.Contains(text, "defer")) {
+					cleanup = true
+				}
+			}
+			if !lifecycle || !cleanup {
+				continue
+			}
+		}
+		if u.ID == "shutdown-ordering" || u.ID == "happens-before" {
+			verified := false
+			for _, ev := range matching {
+				text := strings.ToLower(ev.Detail)
+				if strings.Contains(text, "verified happens-before") || strings.Contains(text, "ordering established") || strings.Contains(text, "establishes an edge between") {
+					verified = true
+				}
+			}
+			if !verified {
+				continue
+			}
+		}
+		for _, ev := range matching {
+			u.EvidenceIDs = appendUniqueString(u.EvidenceIDs, ev.ID)
+			u.ResolutionIDs = appendUniqueString(u.ResolutionIDs, ev.ID)
+		}
+		u.Status = "resolved"
+		u.Evaluation = "resolution predicate satisfied by revision-scoped evidence"
+		u.NextAction = ""
+	}
+}
+
+func sourceDetailUnresolved(detail string) bool {
+	text := strings.ToLower(detail)
+	for _, marker := range []string{"unresolved", "not proof", "no explicit", "no synchronization", "could not be resolved", "remains to be verified"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Diagnoser) saveInvestigationCheckpoint(report *Report) error {
+	if d.cfg.Store == nil || report.InvestigationObjective == nil {
+		return nil
+	}
+	objectives := make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
+	for _, u := range report.InvestigationObjective.Unknowns {
+		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...)})
+	}
+	state, err := d.cfg.Store.GetAdaptiveState(domain.ID(report.InvestigationID))
+	if err != nil {
+		state = domain.AdaptiveState{InvestigationID: domain.ID(report.InvestigationID)}
+	}
+	state.Objectives = objectives
+	state.UpdatedAt = time.Now().UTC()
+	return d.cfg.Store.SaveAdaptiveState(state)
+}
+
+func finishInvestigationObjective(report *Report) {
+	if report.InvestigationObjective == nil {
+		return
+	}
+	remaining := make([]string, 0)
+	for i := range report.InvestigationObjective.Unknowns {
+		unknown := &report.InvestigationObjective.Unknowns[i]
+		if unknown.Status != "resolved" {
+			remaining = append(remaining, unknown.ID)
+		}
+	}
+	if len(remaining) == 0 {
+		report.InvestigationObjective.Status = "causal_review_required"
+		report.InvestigationObjective.StoppingReason = "all planned source unknowns have evidence; causal explanation still requires hypothesis evaluation"
+		return
+	}
+	// Source retrieval is only one stage. Leave the objective active so the
+	// adaptive controller can choose a runtime or discriminating follow-up.
+	report.InvestigationObjective.Status = "investigating"
+	report.InvestigationObjective.StoppingReason = "source evidence did not yet resolve: " + strings.Join(remaining, ", ")
 }
 
 func sourceActionStatus(detail string) string {
