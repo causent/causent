@@ -41,7 +41,7 @@ func TestSelectChangesWithObjectiveEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := State{
-		Objectives: []domain.AdaptiveObjective{{ID: "memory", Status: "unresolved", CandidateActions: []string{"TraceVariable"}}},
+		Objectives: []domain.AdaptiveObjective{{ID: "memory", Status: "unresolved", Predicate: "same object", RequiredEvidence: []string{"source identity"}, CandidateActions: []string{"TraceVariable"}, Target: "cacher.go:496:Read", TargetSymbol: "go:cacher.Read"}},
 		Budget:     domain.InvestigationBudget{MaxIterations: 2},
 	}
 	first := Select(state, r, DefaultScorePolicy)
@@ -50,6 +50,9 @@ func TestSelectChangesWithObjectiveEvidence(t *testing.T) {
 	}
 	if first.Selected.ObjectiveID != "memory" {
 		t.Fatalf("selected action did not retain dependency identity: %#v", first)
+	}
+	if first.Selected.Input.InvestigationID != "" || len(first.Selected.Input.References) != 1 || first.Selected.Input.References[0] != "cacher.go:496:Read" || first.Selected.Input.Metadata["target_symbol"] != "go:cacher.Read" || first.Selected.Input.Metadata["predicate"] != "same object" || first.Selected.Input.Metadata["required_evidence"] != "source identity" {
+		t.Fatalf("selected objective evidence request was not bound to action input: %#v", first.Selected.Input)
 	}
 	state.Objectives[0].CandidateActions = []string{"InspectSynchronization"}
 	second := Select(state, r, DefaultScorePolicy)
@@ -64,13 +67,29 @@ func TestSelectDoesNotRepeatCompletedAdaptiveActionWithTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := State{
-		Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectSynchronization"}}},
-		Activities: []domain.Activity{{ID: "activity:inv:adaptive:1", Type: "InspectSynchronization", Status: domain.ActivityCompleted, InputRefs: []string{"cacher.go:1389:Cacher.Stop"}}},
+		Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectSynchronization"}, Target: "cacher.go:1389:Cacher.Stop", TargetSymbol: "go:cacher.Cacher.Stop"}},
+		Activities: []domain.Activity{{ID: "activity:inv:adaptive:1", Type: "InspectSynchronization", ObjectiveID: "ordering", Status: domain.ActivityCompleted, InputRefs: []string{"cacher.go:1389:Cacher.Stop"}}},
 		Budget:     domain.InvestigationBudget{MaxIterations: 2},
 	}
 	decision := Select(state, r, DefaultScorePolicy)
 	if decision.StoppingReason == "" || decision.Selected.ActionType != "" {
 		t.Fatalf("completed targeted adaptive action was selected again: %#v", decision)
+	}
+}
+
+func TestSelectAllowsSameActionForDifferentTarget(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "InspectSynchronization"}); err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectSynchronization"}, Target: "cacher.go:1389:Stop"}},
+		Activities: []domain.Activity{{ID: "activity:inv:adaptive:1", Type: "InspectSynchronization", Status: domain.ActivityCompleted, InputRefs: []string{"cacher.go:496:Read"}}},
+		Budget:     domain.InvestigationBudget{MaxIterations: 2},
+	}
+	decision := Select(state, r, DefaultScorePolicy)
+	if decision.StoppingReason != "" || decision.Selected.Input.References[0] != "cacher.go:1389:Stop" {
+		t.Fatalf("different target was incorrectly treated as completed: %#v", decision)
 	}
 }
 

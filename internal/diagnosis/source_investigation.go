@@ -263,6 +263,11 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 	}
 	evaluateInvestigationObjectives(report)
 	assignInvestigationTargets(report)
+	if persist {
+		if err := d.saveInvestigationCheckpoint(report); err != nil {
+			return err
+		}
+	}
 	finishInvestigationObjective(report)
 	return nil
 }
@@ -288,9 +293,6 @@ func assignInvestigationTargets(report *Report) {
 			}
 		case "goroutine-ownership":
 			u.TargetSymbol, target = sourceTargetContaining(report, "startBackgroundResync")
-			if u.TargetSymbol == "" {
-				u.TargetSymbol, target = sourceTargetContaining(report, "Stop")
-			}
 		case "shutdown-ordering", "happens-before":
 			u.TargetSymbol, target = sourceTargetContaining(report, "Stop")
 		}
@@ -542,7 +544,7 @@ func (d *Diagnoser) saveInvestigationCheckpoint(report *Report) error {
 	}
 	objectives := make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, u := range report.InvestigationObjective.Unknowns {
-		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...), Target: u.Target, TargetSymbol: u.TargetSymbol})
+		objectives = append(objectives, domain.AdaptiveObjective{ID: u.ID, Question: u.Question, Predicate: u.Predicate, Status: u.Status, EvidenceIDs: stringIDsToDomain(u.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(u.ResolutionIDs), Evaluation: u.Evaluation, Revision: u.Revision, NextAction: u.NextAction, CandidateActions: append([]string(nil), u.CandidateActions...), RequiredEvidence: append([]string(nil), u.RequiredKinds...), Target: u.Target, TargetSymbol: u.TargetSymbol})
 	}
 	state, err := d.cfg.Store.GetAdaptiveState(domain.ID(report.InvestigationID))
 	if err != nil {

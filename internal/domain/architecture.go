@@ -178,6 +178,7 @@ type Activity struct {
 	ID              string         `json:"id"`
 	InvestigationID ID             `json:"investigation_id"`
 	Type            string         `json:"type"`
+	ObjectiveID     string         `json:"objective_id,omitempty"`
 	Status          ActivityStatus `json:"status"`
 	InputRefs       []string       `json:"input_refs,omitempty"`
 	OutputRefs      []string       `json:"output_refs,omitempty"`
@@ -263,6 +264,7 @@ type AdaptiveObjective struct {
 	Revision           string   `json:"revision,omitempty"`
 	NextAction         string   `json:"next_action,omitempty"`
 	CandidateActions   []string `json:"candidate_actions,omitempty"`
+	RequiredEvidence   []string `json:"required_evidence,omitempty"`
 	Target             string   `json:"target,omitempty"`
 	TargetSymbol       string   `json:"target_symbol,omitempty"`
 }

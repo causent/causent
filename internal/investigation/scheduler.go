@@ -56,7 +56,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 	}
 	var considered []ActionCandidate
 	for _, definition := range registry.Definitions() {
-		if definition.Type == "" || completed(state, definition.Type) {
+		if definition.Type == "" {
 			continue
 		}
 		unresolved := 0
@@ -66,7 +66,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			}
 		}
 		objectiveMatch := 0
-		objectiveID := ""
+		var selectedObjective *domain.AdaptiveObjective
 		for _, objective := range state.Objectives {
 			if objective.Status == "resolved" || objective.Status == "rejected" || objective.Status == "not_applicable" {
 				continue
@@ -75,13 +75,23 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			for _, action := range objective.CandidateActions {
 				if action == definition.Type {
 					objectiveMatch++
-					if objectiveID == "" {
-						objectiveID = objective.ID
+					if selectedObjective == nil || objectivePriority(objective, definition.Type) > objectivePriority(*selectedObjective, definition.Type) {
+						candidate := objective
+						selectedObjective = &candidate
 					}
 				}
 			}
 		}
 		if unresolved == 0 {
+			continue
+		}
+		objectiveID := ""
+		input := ActionInput{InvestigationID: state.InvestigationID}
+		if selectedObjective != nil {
+			objectiveID = selectedObjective.ID
+			input = objectiveActionInput(state.InvestigationID, *selectedObjective)
+		}
+		if completed(state, definition.Type, objectiveID, input) {
 			continue
 		}
 		score := ActionScore{DiagnosticRelevance: float64(unresolved), UncertaintyReduction: 1 + float64(objectiveMatch), Discrimination: .5, EvidenceQuality: 1, ExecutionCost: 1, ExecutionRisk: 1, ExpectedLatency: 1}
@@ -97,7 +107,7 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 			score.UncertaintyReduction = 1.2
 		}
 		score.Total = score.DiagnosticRelevance*policy.Relevance + score.UncertaintyReduction*policy.Uncertainty + score.Discrimination*policy.Discrimination + score.EvidenceQuality*policy.Quality - score.ExecutionCost*policy.Cost - score.ExecutionRisk*policy.Risk - score.ExpectedLatency*policy.Latency
-		considered = append(considered, ActionCandidate{ActionType: definition.Type, ObjectiveID: objectiveID, Score: score, Reason: fmt.Sprintf("%d unresolved objective(s), %d matching predicates; expected information gain %.2f at cost %.2f", unresolved, objectiveMatch, score.UncertaintyReduction, score.ExecutionCost)})
+		considered = append(considered, ActionCandidate{ActionType: definition.Type, ObjectiveID: objectiveID, Input: input, Score: score, Reason: fmt.Sprintf("%d unresolved objective(s), %d matching predicates; expected information gain %.2f at cost %.2f", unresolved, objectiveMatch, score.UncertaintyReduction, score.ExecutionCost)})
 	}
 	if len(considered) == 0 {
 		return Decision{StoppingReason: "no useful uncompleted actions remain"}
@@ -105,18 +115,69 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 	sort.SliceStable(considered, func(i, j int) bool { return considered[i].Score.Total > considered[j].Score.Total })
 	return Decision{Selected: considered[0], Considered: considered}
 }
-func completed(state State, kind string) bool {
+func objectivePriority(objective domain.AdaptiveObjective, actionType string) int {
+	priority := 0
+	if objective.NextAction == actionType {
+		priority += 2
+	}
+	if objective.Target != "" || objective.TargetSymbol != "" {
+		priority++
+	}
+	return priority
+}
+
+func objectiveActionInput(investigationID domain.ID, objective domain.AdaptiveObjective) ActionInput {
+	input := ActionInput{InvestigationID: investigationID, Metadata: map[string]string{
+		"objective_id":      objective.ID,
+		"predicate":         objective.Predicate,
+		"required_evidence": strings.Join(objective.RequiredEvidence, ","),
+	}}
+	if objective.Target != "" {
+		input.References = []string{objective.Target}
+		input.Metadata["target"] = objective.Target
+	}
+	if objective.TargetSymbol != "" {
+		input.Metadata["target_symbol"] = objective.TargetSymbol
+	}
+	return input
+}
+
+func completed(state State, kind, objectiveID string, input ActionInput) bool {
 	for _, a := range state.Activities {
 		// Source-stage activities carry input targets and must not block a later
 		// adaptive action of the same kind. Adaptive activities are identified by
 		// their durable ID, not by whether they have input references: adaptive
 		// targets are required for provenance and therefore are non-empty.
 		adaptive := strings.Contains(a.ID, ":adaptive:")
-		if a.Type == kind && a.Status == domain.ActivityCompleted && (adaptive || len(a.InputRefs) == 0) {
+		if a.Type != kind || a.Status != domain.ActivityCompleted {
+			continue
+		}
+		if !adaptive && len(a.InputRefs) == 0 {
+			return true
+		}
+		if !adaptive {
+			continue
+		}
+		if a.ObjectiveID != objectiveID {
+			continue
+		}
+		if len(input.References) > 0 && equalStrings(a.InputRefs, input.References) {
 			return true
 		}
 	}
 	return false
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 func Execute(ctx context.Context, state State, registry *Registry, decision Decision) (ActionOutput, error) {
 	if decision.StoppingReason != "" {

@@ -132,6 +132,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	start := time.Now()
 	for !investigation.TimedOut(start, state.Budget) {
 		if report.InvestigationObjective != nil {
+			resolveObjectiveTargets(report, d.snapshot)
 			evaluateInvestigationObjectives(report)
 			if err := saveAdaptiveObjectives(d.cfg.Store, report, &state); err != nil {
 				return err
@@ -173,6 +174,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			decision.Selected.Input.Metadata = map[string]string{"target_symbol": symbol}
 		}
 		activity := investigation.NewActivity(invID, "activity:"+report.InvestigationID+":adaptive:"+fmt.Sprint(state.Iterations+1), decision.Selected.ActionType, nil, decision.Selected.Input.References)
+		activity.ObjectiveID = decision.Selected.ObjectiveID
 		activity.Status = domain.ActivityRunning
 		activity.AttemptCount = 1
 		activity.SelectionReason = decision.Selected.Reason
@@ -397,7 +399,7 @@ func objectiveFromCheckpoint(values []domain.AdaptiveObjective) *InvestigationOb
 	}
 	out := &InvestigationObjective{FailureObjective: "Resume the persisted causal investigation", Status: "investigating"}
 	for _, value := range values {
-		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
+		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, RequiredKinds: append([]string(nil), value.RequiredEvidence...), EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
 	}
 	return out
 }
@@ -416,7 +418,7 @@ func saveAdaptiveObjectives(store *persistence.Store, report *Report, state *dom
 	}
 	state.Objectives = make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, unknown := range report.InvestigationObjective.Unknowns {
-		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
+		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), RequiredEvidence: append([]string(nil), unknown.RequiredKinds...), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
 	}
 	state.UpdatedAt = time.Now().UTC()
 	return store.SaveAdaptiveState(*state)
@@ -585,6 +587,24 @@ func adaptiveTargetForObjective(report *Report, objectiveID string, snapshot *pr
 		return target, firstCandidateSymbol(report)
 	}
 	return "", ""
+}
+
+func resolveObjectiveTargets(report *Report, snapshot *programrepo.Snapshot) {
+	if report.InvestigationObjective == nil || snapshot == nil {
+		return
+	}
+	for i := range report.InvestigationObjective.Unknowns {
+		unknown := &report.InvestigationObjective.Unknowns[i]
+		if unknown.TargetSymbol == "" {
+			continue
+		}
+		for _, node := range snapshot.Nodes {
+			if node.Identity == unknown.TargetSymbol && node.FilePath != "" && node.StartLine > 0 {
+				unknown.Target = fmt.Sprintf("%s:%d:%s", node.FilePath, node.StartLine, node.Identity)
+				break
+			}
+		}
+	}
 }
 
 func adaptiveProducesNewEvidence(report *Report, evidence []domain.Evidence) bool {
