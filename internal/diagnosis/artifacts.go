@@ -55,6 +55,13 @@ type ArtifactDescriptor struct {
 	Category       ArtifactCategory `json:"category,omitempty"`
 }
 
+// ArtifactManifest is an optional provider-side identity map. Its entries
+// refer to files below the artifact directory using relative paths. The
+// manifest is metadata, not itself a diagnostic artifact.
+type ArtifactManifest struct {
+	Artifacts []ArtifactDescriptor `json:"artifacts"`
+}
+
 type ArtifactDetection struct {
 	Format     string           `json:"format,omitempty"`
 	Category   ArtifactCategory `json:"category"`
@@ -100,12 +107,30 @@ func DiscoverArtifactDescriptors(root string, maxFiles int, context ArtifactDesc
 	}
 	var descriptors []ArtifactDescriptor
 	var limitations []string
+	manifest := map[string]ArtifactDescriptor{}
+	manifestPath := filepath.Join(root, ".malenia-artifacts.json")
+	if data, readErr := os.ReadFile(manifestPath); readErr == nil {
+		var document ArtifactManifest
+		if unmarshalErr := json.Unmarshal(data, &document); unmarshalErr != nil {
+			limitations = append(limitations, fmt.Sprintf("%s: malformed artifact manifest: %v", manifestPath, unmarshalErr))
+		} else {
+			for _, entry := range document.Artifacts {
+				key := filepath.ToSlash(filepath.Clean(entry.Path))
+				if key != "." && key != "" {
+					manifest[key] = entry
+				}
+			}
+		}
+	}
 	filesSeen := 0
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		if path == manifestPath {
 			return nil
 		}
 		filesSeen++
@@ -116,6 +141,16 @@ func DiscoverArtifactDescriptors(root string, maxFiles int, context ArtifactDesc
 		descriptor.Name = entry.Name()
 		descriptor.Path = path
 		descriptor.StorageRef = path
+		relativePath, relativeErr := filepath.Rel(root, path)
+		if relativeErr == nil {
+			if entryMetadata, ok := manifest[filepath.ToSlash(filepath.Clean(relativePath))]; ok {
+				descriptor.ArtifactID = entryMetadata.ArtifactID
+				descriptor.Digest = entryMetadata.Digest
+				if entryMetadata.StorageRef != "" {
+					descriptor.StorageRef = entryMetadata.StorageRef
+				}
+			}
+		}
 		if stat, statErr := entry.Info(); statErr == nil {
 			descriptor.Size = stat.Size()
 		} else {
@@ -238,20 +273,29 @@ func LoadArtifactEvidenceWithContext(root string, maxFiles int, maxBytes int64, 
 		rawSum := sha256.Sum256(data)
 		redacted := redactArtifact(data)
 		redactedSum := sha256.Sum256(redacted)
-		artifactID := "artifact:" + hex.EncodeToString(rawSum[:8])
+		artifactID := descriptor.ArtifactID
+		manifestIdentity := artifactID != ""
+		if artifactID == "" {
+			artifactID = "artifact:" + hex.EncodeToString(rawSum[:8])
+		}
 		desc := descriptor
 		desc.ArtifactID = artifactID
-		desc.Digest = hex.EncodeToString(rawSum[:])
+		if desc.Digest == "" {
+			desc.Digest = hex.EncodeToString(rawSum[:])
+		}
 		desc.Size = int64(len(data))
 		result := registry.Ingest(desc, redacted)
 		if len(result.Evidence) == 0 {
-			result.Evidence = []EvidenceItem{{ID: "E-" + artifactID, Kind: "ci_artifact", Source: path, Detail: string(redacted), Digest: hex.EncodeToString(redactedSum[:]), Provenance: path, ArtifactCategory: string(result.Detection.Category), ArtifactFormat: result.Detection.Format, DecoderStatus: string(result.Status), ParserName: result.DecoderName, ParserVersion: result.DecoderVersion, Limitations: result.Limitations}}
+			result.Evidence = []EvidenceItem{{ID: "E-" + artifactID, Kind: "ci_artifact", Source: path, Detail: string(redacted), Digest: hex.EncodeToString(redactedSum[:]), Provenance: desc.StorageRef, ArtifactCategory: string(result.Detection.Category), ArtifactFormat: result.Detection.Format, DecoderStatus: string(result.Status), ParserName: result.DecoderName, ParserVersion: result.DecoderVersion, Limitations: result.Limitations}}
 		}
 		for i := range result.Evidence {
+			if manifestIdentity {
+				result.Evidence[i].ID = fmt.Sprintf("E-%s-%s-%d", artifactID, hex.EncodeToString(rawSum[:4]), i)
+			}
 			result.Evidence[i].Source = path
 			result.Evidence[i].ArtifactID = artifactID
 			result.Evidence[i].ArtifactDigest = desc.Digest
-			result.Evidence[i].StorageRef = path
+			result.Evidence[i].StorageRef = desc.StorageRef
 			result.Evidence[i].Digest = hex.EncodeToString(redactedSum[:])
 		}
 		evidence = append(evidence, result.Evidence...)

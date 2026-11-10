@@ -71,6 +71,25 @@ func TestArtifactDiscoveryDoesNotDecodeContent(t *testing.T) {
 	}
 }
 
+func TestArtifactManifestPreservesProviderIdentity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "report.log")
+	if err := os.WriteFile(path, []byte("failure\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"artifacts":[{"path":"report.log","artifact_id":"provider-artifact-7","digest":"provider-digest-7","storage_ref":"https://ci.example/artifacts/7"}]}`
+	if err := os.WriteFile(filepath.Join(root, ".malenia-artifacts.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := LoadArtifactEvidence(root, 10, 1024)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items = %#v, err = %v", items, err)
+	}
+	if items[0].ArtifactID != "provider-artifact-7" || items[0].ArtifactDigest != "provider-digest-7" || items[0].StorageRef != "https://ci.example/artifacts/7" {
+		t.Fatalf("provider artifact identity was replaced: %#v", items[0])
+	}
+}
+
 func TestArtifactIngestionStatusesAndIdempotency(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
