@@ -185,6 +185,16 @@ func TestArtifactRegistryMarksMalformedRecognizedFormat(t *testing.T) {
 	}
 }
 
+func TestNativeGoTraceIsExplicitlyUnsupported(t *testing.T) {
+	result := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:trace", StorageRef: "artifact://trace"}, []byte("go 1.23 trace\x00\x01binary"))
+	if result.Status != ArtifactUnsupported || result.DecoderName != "go-runtime-trace" || len(result.Evidence) != 1 {
+		t.Fatalf("native trace result = %#v", result)
+	}
+	if result.Evidence[0].ClaimKind == "ExecutionTraceObservation" || len(result.Limitations) == 0 {
+		t.Fatalf("native trace made unsupported observation claims: %#v", result)
+	}
+}
+
 func TestTAPArtifactParticipatesInCIFailureClassification(t *testing.T) {
 	text := "TAP version 13\n1..1\nnot ok 1 - parser rejects input\n"
 	if !isCIEvidenceKind("tap_report") {

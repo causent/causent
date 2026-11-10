@@ -1,6 +1,7 @@
 package diagnosis
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -142,6 +143,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		coverageArtifactDecoder{},
 		structuredTraceArtifactDecoder{},
 		openTelemetryArtifactDecoder{},
+		nativeGoTraceArtifactDecoder{},
 		jsonArtifactDecoder{},
 		textArtifactDecoder{},
 	}}
@@ -517,6 +519,21 @@ func (openTelemetryArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte,
 		Raw         string                    `json:"raw"`
 	}{Observation: meta, SpanCount: spanCount, Raw: string(data)})
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "execution_trace_observation", ClaimKind: "ExecutionTraceObservation", Basis: "RuntimeObserved", Detail: string(payload), Provenance: desc.StorageRef}}}
+}
+
+type nativeGoTraceArtifactDecoder struct{}
+
+func (nativeGoTraceArtifactDecoder) Name() string    { return "go-runtime-trace" }
+func (nativeGoTraceArtifactDecoder) Version() string { return "detector-v1" }
+func (nativeGoTraceArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) >= 5 && bytes.HasPrefix(trimmed, []byte("go 1.")) && bytes.Contains(trimmed[:min(len(trimmed), 64)], []byte("trace")) {
+		return ArtifactDetection{Format: "go_runtime_trace_binary", Category: ArtifactTrace, Confidence: "high", Reason: "Go runtime trace header detected"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (nativeGoTraceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	return ArtifactIngestionResult{Status: ArtifactUnsupported, Limitations: []string{"native Go execution trace binary detected; version-aware binary parser is not available, so no lifecycle or causal observations were produced"}, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "execution_trace_artifact", ClaimKind: "ExecutionTraceArtifact", Basis: "Observed", Detail: "Native Go execution trace artifact preserved without parsing", Provenance: desc.StorageRef}}}
 }
 
 type jsonArtifactDecoder struct{}
