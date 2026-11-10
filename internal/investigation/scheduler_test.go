@@ -13,6 +13,19 @@ func (a testAction) Type() string { return a.kind }
 func (a testAction) Definition() ActionDefinition {
 	return ActionDefinition{ID: a.kind, Type: a.kind, Description: "test", Timeout: 1}
 }
+
+type capabilityAction struct {
+	kind string
+	caps []EvidenceCapability
+}
+
+func (a capabilityAction) Type() string { return a.kind }
+func (a capabilityAction) Definition() ActionDefinition {
+	return ActionDefinition{ID: a.kind, Type: a.kind, Description: "test", Timeout: 1, Capabilities: a.caps}
+}
+func (a capabilityAction) Execute(context.Context, ActionInput) (ActionOutput, error) {
+	return ActionOutput{}, nil
+}
 func (a testAction) Execute(context.Context, ActionInput) (ActionOutput, error) {
 	return ActionOutput{}, nil
 }
@@ -104,5 +117,66 @@ func TestSelectReportsBudgetExhaustionAfterCompletedAdaptiveWork(t *testing.T) {
 	}, r, DefaultScorePolicy)
 	if decision.StoppingReason != "iteration budget exhausted" {
 		t.Fatalf("unexpected budget decision: %#v", decision)
+	}
+}
+
+func TestSelectPrefersRequirementCapableAction(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "GenericHighRelevance"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(capabilityAction{kind: "InspectFunction", caps: []EvidenceCapability{{ClaimKind: "source function", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}}}); err != nil {
+		t.Fatal(err)
+	}
+	state := State{Hypotheses: []domain.Hypothesis{{Status: domain.HypInconclusive}}, Objectives: []domain.AdaptiveObjective{{ID: "memory", Status: "unresolved", CandidateActions: []string{"GenericHighRelevance", "InspectFunction"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "source function", MinimumBasis: "SourceVerified"}}, MissingRequirements: []string{"source function"}, Target: "f.go:1", TargetSymbol: "go:f"}}, Budget: domain.InvestigationBudget{MaxIterations: 1}}
+	decision := Select(state, r, DefaultScorePolicy)
+	if decision.Selected.ActionType != "InspectFunction" {
+		t.Fatalf("selected incapable action: %#v", decision)
+	}
+}
+
+func TestSelectReportsUnsupportedAndUnavailableTypedActions(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(capabilityAction{kind: "InspectCleanup", caps: []EvidenceCapability{{ClaimKind: "source cleanup", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}}}); err != nil {
+		t.Fatal(err)
+	}
+	unsupported := Select(State{Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectCleanup"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "synchronization-ordering", MinimumBasis: "SourceVerified", Ordering: "happens-before"}}, MissingRequirements: []string{"synchronization-ordering (happens-before)"}, Target: "f.go:1", TargetSymbol: "go:f"}}, Budget: domain.InvestigationBudget{MaxIterations: 1}}, r, DefaultScorePolicy)
+	if unsupported.StoppingReason == "" || len(unsupported.Dispositions) != 1 || unsupported.Dispositions[0].Status != "unsupported" {
+		t.Fatalf("unsupported action was not classified: %#v", unsupported)
+	}
+	available := Select(State{Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectCleanup"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "source cleanup", MinimumBasis: "SourceVerified"}}, MissingRequirements: []string{"source cleanup"}}}, Budget: domain.InvestigationBudget{MaxIterations: 1}}, r, DefaultScorePolicy)
+	if available.StoppingReason == "" || len(available.Dispositions) != 1 || available.Dispositions[0].Status != "blocked/unavailable" {
+		t.Fatalf("unavailable action was not classified: %#v", available)
+	}
+}
+
+func TestRun64TypedObjectivesDoNotSpendAdaptiveSlotOnIncapableActions(t *testing.T) {
+	r := NewRegistry()
+	for _, kind := range []string{"InspectFunction", "FindReferences", "InspectCleanup", "InspectSynchronization", "TraceCallers", "TraceCallees"} {
+		if err := r.Register(capabilityAction{kind: kind, caps: map[string][]EvidenceCapability{
+			"InspectFunction":        {{ClaimKind: "source function", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+			"FindReferences":         {{ClaimKind: "source references", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+			"InspectCleanup":         {{ClaimKind: "source cleanup", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+			"InspectSynchronization": {{ClaimKind: "source synchronization", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+		}[kind]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	objectives := []domain.AdaptiveObjective{
+		{ID: "exact-memory", Status: "unresolved", CandidateActions: []string{"InspectFunction", "FindReferences"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "same-runtime-instance", MinimumBasis: "RuntimeObserved", SameInstance: true}}, MissingRequirements: []string{"same-runtime-instance"}, Target: "cacher.go:496", TargetSymbol: "go:cacher.New"},
+		{ID: "shutdown-ordering", Status: "unresolved", CandidateActions: []string{"InspectCleanup", "InspectSynchronization"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "synchronization-ordering", MinimumBasis: "SourceVerified", Ordering: "happens-before"}}, MissingRequirements: []string{"synchronization-ordering (happens-before)"}, Target: "cacher.go:1389", TargetSymbol: "go:cacher.Cacher.Stop"},
+		{ID: "happens-before", Status: "unresolved", CandidateActions: []string{"InspectSynchronization", "TraceCallers", "TraceCallees"}, Requirements: []domain.EvidenceRequirement{{ClaimKind: "synchronization-ordering", MinimumBasis: "SourceVerified", Ordering: "happens-before"}}, MissingRequirements: []string{"synchronization-ordering (happens-before)"}, Target: "cacher.go:1389", TargetSymbol: "go:cacher.Cacher.Stop"},
+	}
+	decision := Select(State{Objectives: objectives, Budget: domain.InvestigationBudget{MaxIterations: 4, MaxActivities: 4}}, r, DefaultScorePolicy)
+	if decision.Selected.ActionType != "" || decision.StoppingReason != "no capable action remains" {
+		t.Fatalf("incapable action consumed run-64 slot: %#v", decision)
+	}
+	if len(decision.Dispositions) == 0 {
+		t.Fatal("missing unsupported dispositions")
+	}
+	for _, disposition := range decision.Dispositions {
+		if disposition.Status != "unsupported" {
+			t.Fatalf("unexpected disposition: %#v", disposition)
+		}
 	}
 }

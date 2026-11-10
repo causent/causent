@@ -247,6 +247,7 @@ type InvestigationAction struct {
 	Resolved    bool     `json:"resolved"`
 	Refuted     bool     `json:"refuted"`
 	Missing     []string `json:"missing,omitempty"`
+	Disposition string   `json:"disposition,omitempty"`
 }
 
 type InvestigationUnknown struct {
@@ -278,10 +279,11 @@ type EvidenceRequirement struct {
 }
 
 type InvestigationObjective struct {
-	FailureObjective string                 `json:"failure_objective"`
-	Unknowns         []InvestigationUnknown `json:"unknowns,omitempty"`
-	Status           string                 `json:"status"`
-	StoppingReason   string                 `json:"stopping_reason,omitempty"`
+	FailureObjective      string                            `json:"failure_objective"`
+	Unknowns              []InvestigationUnknown            `json:"unknowns,omitempty"`
+	Status                string                            `json:"status"`
+	StoppingReason        string                            `json:"stopping_reason,omitempty"`
+	CandidateDispositions []domain.InvestigationDisposition `json:"candidate_dispositions,omitempty"`
 }
 
 type ConcurrencyAccess struct {

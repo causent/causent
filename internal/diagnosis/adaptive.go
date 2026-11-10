@@ -146,6 +146,16 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		report.UnresolvedQuestions = state.Questions
 		state.Budget.IterationsUsed = state.Iterations
 		decision := investigation.Select(investigation.State{InvestigationID: invID, Hypotheses: report.Hypotheses, Objectives: state.Objectives, Questions: state.Questions, Activities: currentActivities, Experiments: currentExperiments, Budget: state.Budget}, registry, investigation.DefaultScorePolicy)
+		if report.InvestigationObjective != nil {
+			for _, disposition := range decision.Dispositions {
+				report.InvestigationObjective.CandidateDispositions = appendUniqueDisposition(report.InvestigationObjective.CandidateDispositions, domain.InvestigationDisposition{ActionType: disposition.ActionType, Status: disposition.Status, Reason: disposition.Reason, UnknownIDs: []string{disposition.ObjectiveID}})
+			}
+			if len(decision.Dispositions) > 0 {
+				if err := saveAdaptiveObjectives(d.cfg.Store, report, &state); err != nil {
+					return err
+				}
+			}
+		}
 		if decision.StoppingReason != "" {
 			if strings.Contains(strings.ToLower(decision.StoppingReason), "budget") {
 				state.StoppingReason = "budget_exhausted"
@@ -178,6 +188,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		activity.Status = domain.ActivityRunning
 		activity.AttemptCount = 1
 		activity.SelectionReason = decision.Selected.Reason
+		activity.Disposition = decision.Selected.Disposition
 		if err := d.cfg.Store.SaveActivity(activity); err != nil {
 			return err
 		}
@@ -317,7 +328,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			}
 		}
 		if !seen {
-			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs, Executed: activity.Executed, Advanced: activity.Advanced, Resolved: activity.Resolved, Refuted: activity.Refuted, Missing: append([]string(nil), activity.Missing...)})
+			report.InvestigationActions = append(report.InvestigationActions, InvestigationAction{ID: activity.ID, Type: activity.Type, Target: strings.Join(activity.InputRefs, ","), Status: string(activity.Status), Summary: activity.SelectionReason, EvidenceIDs: activity.OutputRefs, Executed: activity.Executed, Advanced: activity.Advanced, Resolved: activity.Resolved, Refuted: activity.Refuted, Missing: append([]string(nil), activity.Missing...), Disposition: activity.Disposition})
 		}
 	}
 	ensureTerminalInvestigation(report, state.StoppingReason, state.Budget)
@@ -375,6 +386,16 @@ func ensureTerminalInvestigation(report *Report, reason string, budget domain.In
 				if attempted[action] {
 					continue
 				}
+				known := false
+				for _, disposition := range report.InvestigationObjective.CandidateDispositions {
+					if disposition.ActionType == action && containsID(disposition.UnknownIDs, unknown.ID) {
+						known = true
+						break
+					}
+				}
+				if known {
+					continue
+				}
 				status, explanation := "blocked", "dependency remained unresolved when the controller stopped"
 				switch reason {
 				case "execution_unavailable":
@@ -387,12 +408,29 @@ func ensureTerminalInvestigation(report *Report, reason string, budget domain.In
 				})
 			}
 		}
+		terminal.ActionsNotAttempted = appendUniqueDispositions(terminal.ActionsNotAttempted, report.InvestigationObjective.CandidateDispositions...)
 	}
 	if reason == "root_cause_established" {
 		terminal.UnresolvedDependencies = nil
 		terminal.ActionsNotAttempted = nil
 	}
 	report.TerminalInvestigation = terminal
+}
+
+func appendUniqueDispositions(values []domain.InvestigationDisposition, extra ...domain.InvestigationDisposition) []domain.InvestigationDisposition {
+	for _, value := range extra {
+		values = appendUniqueDisposition(values, value)
+	}
+	return values
+}
+
+func containsID(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func appendUniqueDisposition(values []domain.InvestigationDisposition, value domain.InvestigationDisposition) []domain.InvestigationDisposition {
@@ -422,6 +460,9 @@ func objectiveFromCheckpoint(values []domain.AdaptiveObjective) *InvestigationOb
 	}
 	out := &InvestigationObjective{FailureObjective: "Resume the persisted causal investigation", Status: "investigating"}
 	for _, value := range values {
+		for _, disposition := range value.CandidateDispositions {
+			out.CandidateDispositions = appendUniqueDisposition(out.CandidateDispositions, disposition)
+		}
 		out.Unknowns = append(out.Unknowns, InvestigationUnknown{ID: value.ID, Question: value.Question, Predicate: value.Predicate, Status: value.Status, RequiredKinds: append([]string(nil), value.RequiredEvidence...), Requirements: localRequirements(value.Requirements), MissingRequirements: append([]string(nil), value.MissingRequirements...), RefutedBy: domainIDsToStrings(value.RefutedBy), EvidenceIDs: domainIDsToStrings(value.EvidenceIDs), ResolutionIDs: domainIDsToStrings(value.ResolutionEvidence), Evaluation: value.Evaluation, Revision: value.Revision, NextAction: value.NextAction, CandidateActions: append([]string(nil), value.CandidateActions...), Target: value.Target, TargetSymbol: value.TargetSymbol})
 	}
 	return out
@@ -449,7 +490,7 @@ func saveAdaptiveObjectives(store *persistence.Store, report *Report, state *dom
 	}
 	state.Objectives = make([]domain.AdaptiveObjective, 0, len(report.InvestigationObjective.Unknowns))
 	for _, unknown := range report.InvestigationObjective.Unknowns {
-		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), RequiredEvidence: append([]string(nil), unknown.RequiredKinds...), Requirements: domainRequirements(unknown.Requirements), MissingRequirements: append([]string(nil), unknown.MissingRequirements...), RefutedBy: stringIDsToDomain(unknown.RefutedBy), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
+		state.Objectives = append(state.Objectives, domain.AdaptiveObjective{ID: unknown.ID, Question: unknown.Question, Predicate: unknown.Predicate, Status: unknown.Status, EvidenceIDs: stringIDsToDomain(unknown.EvidenceIDs), ResolutionEvidence: stringIDsToDomain(unknown.ResolutionIDs), Evaluation: unknown.Evaluation, Revision: unknown.Revision, NextAction: unknown.NextAction, CandidateActions: append([]string(nil), unknown.CandidateActions...), RequiredEvidence: append([]string(nil), unknown.RequiredKinds...), Requirements: domainRequirements(unknown.Requirements), MissingRequirements: append([]string(nil), unknown.MissingRequirements...), RefutedBy: stringIDsToDomain(unknown.RefutedBy), CandidateDispositions: append([]domain.InvestigationDisposition(nil), report.InvestigationObjective.CandidateDispositions...), Target: unknown.Target, TargetSymbol: unknown.TargetSymbol})
 	}
 	state.UpdatedAt = time.Now().UTC()
 	return store.SaveAdaptiveState(*state)

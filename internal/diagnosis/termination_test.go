@@ -67,6 +67,28 @@ func TestAdaptiveTargetFollowsSelectedDependency(t *testing.T) {
 	}
 }
 
+func TestAssignInvestigationTargetsUsesVerifiedReceiverQualifiedCall(t *testing.T) {
+	report := &Report{
+		Environment: Environment{HeadCommit: "head"},
+		Concurrency: &ConcurrencyModel{Accesses: []ConcurrencyAccess{
+			{File: "cacher.go", Line: 10, Function: "go:pkg/cacher:Function:New"},
+			{File: "setup.go", Line: 20, Function: "go:pkg/setup:Function:Setup"},
+		}},
+		InvestigationObjective: &InvestigationObjective{Unknowns: []InvestigationUnknown{{ID: "shutdown-ordering"}, {ID: "happens-before"}}},
+	}
+	snapshot := programrepo.Snapshot{Nodes: []domain.ProgramNode{
+		{ID: "setup", Type: "Function", Identity: "go:pkg/setup:Function:Setup", FilePath: "setup.go", StartLine: 1, EndLine: 30},
+		{ID: "stop", Type: "Method", Identity: "go:pkg/cacher:Method:Cacher.Stop", FilePath: "cacher.go", StartLine: 100, EndLine: 120},
+		{ID: "other", Type: "Method", Identity: "go:pkg/other:Method:Other.Stop", FilePath: "other.go", StartLine: 1, EndLine: 10},
+	}, Relationships: []domain.Relationship{{ID: "call-stop", Type: "CALLS", SourceID: "setup", TargetID: "stop", Metadata: map[string]string{"provenance": "verified_static_call"}}}}
+	assignInvestigationTargets(report, snapshot)
+	for _, unknown := range report.InvestigationObjective.Unknowns {
+		if unknown.TargetSymbol != "go:pkg/cacher:Method:Cacher.Stop" {
+			t.Fatalf("wrong target for %s: %#v", unknown.ID, unknown)
+		}
+	}
+}
+
 func TestAdaptiveEvidenceProgressRequiresNewEvidence(t *testing.T) {
 	report := &Report{Evidence: []EvidenceItem{{ID: "same"}}}
 	if adaptiveProducesNewEvidence(report, []domain.Evidence{{ID: "same"}}) {

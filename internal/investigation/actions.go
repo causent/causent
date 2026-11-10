@@ -34,6 +34,17 @@ type ActionDefinition struct {
 	Timeout              time.Duration
 	RetryLimit           int
 	Idempotent           bool
+	Capabilities         []EvidenceCapability
+}
+
+// EvidenceCapability describes evidence an action may produce. It is a
+// selection contract, not proof that the action produced the evidence.
+type EvidenceCapability struct {
+	ClaimKind               string
+	MinimumBasis            string
+	SubjectScope            string
+	SupportsOrdering        bool
+	SupportsRuntimeInstance bool
 }
 type Action interface {
 	Type() string

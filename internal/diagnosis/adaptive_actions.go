@@ -26,12 +26,20 @@ type repositoryAction struct {
 
 func (a repositoryAction) Type() string { return a.kind }
 func (a repositoryAction) Definition() investigation.ActionDefinition {
+	capabilities := map[string][]investigation.EvidenceCapability{
+		"InspectSymbol":   {{ClaimKind: "source function", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+		"InspectFunction": {{ClaimKind: "source function", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+		"FindReferences":  {{ClaimKind: "source references", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+		"TraceCallers":    {{ClaimKind: "source callers", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+		"TraceCallees":    {{ClaimKind: "source callees", MinimumBasis: "SourceVerified", SubjectScope: "target_declaration"}},
+	}
 	return investigation.ActionDefinition{
 		ID: a.kind + "-v1", Type: a.kind, Description: "bounded revision-scoped repository inspection",
 		InputSchema: "investigation_id,target_symbol", OutputSchema: "evidence_ids",
 		Preconditions:        []string{"isolated_workspace", "repository_snapshot"},
 		ResourceRequirements: map[string]string{"network": "not_required"}, ExecutionRisk: "low",
 		Timeout: a.diagnoser.cfg.Timeout, RetryLimit: 1, Idempotent: true,
+		Capabilities: capabilities[a.kind],
 	}
 }
 func (a repositoryAction) Execute(ctx context.Context, input investigation.ActionInput) (investigation.ActionOutput, error) {
@@ -112,7 +120,8 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 	}{a.kind, target, outcome, progress, selected, rels}
 	data, _ := json.Marshal(payload)
 	hash := sha256.Sum256(data)
-	e := domain.Evidence{ID: domain.ID("evidence:adaptive:" + hex.EncodeToString(hash[:8])), InvestigationID: input.InvestigationID, Type: domain.EvidenceSourceCode, Source: "adaptive:" + a.kind, Timestamp: time.Now().UTC(), ContentRef: "repository-snapshot", Digest: hex.EncodeToString(hash[:]), Payload: string(data), Provenance: "deterministic repository analyzer; revision-scoped snapshot"}
+	claimKind := map[string]string{"InspectSymbol": "source function", "InspectFunction": "source function", "FindReferences": "source references", "TraceCallers": "source callers", "TraceCallees": "source callees"}[a.kind]
+	e := domain.Evidence{ID: domain.ID("evidence:adaptive:" + hex.EncodeToString(hash[:8])), InvestigationID: input.InvestigationID, Type: domain.EvidenceSourceCode, ClaimKind: claimKind, Basis: "SourceVerified", DeclarationID: target, Source: "adaptive:" + a.kind, Timestamp: time.Now().UTC(), ContentRef: "repository-snapshot", Digest: hex.EncodeToString(hash[:]), Payload: string(data), Provenance: "deterministic repository analyzer; revision-scoped snapshot"}
 	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": target, "outcome": outcome, "progress": progress}}, nil
 }
 

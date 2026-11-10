@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/investigation"
@@ -88,6 +89,24 @@ func TestRepositoryActionDoesNotUseSameNameFromAnotherIdentity(t *testing.T) {
 	payload := decodeAdaptiveRepositoryEvidence(t, out)
 	if len(payload.Relationships) != 0 || payload.Relationships != nil && payload.Relationships[0].ID == "wrong" {
 		t.Fatalf("unrelated same-name relationship leaked: %#v", payload.Relationships)
+	}
+}
+
+func TestRepositoryActionCapabilitiesDoNotClaimRuntimeOrOrdering(t *testing.T) {
+	d := &Diagnoser{cfg: Config{Timeout: time.Second}}
+	for _, kind := range []string{"FindReferences", "InspectCleanup", "InspectSynchronization"} {
+		definition := (repositoryAction{diagnoser: d, kind: kind}).Definition()
+		for _, capability := range definition.Capabilities {
+			if capability.SupportsRuntimeInstance || capability.SupportsOrdering {
+				t.Fatalf("%s overclaims capability: %#v", kind, capability)
+			}
+		}
+		if kind == "FindReferences" && len(definition.Capabilities) == 0 {
+			t.Fatal("FindReferences lost its static-reference capability")
+		}
+		if kind != "FindReferences" && len(definition.Capabilities) != 0 {
+			t.Fatalf("%s claims unsupported typed evidence: %#v", kind, definition.Capabilities)
+		}
 	}
 }
 

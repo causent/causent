@@ -262,7 +262,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 		}
 	}
 	evaluateInvestigationObjectives(report)
-	assignInvestigationTargets(report)
+	assignInvestigationTargets(report, snapshot)
 	if persist {
 		if err := d.saveInvestigationCheckpoint(report); err != nil {
 			return err
@@ -275,7 +275,7 @@ func (d *Diagnoser) runSourceInvestigation(ctx context.Context, report *Report, 
 // assignInvestigationTargets converts each unresolved dependency into a
 // concrete source request. It uses only source facts already collected by the
 // deterministic investigation; it does not infer a causal conclusion.
-func assignInvestigationTargets(report *Report) {
+func assignInvestigationTargets(report *Report, snapshot programrepo.Snapshot) {
 	if report.InvestigationObjective == nil {
 		return
 	}
@@ -287,14 +287,11 @@ func assignInvestigationTargets(report *Report) {
 		var target string
 		switch u.ID {
 		case "exact-memory":
-			if report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
-				a := report.Concurrency.Accesses[0]
-				u.TargetSymbol, target = a.Function, fmt.Sprintf("%s:%d:%s", a.File, a.Line, a.Function)
-			}
+			u.TargetSymbol, target = accessTarget(report, snapshot, 0)
 		case "goroutine-ownership":
-			u.TargetSymbol, target = sourceTargetContaining(report, "startBackgroundResync")
+			u.TargetSymbol, target = accessRelatedTarget(report, snapshot, 0)
 		case "shutdown-ordering", "happens-before":
-			u.TargetSymbol, target = sourceTargetContaining(report, "Stop")
+			u.TargetSymbol, target = accessRelatedTarget(report, snapshot, 1)
 		}
 		if u.TargetSymbol == "" && report.Concurrency != nil && len(report.Concurrency.Accesses) > 0 {
 			a := report.Concurrency.Accesses[0]
@@ -304,14 +301,34 @@ func assignInvestigationTargets(report *Report) {
 	}
 }
 
-func sourceTargetContaining(report *Report, token string) (string, string) {
-	for i := len(report.InvestigationActions) - 1; i >= 0; i-- {
-		target := report.InvestigationActions[i].Target
-		if strings.Contains(strings.ToLower(target), strings.ToLower(token)) {
-			return target, target
+func accessTarget(report *Report, snapshot programrepo.Snapshot, index int) (string, string) {
+	if report.Concurrency == nil || len(report.Concurrency.Accesses) <= index {
+		return "", ""
+	}
+	a := report.Concurrency.Accesses[index]
+	return a.Function, fmt.Sprintf("%s:%d:%s", a.File, a.Line, a.Function)
+}
+
+func accessRelatedTarget(report *Report, snapshot programrepo.Snapshot, index int) (string, string) {
+	if report.Concurrency == nil || len(report.Concurrency.Accesses) <= index {
+		return "", ""
+	}
+	a := report.Concurrency.Accesses[index]
+	node := enclosingSourceNode(snapshot.Nodes, a.File, a.Line)
+	if node == nil {
+		return accessTarget(report, snapshot, index)
+	}
+	for _, relation := range snapshot.Relationships {
+		if relation.Type != "CALLS" || relation.SourceID != node.ID || relation.Metadata["provenance"] != "verified_static_call" {
+			continue
+		}
+		for _, candidate := range snapshot.Nodes {
+			if candidate.ID == relation.TargetID && (candidate.Type == "Function" || candidate.Type == "Method") {
+				return candidate.Identity, fmt.Sprintf("%s:%d:%s", candidate.FilePath, candidate.StartLine, candidate.Identity)
+			}
 		}
 	}
-	return "", ""
+	return accessTarget(report, snapshot, index)
 }
 
 func (d *Diagnoser) recordSourceAction(ctx context.Context, report *Report, persist bool, actionType, target, summary, kind, source, detail string) (string, error) {
