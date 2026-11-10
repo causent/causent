@@ -473,10 +473,11 @@ jobs:
           command="$(jq -r 'if (.command | type) == "array" then (.command | join(" ")) else (.command // "not configured") end' "$report")"
           base_passes="$(jq -r '.comparison.base.passes // 0' "$report")"
           base_attempts="$(jq -r '.comparison.base.attempts // 0' "$report")"
-          files="$(jq -r '(.localization.likely_files // []) | if length == 0 then "not localized" else join(", ") end' "$report")"
+          files="$(jq -r '(.localization.likely_file_reasons // {}) | to_entries | if length == 0 then "not localized" else map(.key + " (" + ((.value // []) | join(", ")) + ")") | join(", ") end' "$report")"
           candidate="$(jq -r '(.localization.candidate_commits[0] // {}) | if .sha then ((.sha[0:7]) + " — " + (.subject // "")) else "not identified" end' "$report")"
           groups="$(jq -r '(.failure_groups // []) | if length == 0 then "none recorded" else map("\(.status): \(.failure_ids | join(", "))") | join("; ") end' "$report")"
           episodes="$(jq -r '(.failure_episodes // []) | if length == 0 then "none recorded" else map((.test_identifier // "unknown test") + ": " + (.failure_message // "")) | .[0:10] | join("; ") end' "$report")"
+          incidents="$(jq -r '(.failure_incidents // []) | if length == 0 then "none recorded" else map((.category // "failure") + " — tests: " + ((.affected_tests // []) | join(", ")) + "; " + (.observed_explanation // "") + "; PR: " + (.pr_relationship // "not established")) | join("\n") end' "$report")"
           hypotheses="$(jq -r '(.hypotheses // []) | if length == 0 then "none recorded" else map("[\(.status)] \(.statement)") | .[0:3] | join("; ") end' "$report")"
           paths="$(jq -r '(.execution_paths // []) | if length == 0 then "none reconstructed" else map(.summary) | .[0:3] | join("; ") end' "$report")"
           confidence="$(jq -r '((.confidence // 0) * 100 | floor | tostring) + "%"' "$report")"
@@ -498,6 +499,8 @@ jobs:
           **Failure groups:** ${groups}
 
           **Failed tests/episodes:** ${episodes}
+
+          **Failure incident:** ${incidents}
 
           **Hypotheses:** ${hypotheses}
 

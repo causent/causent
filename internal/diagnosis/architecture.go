@@ -101,6 +101,94 @@ func parseRaceReports(text string) []RaceReport {
 	return reports
 }
 
+func buildFailureIncidents(report *Report) []FailureIncident {
+	var incidents []FailureIncident
+	seenRace := map[string]bool{}
+	for index, race := range report.RaceReports {
+		readKey, writeKey := "", ""
+		if len(race.ReadStack) > 0 {
+			readKey = fmt.Sprintf("%s:%d", race.ReadStack[0].File, race.ReadStack[0].Line)
+		}
+		if len(race.WriteStack) > 0 {
+			writeKey = fmt.Sprintf("%s:%d", race.WriteStack[0].File, race.WriteStack[0].Line)
+		}
+		raceKey := race.Test + "\x00" + readKey + "\x00" + writeKey
+		if seenRace[raceKey] {
+			continue
+		}
+		seenRace[raceKey] = true
+		tests := []string{}
+		for _, episode := range report.FailureEpisodes {
+			if race.Test == "" || episode.TestIdentifier == race.Test || strings.HasPrefix(episode.TestIdentifier, race.Test+"/") || strings.HasPrefix(race.Test, episode.TestIdentifier+"/") {
+				tests = appendUniqueString(tests, episode.TestIdentifier)
+			}
+		}
+		if len(tests) == 0 && race.Test != "" {
+			tests = []string{race.Test}
+		}
+		locations := []IncidentLocation{}
+		if len(race.ReadStack) > 0 {
+			f := race.ReadStack[0]
+			locations = append(locations, IncidentLocation{Access: "read", File: f.File, Line: f.Line, Function: f.Function, Provenance: "direct_stack_frame"})
+		}
+		if len(race.WriteStack) > 0 {
+			f := race.WriteStack[0]
+			locations = append(locations, IncidentLocation{Access: "write", File: f.File, Line: f.Line, Function: f.Function, Provenance: "direct_stack_frame"})
+		}
+		read, write := "unknown location", "unknown location"
+		for _, location := range locations {
+			value := fmt.Sprintf("%s:%d", location.File, location.Line)
+			if location.Access == "read" {
+				read = value
+			}
+			if location.Access == "write" {
+				write = value
+			}
+		}
+		functions := []string{}
+		for _, location := range locations {
+			if location.Function != "" {
+				functions = append(functions, location.Function)
+			}
+		}
+		proposed := "The observed stacks are consistent with concurrent lifecycle activity between the test setup/cleanup path and cacher watch creation, but stack proximity alone does not establish which synchronization or ownership rule is violated."
+		if len(functions) == 0 {
+			proposed = "The race report identifies conflicting accesses, but does not contain enough function information to propose a more specific mechanism."
+		}
+		prRelationship := "No demonstrated PR relationship; base-versus-head verification is unavailable."
+		causality := 0.0
+		for _, delta := range report.Deltas {
+			for _, location := range locations {
+				if delta.FilePath == location.File {
+					prRelationship = "The PR modifies an observed race location; this is overlap, not proof that the PR caused the race."
+					causality = 0.2
+				}
+			}
+		}
+		incidents = append(incidents, FailureIncident{ID: fmt.Sprintf("incident:race:%d", index+1), Category: "go_data_race", AffectedTests: tests, ObservedLocations: locations, ObservedExplanation: fmt.Sprintf("The Go race detector directly observed a read at %s and a write at %s during %s. This establishes conflicting concurrent accesses, not their root cause.", read, write, race.Test), ProposedExplanation: proposed, PRRelationship: prRelationship, ObservedConfidence: 1, ExplanationConfidence: 0.35, CausalityConfidence: causality, Uncertainty: []string{"The report does not by itself prove which goroutine should own or synchronize the raced state.", "PR causality requires base-versus-head or equivalent verification."}, EvidenceIDs: race.EvidenceIDs})
+	}
+	if len(incidents) == 0 && len(report.FailureEpisodes) > 0 {
+		tests := []string{}
+		for _, episode := range report.FailureEpisodes {
+			tests = appendUniqueString(tests, episode.TestIdentifier)
+		}
+		incidents = append(incidents, FailureIncident{ID: "incident:observed-failures", Category: string(report.Classification), AffectedTests: tests, ObservedExplanation: "CI evidence records failed tests, but no structured race or compiler diagnostic was available to establish a more specific incident.", ProposedExplanation: "No evidence-backed mechanism established.", PRRelationship: "No demonstrated PR relationship; base-versus-head verification is unavailable.", ObservedConfidence: 1, ExplanationConfidence: 0, CausalityConfidence: 0, Uncertainty: []string{"Only the recorded failure observation is established."}})
+	}
+	return incidents
+}
+
+func appendUniqueString(values []string, value string) []string {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 // Race reports retain standard-library frames because they are part of the
 // goroutine creation evidence. They are not promoted to repository candidates
 // by architectureFrames, which intentionally filters runtime/toolchain paths.
@@ -390,16 +478,47 @@ func normalizeEvidencePath(path string) string {
 // resolves them against the checked-out revision before treating them as
 // source candidates.
 func observedFilesFromEvidence(b Baseline, evidence []EvidenceItem) []string {
-	frames := architectureFrames(b, nil, evidence)
 	seen := map[string]bool{}
 	var files []string
-	for _, frame := range frames {
-		path := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(frame.File, "./")))
+	add := func(path string) {
+		path = filepath.ToSlash(filepath.Clean(strings.TrimPrefix(path, "./")))
 		if path == "." || path == "" || seen[path] {
-			continue
+			return
 		}
 		seen[path] = true
 		files = append(files, path)
+	}
+	// Race access locations are the highest-value indexing seeds. Creation
+	// stacks are retained as context but are added after the conflicting sides.
+	for _, item := range evidence {
+		if !isCIEvidenceKind(item.Kind) {
+			continue
+		}
+		for _, race := range parseRaceReports(item.Detail) {
+			if len(race.ReadStack) > 0 {
+				add(race.ReadStack[0].File)
+			}
+			if len(race.WriteStack) > 0 {
+				add(race.WriteStack[0].File)
+			}
+			for _, stack := range race.GoroutineCreationStacks {
+				for _, frame := range stack {
+					if !strings.HasPrefix(frame.File, "/usr/") {
+						add(frame.File)
+					}
+				}
+			}
+		}
+	}
+	frames := architectureFrames(b, nil, evidence)
+	for _, frame := range frames {
+		add(frame.File)
+		if len(files) >= 12 {
+			break
+		}
+	}
+	if len(files) > 12 {
+		files = files[:12]
 	}
 	return files
 }
@@ -472,6 +591,55 @@ func sourceEvidenceForCandidates(workspace, revision string, candidates []domain
 		}
 	}
 	return candidates, evidence
+}
+
+func refineEvidenceLikelyFiles(report *Report) {
+	if report.NormalizedEvidence == nil && report.Baseline.Source != "ci_artifact" {
+		return
+	}
+	reasons := map[string][]string{}
+	files := []string{}
+	add := func(path, reason string) {
+		if path == "" {
+			return
+		}
+		if _, exists := reasons[path]; !exists {
+			files = append(files, path)
+		}
+		reasons[path] = appendUniqueString(reasons[path], reason)
+	}
+	for _, race := range report.RaceReports {
+		if len(race.ReadStack) > 0 {
+			add(race.ReadStack[0].File, "direct race read location")
+		}
+		if len(race.WriteStack) > 0 {
+			add(race.WriteStack[0].File, "direct race write location")
+		}
+		for _, stack := range race.GoroutineCreationStacks {
+			for _, frame := range stack {
+				if !strings.HasPrefix(frame.File, "/usr/") {
+					add(frame.File, "race goroutine creation stack")
+				}
+			}
+		}
+	}
+	for _, candidate := range report.Candidates {
+		if len(files) >= 8 {
+			break
+		}
+		reason := candidate.Location.Provenance
+		if reason == "" {
+			reason = candidate.Location.LocationType
+		}
+		if reason == "enclosing_symbol" || reason == "direct_stack_frame" || reason == "observed_frame" || reason == "inferred_caller" {
+			add(candidate.Location.FilePath, reason)
+		}
+	}
+	if len(files) > 8 {
+		files = files[:8]
+	}
+	report.Localization.LikelyFiles = files
+	report.Localization.LikelyFileReasons = reasons
 }
 
 func failureIDsForText(text string, failures []domain.FailureEpisode) []string {

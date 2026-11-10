@@ -120,6 +120,32 @@ type RaceReport struct {
 	EvidenceIDs             []string               `json:"evidence_ids,omitempty"`
 }
 
+type IncidentLocation struct {
+	Access     string `json:"access"`
+	File       string `json:"file,omitempty"`
+	Line       int    `json:"line,omitempty"`
+	Function   string `json:"function,omitempty"`
+	Provenance string `json:"provenance,omitempty"`
+}
+
+// FailureIncident is the concise, evidence-backed unit presented to a
+// developer. It groups symptoms without claiming that the grouping proves a
+// common root cause.
+type FailureIncident struct {
+	ID                    string             `json:"id"`
+	Category              string             `json:"category"`
+	AffectedTests         []string           `json:"affected_tests,omitempty"`
+	ObservedLocations     []IncidentLocation `json:"observed_locations,omitempty"`
+	ObservedExplanation   string             `json:"observed_explanation"`
+	ProposedExplanation   string             `json:"proposed_explanation"`
+	PRRelationship        string             `json:"pr_relationship"`
+	ObservedConfidence    float64            `json:"observed_confidence"`
+	ExplanationConfidence float64            `json:"explanation_confidence"`
+	CausalityConfidence   float64            `json:"causality_confidence"`
+	Uncertainty           []string           `json:"uncertainty,omitempty"`
+	EvidenceIDs           []string           `json:"evidence_ids,omitempty"`
+}
+
 // Claim is a hypothesis. It must cite evidence and carries its own confidence.
 type Claim struct {
 	ID            string   `json:"id"`
@@ -146,16 +172,17 @@ type CommitInfo struct {
 
 // Localization records where the failure most likely entered the history.
 type Localization struct {
-	HeadCommit      string       `json:"head_commit"`
-	LastKnownGood   string       `json:"last_known_good,omitempty"`
-	FirstKnownBad   string       `json:"first_known_bad,omitempty"`
-	BisectResult    string       `json:"bisect_result,omitempty"`
-	BisectStatus    string       `json:"bisect_status"`
-	BisectLog       string       `json:"bisect_log,omitempty"`
-	LikelyFiles     []string     `json:"likely_files,omitempty"`
-	LikelyFunctions []string     `json:"likely_functions,omitempty"`
-	CandidateCommit []CommitInfo `json:"candidate_commits,omitempty"`
-	CommitRange     string       `json:"commit_range,omitempty"`
+	HeadCommit        string              `json:"head_commit"`
+	LastKnownGood     string              `json:"last_known_good,omitempty"`
+	FirstKnownBad     string              `json:"first_known_bad,omitempty"`
+	BisectResult      string              `json:"bisect_result,omitempty"`
+	BisectStatus      string              `json:"bisect_status"`
+	BisectLog         string              `json:"bisect_log,omitempty"`
+	LikelyFiles       []string            `json:"likely_files,omitempty"`
+	LikelyFunctions   []string            `json:"likely_functions,omitempty"`
+	CandidateCommit   []CommitInfo        `json:"candidate_commits,omitempty"`
+	CommitRange       string              `json:"commit_range,omitempty"`
+	LikelyFileReasons map[string][]string `json:"likely_file_reasons,omitempty"`
 }
 
 // Environment is the bounded execution context. Secrets are never recorded.
@@ -221,6 +248,7 @@ type Report struct {
 	Relationships              []domain.Relationship          `json:"relationships,omitempty"`
 	FailureGroups              []domain.FailureGroup          `json:"failure_groups,omitempty"`
 	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
+	FailureIncidents           []FailureIncident              `json:"failure_incidents,omitempty"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
 	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
@@ -611,11 +639,10 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 				var changedPaths []string
 				for _, path := range strings.Split(changed, "\n") {
 					path = strings.TrimSpace(path)
-					if path == "" || containsPath(localization.LikelyFiles, path) {
+					if path == "" {
 						continue
 					}
 					changedPaths = append(changedPaths, path)
-					localization.LikelyFiles = append(localization.LikelyFiles, path)
 				}
 				if len(changedPaths) > 0 {
 					report.Evidence = append(report.Evidence, EvidenceItem{
@@ -656,6 +683,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		report.Uncertainty = append(report.Uncertainty, "architecture persistence incomplete: "+err.Error())
 		report.Partial = true
 	}
+	report.FailureIncidents = buildFailureIncidents(&report)
 
 	if !skipDeep && !cfg.SkipAdaptive {
 		adaptStage := d.metrics.Begin(observability.StageAdaptiveDeep)
@@ -764,9 +792,6 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 		if base != "" && report.Environment.HeadCommit != "" {
 			for _, path := range strings.Split(gitOutput(cfg.RepoPath, "diff", "--name-only", base, report.Environment.HeadCommit), "\n") {
 				path = strings.TrimSpace(path)
-				if path != "" && !strings.HasPrefix(path, "fatal:") && !strings.HasPrefix(path, "error:") && !containsPath(report.Localization.LikelyFiles, path) {
-					report.Localization.LikelyFiles = append(report.Localization.LikelyFiles, path)
-				}
 			}
 		}
 	}
@@ -780,6 +805,7 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 			report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
 		}
 	}
+	report.FailureIncidents = buildFailureIncidents(&report)
 	report.Claims = buildClaims(report.Classification, report.Localization, report.Evidence)
 	report.Confidence = confidence(report.Classification, report.Localization, report.Uncertainty)
 	report.Uncertainty = append(report.Uncertainty, defaultUncertainty(report.Classification, report.Localization)...)

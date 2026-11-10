@@ -117,6 +117,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			report.RaceReports = append(report.RaceReports, race)
 		}
 	}
+	report.FailureIncidents = buildFailureIncidents(report)
 	stage.Count("episodes", len(failures))
 	stage.Done("completed", nil)
 
@@ -254,6 +255,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		}
 	}
 	report.Candidates = candidates
+	refineEvidenceLikelyFiles(report)
 	report.Relationships = relations
 	candStage.Count("candidates", len(candidates))
 	candStage.Done("completed", nil)

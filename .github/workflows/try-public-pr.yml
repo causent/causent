@@ -375,7 +375,13 @@ jobs:
               echo "$findings"
               echo
             fi
-            files="$(jq -r '.localization.likely_files[]? | "- `" + . + "`"' "$report")"
+            incidents="$(jq -r '.failure_incidents[]? | "### Failure\n" + (.category // "observed failure") + "\n\n**Affected tests:** " + ((.affected_tests // []) | join(", ")) + "\n\n**Observed conflict:** " + ((.observed_locations // []) | map((.access // "access") + ": `" + (.file // "unknown") + ":" + ((.line // 0)|tostring) + "`" + (if .function then " (" + .function + ")" else "" end)) | join("; ")) + "\n\n" + (.observed_explanation // "Observed failure evidence preserved.") + "\n\n**Relevant code:** " + (.proposed_explanation // "No mechanism established.") + "\n\n**PR relationship:** " + (.pr_relationship // "Not established.") + "\n\n**Confidence:** observed=" + ((.observed_confidence // 0)|tostring) + ", explanation=" + ((.explanation_confidence // 0)|tostring) + ", causality=" + ((.causality_confidence // 0)|tostring)' "$report" 2>/dev/null || true)"
+            if [ -n "$incidents" ]; then
+              echo '**Failure incident:**'
+              echo "$incidents"
+              echo
+            fi
+            files="$(jq -r '(.localization.likely_file_reasons // {}) | to_entries[]? | "- `" + .key + "` — " + ((.value // []) | join(", "))' "$report")"
             if [ -n "$files" ]; then
               echo '**Likely files:**'
               echo "$files"

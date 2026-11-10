@@ -3,6 +3,9 @@ package diagnosis
 import (
 	"os"
 	"testing"
+
+	"github.com/causent/malenia/internal/domain"
+	"github.com/causent/malenia/internal/localization"
 )
 
 func TestParseRaceReportsPreservesReadWriteAndCreationStacks(t *testing.T) {
@@ -44,5 +47,23 @@ Read at 0x00 by goroutine 3:
 	}
 	if len(reports[1].ReadStack) != 0 {
 		t.Fatalf("incomplete location invented: %#v", reports[1])
+	}
+}
+
+func TestBuildFailureIncidentGroupsRaceAffectedTestsWithoutCausalOverclaim(t *testing.T) {
+	report := &Report{
+		Classification: ClassTestFailureObserved,
+		FailureEpisodes: []domain.FailureEpisode{
+			{TestIdentifier: "TestWatch/One"},
+			{TestIdentifier: "TestWatch/Two"},
+		},
+		RaceReports: []RaceReport{{Test: "TestWatch", ReadStack: []localization.Frame{{File: "cacher.go", Line: 496, Function: "NewCacherFromConfig"}}, WriteStack: []localization.Frame{{File: "setup.go", Line: 187, Function: "SetupWithCacher"}}}},
+	}
+	incidents := buildFailureIncidents(report)
+	if len(incidents) != 1 || len(incidents[0].AffectedTests) != 2 {
+		t.Fatalf("incident did not group affected tests: %#v", incidents)
+	}
+	if incidents[0].CausalityConfidence != 0 || incidents[0].ObservedConfidence != 1 {
+		t.Fatalf("confidence overclaims causality: %#v", incidents[0])
 	}
 }
