@@ -70,3 +70,17 @@ func TestSelectDoesNotRepeatCompletedAdaptiveActionWithTarget(t *testing.T) {
 		t.Fatalf("completed targeted adaptive action was selected again: %#v", decision)
 	}
 }
+
+func TestSelectReportsBudgetExhaustionAfterCompletedAdaptiveWork(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testAction{kind: "InspectSynchronization"}); err != nil {
+		t.Fatal(err)
+	}
+	decision := Select(State{
+		Objectives: []domain.AdaptiveObjective{{ID: "ordering", Status: "unresolved", CandidateActions: []string{"InspectSynchronization"}}},
+		Budget:     domain.InvestigationBudget{MaxIterations: 4, IterationsUsed: 4},
+	}, r, DefaultScorePolicy)
+	if decision.StoppingReason != "iteration budget exhausted" {
+		t.Fatalf("unexpected budget decision: %#v", decision)
+	}
+}

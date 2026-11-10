@@ -145,7 +145,12 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		state.Budget.IterationsUsed = state.Iterations
 		decision := investigation.Select(investigation.State{InvestigationID: invID, Hypotheses: report.Hypotheses, Objectives: state.Objectives, Questions: state.Questions, Activities: currentActivities, Experiments: currentExperiments, Budget: state.Budget}, registry, investigation.DefaultScorePolicy)
 		if decision.StoppingReason != "" {
-			if report.InvestigationObjective != nil && !causalContractSatisfied(report) {
+			if strings.Contains(strings.ToLower(decision.StoppingReason), "budget") {
+				state.StoppingReason = "budget_exhausted"
+				if report.InvestigationObjective != nil && !causalContractSatisfied(report) {
+					report.InvestigationObjective.StoppingReason = "adaptive investigation budget was exhausted: " + decision.StoppingReason
+				}
+			} else if report.InvestigationObjective != nil && !causalContractSatisfied(report) {
 				state.StoppingReason = "investigation_blocked"
 				report.InvestigationObjective.StoppingReason = "controller had no eligible useful action: " + decision.StoppingReason
 			} else {
