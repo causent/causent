@@ -325,7 +325,7 @@ jobs:
                 "**Inspected source candidates**:\n" + ((.candidates[0:5] // []) | map("- `" + (.location.file_path // "unknown") + ":" + ((.location.start_line // 0)|tostring) + "` — " + (.location.symbol_identity // "unresolved") + " (" + (.location.provenance // .location.location_type // "unattributed") + "; execution=" + ((.score.execution_relevance // 0)|tostring) + ")") | join("\n"))
               else empty end),
               (if ((.execution_paths // []) | length) > 0 then
-                "**Execution paths**:\n" + ((.execution_paths[0:5] // []) | map("- " + .summary) | join("\n"))
+                "**Static call paths (inferred, not observed runtime paths)**:\n" + ((.execution_paths[0:5] // []) | map("- [" + (.status // "inferred") + "] " + .summary) | join("\n"))
               else empty end),
               "",
               (if ((.claims // []) | length) > 0 then

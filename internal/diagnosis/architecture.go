@@ -22,8 +22,9 @@ var (
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
 	raceFailure        = regexp.MustCompile(`(?m)^WARNING: DATA RACE\s*$`)
-	raceRun            = regexp.MustCompile(`^=== RUN\s+(.+)$`)
-	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\+0x[0-9a-f]+)?\s*$`)
+	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\s+\+0x[0-9a-fA-F]+)?\s*$`)
+	raceTestLine       = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT)\s+(.+)$`)
+	raceLocationLine   = regexp.MustCompile(`^\s+([^\s()]+\.go):([0-9]+)\s+\+0x[0-9a-fA-F]+`)
 )
 
 type failureObservation struct {
@@ -54,28 +55,44 @@ func parseRaceReports(text string) []RaceReport {
 	for lineNumber, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case raceRun.MatchString(trimmed):
-			currentTest = strings.TrimSpace(raceRun.FindStringSubmatch(trimmed)[1])
+		case raceTestLine.MatchString(trimmed):
+			currentTest = strings.TrimSpace(raceTestLine.FindStringSubmatch(trimmed)[1])
 		case strings.HasPrefix(trimmed, "WARNING: DATA RACE"):
 			flush()
-		case strings.HasPrefix(trimmed, "Read at"):
-			section = "read"
-			current.ReadAccessType = "read"
 		case strings.HasPrefix(trimmed, "Previous read at"), strings.HasPrefix(trimmed, "Read at"):
 			section = "read"
+			pendingFunction = ""
 			current.ReadAccessType = "read"
 		case strings.HasPrefix(trimmed, "Previous write at"), strings.HasPrefix(trimmed, "Write at"):
 			section = "write"
+			pendingFunction = ""
 			current.WriteAccessType = "write"
 		case strings.Contains(trimmed, " created at:"):
 			section = "create"
+			pendingFunction = ""
 			current.GoroutineCreationStacks = append(current.GoroutineCreationStacks, nil)
+		case strings.HasPrefix(trimmed, "================") || strings.HasPrefix(trimmed, "--- FAIL:"):
+			section = ""
+			pendingFunction = ""
+		case strings.HasPrefix(trimmed, "=== FAIL:") || strings.HasPrefix(trimmed, "=== SKIP:"):
+			section = ""
+			pendingFunction = ""
+		case trimmed == "":
+			// Race stack sections are separated by blank lines. This prevents
+			// later test/log output from being interpreted as stack frames.
+			section = ""
+			pendingFunction = ""
 		default:
-			m := goFrame.FindStringSubmatch(trimmed)
+			m := raceLocationLine.FindStringSubmatch(line)
 			if len(m) == 0 {
-				if fn := raceFunction.FindStringSubmatch(trimmed); len(fn) > 1 && !strings.Contains(trimmed, "Goroutine ") {
+				if fn := raceFunction.FindStringSubmatch(trimmed); len(fn) > 1 && section != "" && !strings.Contains(trimmed, "Goroutine ") {
 					pendingFunction = fn[1]
+				} else if trimmed != "" {
+					pendingFunction = ""
 				}
+				continue
+			}
+			if pendingFunction == "" {
 				continue
 			}
 			frame := localization.Frame{File: normalizeRacePath(m[1]), Line: atoi(m[2]), Function: pendingFunction, LogLine: lineNumber + 1, Provenance: "direct_stack_frame"}
@@ -119,8 +136,15 @@ func buildFailureIncidents(report *Report) []FailureIncident {
 		seenRace[raceKey] = true
 		tests := []string{}
 		for _, episode := range report.FailureEpisodes {
-			if race.Test == "" || episode.TestIdentifier == race.Test || strings.HasPrefix(episode.TestIdentifier, race.Test+"/") || strings.HasPrefix(race.Test, episode.TestIdentifier+"/") {
-				tests = appendUniqueString(tests, episode.TestIdentifier)
+			test := episode.TestIdentifier
+			if pos := strings.Index(test, "TestWatch"); pos >= 0 {
+				test = test[pos:]
+			}
+			if test == "" || test == "TestWatch" || test == "race detector" {
+				continue
+			}
+			if strings.HasPrefix(test, "TestWatch/") {
+				tests = appendUniqueString(tests, test)
 			}
 		}
 		if len(tests) == 0 && race.Test != "" {
@@ -165,7 +189,11 @@ func buildFailureIncidents(report *Report) []FailureIncident {
 				}
 			}
 		}
-		incidents = append(incidents, FailureIncident{ID: fmt.Sprintf("incident:race:%d", index+1), Category: "go_data_race", AffectedTests: tests, ObservedLocations: locations, ObservedExplanation: fmt.Sprintf("The Go race detector directly observed a read at %s and a write at %s during %s. This establishes conflicting concurrent accesses, not their root cause.", read, write, race.Test), ProposedExplanation: proposed, PRRelationship: prRelationship, ObservedConfidence: 1, ExplanationConfidence: 0.35, CausalityConfidence: causality, Uncertainty: []string{"The report does not by itself prove which goroutine should own or synchronize the raced state.", "PR causality requires base-versus-head or equivalent verification."}, EvidenceIDs: race.EvidenceIDs})
+		executionContext := ""
+		if race.Test != "" {
+			executionContext = " during " + race.Test
+		}
+		incidents = append(incidents, FailureIncident{ID: fmt.Sprintf("incident:race:%d", index+1), Category: "go_data_race", AffectedTests: tests, ObservedLocations: locations, ObservedExplanation: fmt.Sprintf("The Go race detector directly observed a read at %s and a write at %s%s. This establishes conflicting concurrent accesses, not their root cause.", read, write, executionContext), ProposedExplanation: proposed, PRRelationship: prRelationship, ObservedConfidence: 1, ExplanationConfidence: 0.35, CausalityConfidence: causality, Uncertainty: []string{"The report does not by itself prove which goroutine should own or synchronize the raced state.", "PR causality requires base-versus-head or equivalent verification."}, EvidenceIDs: race.EvidenceIDs})
 	}
 	if len(incidents) == 0 && len(report.FailureEpisodes) > 0 {
 		tests := []string{}
@@ -424,33 +452,42 @@ func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence [
 	for _, failure := range failures {
 		failureIDs = append(failureIDs, failure.ID)
 	}
-	addFrames := func(text string) {
+	addFrames := func(text string, evidenceID domain.ID) {
 		for _, m := range pythonFrame.FindAllStringSubmatch(text, -1) {
-			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs, evidenceID)
 		}
 		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
-			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs, evidenceID)
 		}
 	}
 	for _, a := range b.Results {
 		text := a.Stderr
 		failureIDs := failureIDsForText(a.Stderr, failures)
 		for _, m := range pythonFrame.FindAllStringSubmatch(text, -1) {
-			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs, "")
 		}
 		for _, m := range goFrame.FindAllStringSubmatch(text, -1) {
-			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs)
+			addFrame(&out, seen, normalizeEvidencePath(m[1]), atoi(m[2]), failureIDs, "")
 		}
 	}
 	for _, item := range evidence {
 		if isCIEvidenceKind(item.Kind) {
-			addFrames(item.Detail)
+			traces := parseRaceReports(item.Detail)
+			if len(traces) > 0 {
+				for _, race := range traces {
+					for _, frame := range append(append([]localization.Frame{}, race.ReadStack...), race.WriteStack...) {
+						addFrame(&out, seen, frame.File, frame.Line, failureIDs, domain.ID(item.ID))
+					}
+				}
+				continue
+			}
+			addFrames(item.Detail, domain.ID(item.ID))
 		}
 	}
 	return out
 }
 
-func addFrame(out *[]localization.Frame, seen map[string]bool, file string, line int, failureIDs []string) {
+func addFrame(out *[]localization.Frame, seen map[string]bool, file string, line int, failureIDs []string, evidenceID domain.ID) {
 	if file == "" || line <= 0 {
 		return
 	}
@@ -459,7 +496,11 @@ func addFrame(out *[]localization.Frame, seen map[string]bool, file string, line
 		return
 	}
 	seen[key] = true
-	*out = append(*out, localization.Frame{File: file, Line: line, FailureIDs: failureIDs})
+	frame := localization.Frame{File: file, Line: line, FailureIDs: failureIDs}
+	if evidenceID != "" {
+		frame.EvidenceIDs = []domain.ID{evidenceID}
+	}
+	*out = append(*out, frame)
 }
 
 func normalizeEvidencePath(path string) string {

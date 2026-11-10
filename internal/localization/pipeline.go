@@ -22,18 +22,21 @@ type Frame struct {
 }
 
 type Input struct {
-	InvestigationID       domain.ID
-	RepositoryID          string
-	RevisionID            string
-	FailureIDs            []string
-	EvidenceIDs           []domain.ID
-	StackFrames           []Frame
-	FailureText           string
-	ChangedIdentities     map[string]bool
-	RuntimeEvidenceIDs    []domain.ID
-	HistoricalEvidenceIDs []domain.ID
-	MaxDepth              int
-	MaxCandidates         int
+	InvestigationID        domain.ID
+	RepositoryID           string
+	RevisionID             string
+	FailureIDs             []string
+	EvidenceIDs            []domain.ID
+	StackFrames            []Frame
+	FailureText            string
+	ChangedIdentities      map[string]bool
+	RuntimeEvidenceIDs     []domain.ID
+	HistoricalEvidenceIDs  []domain.ID
+	ChangeEvidenceIDs      []domain.ID
+	DependencyEvidenceIDs  []domain.ID
+	BehaviouralEvidenceIDs []domain.ID
+	MaxDepth               int
+	MaxCandidates          int
 }
 
 // GenerateObserved creates conservative candidates directly from stack-frame
@@ -70,11 +73,10 @@ func GenerateObserved(frames []Frame, input Input) ([]domain.CandidateLocation, 
 				},
 				Status: "observed",
 			}
-			candidate.Score = evaluateSignals(CandidateContext{Execution: true, Evidence: input.EvidenceIDs})
+			candidate.Score = evaluateSignals(CandidateContext{Execution: len(frame.EvidenceIDs) > 0, Evidence: frame.EvidenceIDs})
 			candidate.Score.ScoringPolicyVersion = PolicyVersion
 			candidates[id] = candidate
 		}
-		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, input.EvidenceIDs...)
 		candidate.SupportingEvidenceIDs = appendUnique(candidate.SupportingEvidenceIDs, frame.EvidenceIDs...)
 		candidates[id] = candidate
 		for _, failureID := range frame.FailureIDs {
@@ -169,7 +171,7 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 		var best *domain.ProgramNode
 		for i := range matched {
 			n := &matched[i]
-			if frame.Line > 0 && (frame.Line < n.StartLine || frame.Line > n.EndLine) {
+			if frame.Line <= 0 || frame.Line < n.StartLine || frame.Line > n.EndLine {
 				continue
 			}
 			if best == nil || (n.EndLine-n.StartLine) < (best.EndLine-best.StartLine) {
@@ -192,8 +194,8 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 	}
 	for _, n := range snapshot.Nodes {
 		if n.Type == "Test" && (strings.Contains(input.FailureText, n.Name) || strings.Contains(input.FailureText, n.FilePath)) {
-			ev := input.EvidenceIDs
-			add(n, evaluateSignals(CandidateContext{Behavioural: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
+			ev := input.BehaviouralEvidenceIDs
+			add(n, evaluateSignals(CandidateContext{Behavioural: true, Evidence: ev, BehaviouralEvidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
 		}
 	}
 	for _, n := range snapshot.Nodes {
@@ -205,15 +207,15 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 			if _, exists := candidates[n.ID]; !exists {
 				continue
 			}
-			ev := input.EvidenceIDs
-			add(n, evaluateSignals(CandidateContext{Changed: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
+			ev := input.ChangeEvidenceIDs
+			add(n, evaluateSignals(CandidateContext{Changed: true, Evidence: ev, ChangeEvidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
 			if candidates[n.ID].Location.Provenance == "" {
 				candidates[n.ID].Location.Provenance = "changed_file"
 			}
 		}
 	}
-	// Expand every discovered symbol through typed program relationships. This
-	// includes unchanged callers, callees, and test dependencies.
+	// Expand only AST-verified calls. Heuristic references and package-level
+	// relationships remain available in the graph but do not create candidates.
 	for depth := 0; depth < input.MaxDepth; depth++ {
 		current := make([]string, 0, len(candidates))
 		for id := range candidates {
@@ -221,22 +223,18 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 		}
 		for _, id := range current {
 			for _, e := range edges[id] {
+				if e.Type != "CALLS" || e.Metadata["provenance"] != "verified_static_call" {
+					continue
+				}
 				target, ok := nodes[e.TargetID]
 				if !ok {
 					continue
 				}
-				ev := append([]domain.ID{}, input.EvidenceIDs...)
-				score := evaluateSignals(CandidateContext{Expanded: true, Evidence: ev})
-				if e.Type == "TESTS" {
-					score = evaluateSignals(CandidateContext{Expanded: true, Behavioural: true, Evidence: ev})
-				}
+				ev := append([]domain.ID{}, e.EvidenceIDs...)
+				score := domain.ScoreVector{ScoringPolicyVersion: PolicyVersion}
 				add(target, score, ev, "RELATED_TO", input.FailureIDs)
 				if c := candidates[target.ID]; c != nil && c.Location.Provenance == "" {
-					if e.Type == "CALLS" || e.Type == "TESTS" {
-						c.Location.Provenance = "inferred_caller"
-					} else {
-						c.Location.Provenance = "dependency"
-					}
+					c.Location.Provenance = "inferred_caller"
 				}
 			}
 		}

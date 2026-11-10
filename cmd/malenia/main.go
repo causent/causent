@@ -674,13 +674,41 @@ func diagnosisText(report diagnosis.Report) string {
 			fmt.Fprintf(&b, "  %s: %s\n", name, episode.FailureMessage)
 		}
 	}
+	if len(report.FailureIncidents) > 0 {
+		b.WriteString("\nincident diagnosis:\n")
+		for _, incident := range report.FailureIncidents {
+			fmt.Fprintf(&b, "  [%s] %s\n", incident.Category, incident.ObservedExplanation)
+			if len(incident.AffectedTests) > 0 {
+				fmt.Fprintf(&b, "    affected tests: %s\n", strings.Join(incident.AffectedTests, ", "))
+			}
+			if len(incident.ObservedLocations) > 0 {
+				b.WriteString("    observed locations:\n")
+				seenPackages := map[string]bool{}
+				for _, location := range incident.ObservedLocations {
+					packageName := filepath.Dir(location.File)
+					if packageName == "." {
+						packageName = location.File
+					}
+					key := location.Access + "\x00" + packageName
+					if seenPackages[key] {
+						continue
+					}
+					seenPackages[key] = true
+					fmt.Fprintf(&b, "      %s %s:%d (%s)\n", location.Access, location.File, location.Line, valueOr(location.Provenance, "unknown provenance"))
+				}
+			}
+			if len(incident.Uncertainty) > 0 {
+				fmt.Fprintf(&b, "    uncertainty: %s\n", strings.Join(incident.Uncertainty, "; "))
+			}
+		}
+	}
 	if len(report.Hypotheses) > 0 {
 		b.WriteString("\nassessed hypotheses (candidate relevance, not causal probability):\n")
 		for _, hypothesis := range report.Hypotheses {
 			fmt.Fprintf(&b, "  %s v%d [%s relevance %.2f]: %s\n    supporting evidence: %s\n", hypothesis.ID, hypothesis.Version, hypothesis.Status, hypothesis.Relevance, hypothesis.Statement, strings.Join(idsToStrings(hypothesis.SupportingEvidenceIDs), ", "))
 		}
 	}
-	if len(report.Findings) > 0 {
+	if len(report.Findings) > 0 && len(report.FailureIncidents) == 0 {
 		b.WriteString("\nvalidated findings:\n")
 		for _, finding := range report.Findings {
 			fmt.Fprintf(&b, "  [%s] %s\n", finding.Status, finding.Statement)

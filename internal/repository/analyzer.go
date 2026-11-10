@@ -79,6 +79,7 @@ func (a Analyzer) AnalyzePaths(ctx context.Context, root, repositoryID, revision
 		a.extractFile(text, rel, lang, fileID, &s)
 	}
 	a.buildReferences(contents, &s)
+	a.buildVerifiedGoCalls(contents, &s)
 	return s, nil
 }
 
@@ -144,7 +145,65 @@ func (a Analyzer) Analyze(ctx context.Context, root, repositoryID, revisionID, c
 		a.extractFile(text, rel, lang, fileID, &s)
 	}
 	a.buildReferences(contents, &s)
+	a.buildVerifiedGoCalls(contents, &s)
 	return s, nil
+}
+
+func (a Analyzer) buildVerifiedGoCalls(contents map[string]string, s *Snapshot) {
+	nodesByFile := map[string][]domain.ProgramNode{}
+	nodesByName := map[string][]domain.ProgramNode{}
+	for _, node := range s.Nodes {
+		if node.Type == "Function" || node.Type == "Method" || node.Type == "Test" {
+			nodesByFile[node.FilePath] = append(nodesByFile[node.FilePath], node)
+			nodesByName[node.Name] = append(nodesByName[node.Name], node)
+		}
+	}
+	seen := map[string]bool{}
+	for path, data := range contents {
+		if filepath.Ext(path) != ".go" {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, data, 0)
+		if err != nil {
+			continue
+		}
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			var sources []domain.ProgramNode
+			for _, node := range nodesByFile[path] {
+				if node.Name == fn.Name.Name {
+					sources = append(sources, node)
+				}
+			}
+			if len(sources) != 1 {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				ident, ok := call.Fun.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				targets := nodesByName[ident.Name]
+				if len(targets) != 1 || targets[0].ID == sources[0].ID {
+					return true
+				}
+				key := sources[0].ID + ":" + targets[0].ID
+				if seen[key] {
+					return true
+				}
+				seen[key] = true
+				s.Relationships = append(s.Relationships, domain.Relationship{ID: edgeID(sources[0].ID, "CALLS", targets[0].ID), SourceType: sources[0].Type, SourceID: sources[0].ID, TargetType: targets[0].Type, TargetID: targets[0].ID, Type: "CALLS", RevisionID: s.RevisionID, Metadata: map[string]string{"provenance": "verified_static_call", "verification": "Go AST CallExpr with uniquely resolved identifier"}})
+				return true
+			})
+		}
+	}
 }
 
 func excludedDir(name string) bool {

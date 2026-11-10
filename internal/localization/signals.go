@@ -5,13 +5,16 @@ import "github.com/causent/malenia/internal/domain"
 // CandidateContext is the only input signal evaluators may inspect. Keeping
 // evaluators separate makes each score dimension auditable and replaceable.
 type CandidateContext struct {
-	Execution          bool
-	Changed            bool
-	Expanded           bool
-	Behavioural        bool
-	Evidence           []domain.ID
-	RuntimeEvidence    []domain.ID
-	HistoricalEvidence []domain.ID
+	Execution           bool
+	Changed             bool
+	Expanded            bool
+	Behavioural         bool
+	Evidence            []domain.ID
+	ChangeEvidence      []domain.ID
+	DependencyEvidence  []domain.ID
+	BehaviouralEvidence []domain.ID
+	RuntimeEvidence     []domain.ID
+	HistoricalEvidence  []domain.ID
 }
 
 type Signal struct {
@@ -32,19 +35,20 @@ func (executionEvaluator) Evaluate(c CandidateContext) Signal {
 type changeEvaluator struct{}
 
 func (changeEvaluator) Evaluate(c CandidateContext) Signal {
-	return Signal{Dimension: "change", Value: 0.9, Available: c.Changed, Evidence: c.Evidence}
+	return Signal{Dimension: "change", Value: 0.9, Available: c.Changed && len(c.ChangeEvidence) > 0, Evidence: c.ChangeEvidence}
 }
 
 type dependencyEvaluator struct{}
 
 func (dependencyEvaluator) Evaluate(c CandidateContext) Signal {
-	return Signal{Dimension: "dependency", Value: 0.6, Available: c.Expanded, Evidence: c.Evidence}
+	return Signal{Dimension: "dependency", Value: 0.6, Available: c.Expanded && len(c.DependencyEvidence) > 0, Evidence: c.DependencyEvidence}
 }
 
 type behaviouralEvaluator struct{}
 
 func (behaviouralEvaluator) Evaluate(c CandidateContext) Signal {
-	return Signal{Dimension: "behavioural", Value: 0.7, Available: c.Behavioural, Evidence: c.Evidence}
+	evidence := c.BehaviouralEvidence
+	return Signal{Dimension: "behavioural", Value: 0.7, Available: c.Behavioural && len(evidence) > 0, Evidence: evidence}
 }
 
 type historicalEvaluator struct{}
