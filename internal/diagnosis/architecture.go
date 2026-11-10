@@ -22,6 +22,7 @@ var (
 	genericFailureLine = regexp.MustCompile(`(?m)^FAIL\s+([^ (]+)`)
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
+	tapFailure         = regexp.MustCompile(`(?m)^\s*not ok\b(?:\s+[0-9]+)?(?:\s+-\s+)?([^\r\n]*)`)
 	raceFailure        = regexp.MustCompile(`(?m)^WARNING: DATA RACE\s*$`)
 	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\s+\+0x[0-9a-fA-F]+)?\s*$`)
 	raceTestLine       = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT)\s+(.+)$`)
@@ -274,7 +275,7 @@ func normalizeRacePath(path string) string {
 }
 
 func isCIEvidenceKind(kind string) bool {
-	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact"
+	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact" || kind == "tap_report"
 }
 
 func externalFailureEvidence(items []EvidenceItem) bool {
@@ -365,6 +366,9 @@ func parseFailureObservations(text string) []failureObservation {
 	}
 	for _, match := range jestFailure.FindAllStringSubmatch(text, -1) {
 		add(match[1], match[1])
+	}
+	for _, match := range tapFailure.FindAllStringSubmatch(text, -1) {
+		add(match[1], "TAP test failed: "+match[1])
 	}
 	if raceFailure.MatchString(text) {
 		add("race detector", "Go race detector reported DATA RACE")

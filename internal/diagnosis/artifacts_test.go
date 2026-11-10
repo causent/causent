@@ -162,3 +162,14 @@ func TestArtifactRegistryMarksMalformedRecognizedFormat(t *testing.T) {
 		t.Fatalf("malformed result = %#v", result)
 	}
 }
+
+func TestTAPArtifactParticipatesInCIFailureClassification(t *testing.T) {
+	text := "TAP version 13\n1..1\nnot ok 1 - parser rejects input\n"
+	if !isCIEvidenceKind("tap_report") {
+		t.Fatal("TAP report is not recognized as CI evidence")
+	}
+	observations := parseFailureObservations(text)
+	if len(observations) != 1 || observations[0].Test != "parser rejects input" {
+		t.Fatalf("TAP failure was not normalized: %#v", observations)
+	}
+}
