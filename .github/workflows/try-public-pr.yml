@@ -98,6 +98,7 @@ jobs:
       - name: Validate inputs and resolve PR revisions
         id: pr
         env:
+          GH_TOKEN: ${{ github.token }}
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           PULL_NUMBER: ${{ inputs.pull_request }}
         run: |
@@ -114,6 +115,7 @@ jobs:
           http_status="$(curl --silent --show-error --location --retry 2 --retry-all-errors \
             "https://api.github.com/repos/$TARGET_REPOSITORY/pulls/$PULL_NUMBER" \
             -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H 'User-Agent: Malenia-GitHub-Actions' \
             -o "$metadata" -w '%{http_code}')"
           if [[ "$http_status" != 200 ]]; then
