@@ -108,6 +108,20 @@ func TestManualDiagnosisWorkflow(t *testing.T) {
 	}
 }
 
+func TestPublicTrialCanUseSourceBuildAndVerifiedRepair(t *testing.T) {
+	content := readWorkflow(t, ".github/workflows/try-public-pr.yml")
+	for check, passed := range map[string]bool{
+		"source build input":    strings.Contains(content, "source_build:"),
+		"repair input":          strings.Contains(content, "repair:"),
+		"passes repair flag":    strings.Contains(content, "args+=(--repair)"),
+		"renders repair result": strings.Contains(content, "Repair and verification") && strings.Contains(content, ".repair.verification_status"),
+	} {
+		if !passed {
+			t.Errorf("public trial check failed: %s", check)
+		}
+	}
+}
+
 func TestReleaseWorkflowPublishesBinary(t *testing.T) {
 	content := readWorkflow(t, ".github/workflows/release.yml")
 	checks := map[string]bool{

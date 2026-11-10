@@ -417,6 +417,12 @@ partial or inconclusive report instead. Full-suite reruns are not the default;
 reproduction is targeted and equivalent completed executions are reused only
 when revision, command, and execution identity match.
 
+`malenia diagnose` is non-mutating by default. Use `--repair` only for an
+explicit bounded repair attempt. The isolated patch and its verification status
+are attached to the same report and bundle; the original checkout is never
+modified. A verified patch does not independently prove root cause or PR
+causality.
+
 ## Configuration
 
 Malenia supports repository configuration through `.malenia.yml` or

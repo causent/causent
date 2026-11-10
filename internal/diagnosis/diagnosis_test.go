@@ -556,6 +556,37 @@ func TestBundleCreationAndIntegrity(t *testing.T) {
 	}
 }
 
+func TestUpdateBundleReportPreservesEventsAndChecksums(t *testing.T) {
+	dir, _, _ := failingRepo(t)
+	bundleDir := filepath.Join(t.TempDir(), "bundle")
+	report, err := Run(context.Background(), Config{
+		RepoPath: dir, Command: []string{"sh", "run.sh"}, Attempts: 1,
+		Timeout: 30 * time.Second, Executor: testExecutor(t), BundleDir: bundleDir,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	eventsBefore := readEvents(t, filepath.Join(bundleDir, "events.jsonl"))
+	report.Repair = &RepairAssessment{Status: "patch_verified", PatchID: "patch-1", Verification: "passed"}
+	if err := UpdateBundleReport(report, bundleDir); err != nil {
+		t.Fatalf("update bundle: %v", err)
+	}
+	eventsAfter := readEvents(t, filepath.Join(bundleDir, "events.jsonl"))
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("event count changed from %d to %d", len(eventsBefore), len(eventsAfter))
+	}
+	manifest, err := ReadManifest(bundleDir)
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	if manifest.Diagnosis.Repair == nil || manifest.Diagnosis.Repair.PatchID != "patch-1" {
+		t.Fatalf("repair was not persisted: %+v", manifest.Diagnosis.Repair)
+	}
+	if err := VerifyChecksums(bundleDir); err != nil {
+		t.Fatalf("checksums after update: %v", err)
+	}
+}
+
 func TestReplayMatchesRecordedConclusion(t *testing.T) {
 	dir, _, _ := failingRepo(t)
 	bundleDir := filepath.Join(t.TempDir(), "bundle")

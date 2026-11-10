@@ -69,6 +69,11 @@ on:
         required: false
         default: false
         type: boolean
+      repair:
+        description: Explicitly run bounded isolated repair verification and include its result
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -338,6 +343,9 @@ jobs:
           if [ "$evidence_mode" != "true" ] && [ "${{ inputs.fast_path }}" = "true" ]; then
             args+=(--fast-path)
           fi
+          if [ "${{ inputs.repair }}" = "true" ]; then
+            args+=(--repair)
+          fi
           if [ -n "$MALENIA_DOCKER_IMAGE" ]; then
             args+=(--executor docker --image "$MALENIA_DOCKER_IMAGE")
           fi
@@ -414,6 +422,19 @@ jobs:
             if [ -n "$hypotheses" ]; then
               echo '**Causal hypotheses:**'
               echo "$hypotheses"
+              echo
+            fi
+            repair_summary="$(jq -r '
+              if .repair then
+                "**Status:** " + (.repair.status // "unknown")
+                + (if .repair.patch_id then "\n\n**Patch:** `" + .repair.patch_id + "`\n\n**Verification:** " + (.repair.verification_status // "not attempted") else "" end)
+                + (if ((.repair.changed_files // []) | length) > 0 then "\n\n**Changed files:** " + ((.repair.changed_files // []) | join(", ")) else "" end)
+                + (if ((.repair.limitations // []) | length) > 0 then "\n\n**Limitations:** " + ((.repair.limitations // []) | join("; ")) else "" end)
+              else empty end
+            ' "$report" 2>/dev/null || true)"
+            if [ -n "$repair_summary" ]; then
+              echo '**Repair and verification:**'
+              echo "$repair_summary"
               echo
             fi
             episodes="$(jq -r '.failure_episodes[]? | "- **" + (.test_identifier // "unknown failure") + "** — " + (.failure_message // "observed CI failure")' "$report" 2>/dev/null || true)"

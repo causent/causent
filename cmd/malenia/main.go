@@ -1,13 +1,13 @@
 // Command malenia is the diagnosis-first entry point.
 //
-//	malenia diagnose --repo <path> --command "<failing command>"
+//	malenia diagnose --repo <path> --command "<failing command>" [--repair]
 //	malenia replay ./bundle
 //	malenia repair --repo <path> --command "<command>"   # explicit opt-in
 //
 // diagnose is the default workflow: reproduce, classify, localize, and produce
 // a replayable bundle. It never edits the repository and never claims a fix.
-// repair keeps the older patch-generating workflow and must be requested
-// explicitly.
+// --repair is an explicit opt-in that attaches isolated patch verification to
+// the same report; it never applies the patch to the checkout.
 package main
 
 import (
@@ -193,6 +193,8 @@ func runDiagnose(args []string) {
 	ciLog := fs.String("ci-log", "", "bounded original CI log to include as evidence")
 	junit := fs.String("junit", "", "JUnit XML test report to include as evidence")
 	artifactDir := fs.String("artifact-dir", "", "directory of bounded CI artifacts to ingest")
+	repair := fs.Bool("repair", false, "run bounded isolated repair verification and attach the result to the diagnosis")
+	repairMaxAttempts := fs.Int("repair-max-attempts", 0, "maximum isolated repair attempts (default from config or 2)")
 	fs.Parse(args)
 
 	set := map[string]bool{}
@@ -239,6 +241,9 @@ func runDiagnose(args []string) {
 	}
 	if !set["agent"] {
 		*useAgent = repoCfg.Agent
+	}
+	if !set["repair-max-attempts"] && repoCfg.Repair.MaxAttempts > 0 {
+		*repairMaxAttempts = repoCfg.Repair.MaxAttempts
 	}
 	probes = append(probes, repoCfg.Probes...)
 
@@ -376,6 +381,39 @@ func runDiagnose(args []string) {
 			return
 		}
 		os.Exit(1)
+	}
+	if *repair {
+		repairResult := &diagnosis.RepairAssessment{Status: "not_attempted"}
+		if len(cmd) == 0 {
+			repairResult.Limitations = []string{"repair requires a configured failing command"}
+		} else if report.Refused {
+			repairResult.Limitations = []string{"repair was not attempted because the diagnosis was refused: " + report.RefusalReason}
+		} else {
+			provider := engine.ProviderFromEnvironment()
+			repairInvestigator := &engine.Investigator{
+				Store:               store,
+				Executor:            executor,
+				Provider:            provider,
+				PatchAttempts:       *repairMaxAttempts,
+				DisallowTestChanges: true,
+			}
+			_, result, repairErr := repairInvestigator.Investigate(runCtx, repoPath, cmd, *timeout, *maxCommits)
+			if repairErr != nil {
+				repairResult.Status = "failed"
+				repairResult.Limitations = []string{"repair investigation failed: " + repairErr.Error()}
+			} else {
+				repairResult = diagnosis.RepairFromResult(result)
+			}
+		}
+		report.Repair = repairResult
+		if cfg.BundleDir != "" {
+			if bundleErr := diagnosis.UpdateBundleReport(report, cfg.BundleDir); bundleErr != nil {
+				report.Uncertainty = append(report.Uncertainty, "repair result could not be added to bundle: "+bundleErr.Error())
+			} else {
+				report.BundlePath = cfg.BundleDir
+				report.ReplayCommand = "malenia replay " + cfg.BundleDir
+			}
+		}
 	}
 
 	if *jsonOutput {
@@ -711,6 +749,18 @@ func diagnosisText(report diagnosis.Report) string {
 			fmt.Fprintf(&b, "  missing evidence: %s\n", strings.Join(report.RootCause.MissingEvidence, "; "))
 		}
 		fmt.Fprintf(&b, "  causality: %s; verification: %s\n", valueOr(report.RootCause.CausalityStatus, "unknown"), valueOr(report.RootCause.VerificationStatus, "unknown"))
+	}
+	if report.Repair != nil {
+		fmt.Fprintf(&b, "\nrepair: %s\n", report.Repair.Status)
+		if report.Repair.PatchID != "" {
+			fmt.Fprintf(&b, "  patch: %s; verification: %s\n", report.Repair.PatchID, valueOr(report.Repair.Verification, "not attempted"))
+		}
+		if len(report.Repair.ChangedFiles) > 0 {
+			fmt.Fprintf(&b, "  changed files: %s\n", strings.Join(report.Repair.ChangedFiles, ", "))
+		}
+		for _, limitation := range report.Repair.Limitations {
+			fmt.Fprintf(&b, "  limitation: %s\n", limitation)
+		}
 	}
 	usefulHypotheses := make([]domain.Hypothesis, 0, len(report.Hypotheses))
 	for _, hypothesis := range report.Hypotheses {

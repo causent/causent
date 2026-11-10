@@ -198,6 +198,24 @@ type RootCauseAssessment struct {
 	VerificationStatus string             `json:"verification_status"`
 }
 
+// RepairAssessment records an explicitly requested repair attempt. A repair
+// result is deliberately separate from root-cause confidence: a patch can pass
+// its verification command without proving that the reported mechanism is the
+// root cause or that a PR introduced it.
+type RepairAssessment struct {
+	Status           string   `json:"status"`
+	InvestigationID  string   `json:"investigation_id,omitempty"`
+	Reproduced       bool     `json:"reproduced"`
+	PatchID          string   `json:"patch_id,omitempty"`
+	PatchStatus      string   `json:"patch_status,omitempty"`
+	ChangedFiles     []string `json:"changed_files,omitempty"`
+	Diff             string   `json:"diff,omitempty"`
+	Explanation      string   `json:"explanation,omitempty"`
+	Verification     string   `json:"verification_status,omitempty"`
+	VerificationText string   `json:"verification_report,omitempty"`
+	Limitations      []string `json:"limitations,omitempty"`
+}
+
 // Environment is the bounded execution context. Secrets are never recorded.
 type Environment struct {
 	OS            string    `json:"os"`
@@ -263,6 +281,7 @@ type Report struct {
 	FailureEpisodes            []domain.FailureEpisode        `json:"failure_episodes,omitempty"`
 	FailureIncidents           []FailureIncident              `json:"failure_incidents,omitempty"`
 	RootCause                  RootCauseAssessment            `json:"root_cause"`
+	Repair                     *RepairAssessment              `json:"repair,omitempty"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
 	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`

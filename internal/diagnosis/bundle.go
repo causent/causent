@@ -126,6 +126,24 @@ func ReadManifest(dir string) (Manifest, error) {
 	return manifest, nil
 }
 
+// UpdateBundleReport refreshes only the structured diagnosis files after an
+// explicit post-diagnosis stage such as isolated repair verification. Existing
+// event and evidence files are preserved, then checksums are regenerated.
+func UpdateBundleReport(report Report, dir string) error {
+	manifest, err := ReadManifest(dir)
+	if err != nil {
+		return err
+	}
+	manifest.Diagnosis = report
+	if err := writeJSONFile(filepath.Join(dir, "manifest.json"), manifest); err != nil {
+		return err
+	}
+	if err := writeJSONFile(filepath.Join(dir, "report.json"), report); err != nil {
+		return err
+	}
+	return WriteChecksums(dir)
+}
+
 // WriteChecksums hashes every bundle file except checksums.txt itself.
 func WriteChecksums(dir string) error {
 	files, err := bundleFiles(dir)
