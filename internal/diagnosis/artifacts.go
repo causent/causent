@@ -179,6 +179,8 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		structuredTraceArtifactDecoder{},
 		openTelemetryArtifactDecoder{},
 		nativeGoTraceArtifactDecoder{},
+		containerLogArtifactDecoder{},
+		flamegraphArtifactDecoder{},
 		jsonArtifactDecoder{},
 		textArtifactDecoder{},
 	}}
@@ -578,6 +580,54 @@ func (nativeGoTraceArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte)
 }
 func (nativeGoTraceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
 	return ArtifactIngestionResult{Status: ArtifactUnsupported, Limitations: []string{"native Go execution trace binary detected; version-aware binary parser is not available, so no lifecycle or causal observations were produced"}, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "execution_trace_artifact", ClaimKind: "ExecutionTraceArtifact", Basis: "Observed", Detail: "Native Go execution trace artifact preserved without parsing", Provenance: desc.StorageRef}}}
+}
+
+type containerLogArtifactDecoder struct{}
+
+func (containerLogArtifactDecoder) Name() string    { return "container-json-log" }
+func (containerLogArtifactDecoder) Version() string { return "v1" }
+func (containerLogArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	if count := containerLogEntryCount(data); count > 0 {
+		return ArtifactDetection{Format: "container_json_log", Category: ArtifactInfra, Confidence: "high", Reason: "container log records with timestamp, stream, and log fields"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (containerLogArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	count := containerLogEntryCount(data)
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "container_log_observation", ClaimKind: "InfrastructureLogObservation", Basis: "Observed", Detail: fmt.Sprintf("container log with %d record(s): %s", count, string(data)), Provenance: desc.StorageRef}}}
+}
+
+func containerLogEntryCount(data []byte) int {
+	type record struct {
+		Time   string `json:"time"`
+		Stream string `json:"stream"`
+		Log    string `json:"log"`
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		var entry record
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Time != "" && entry.Stream != "" && entry.Log != "" {
+			count++
+		}
+	}
+	return count
+}
+
+type flamegraphArtifactDecoder struct{}
+
+var collapsedStackLine = regexp.MustCompile(`(?m)^[^\r\n;]+(?:;[^\r\n;]+)+\s+[0-9]+(?:\.[0-9]+)?\s*$`)
+
+func (flamegraphArtifactDecoder) Name() string    { return "collapsed-stack" }
+func (flamegraphArtifactDecoder) Version() string { return "v1" }
+func (flamegraphArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	if matches := collapsedStackLine.FindAllString(string(data), -1); len(matches) > 0 {
+		return ArtifactDetection{Format: "collapsed_stacks", Category: ArtifactPerformance, Confidence: "high", Reason: "collapsed stack paths with sample counts"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (flamegraphArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	count := len(collapsedStackLine.FindAllString(string(data), -1))
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "performance_profile", ClaimKind: "PerformanceProfileObservation", Basis: "Observed", Detail: fmt.Sprintf("collapsed stack profile with %d sample path(s): %s", count, string(data)), Provenance: desc.StorageRef}}}
 }
 
 type jsonArtifactDecoder struct{}

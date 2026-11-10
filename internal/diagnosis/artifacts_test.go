@@ -168,6 +168,8 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "trace", data: `{"format_version":"structured-trace-v1","events":[{"goroutine_id":7,"kind":"created","timestamp":10}]}`, format: "structured-trace-v1", kind: "execution_trace_observation", cat: ArtifactTrace},
 		{name: "otlp", data: `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"request","traceId":"abc"}]}]}]}`, format: "opentelemetry_json", kind: "execution_trace_observation", cat: ArtifactTrace},
 		{name: "python-exception", data: "Traceback (most recent call last):\n  File \"app.py\", line 4\nValueError: bad input\n", format: "runtime_exception_text", kind: "runtime_exception_report", cat: ArtifactRuntime},
+		{name: "container-log", data: "{\"time\":\"2026-01-01T00:00:00Z\",\"stream\":\"stderr\",\"log\":\"failure\\n\"}\n", format: "container_json_log", kind: "container_log_observation", cat: ArtifactInfra},
+		{name: "profile", data: "main;worker;run 10\nmain;worker;wait 2\n", format: "collapsed_stacks", kind: "performance_profile", cat: ArtifactPerformance},
 	}
 	registry := NewArtifactDecoderRegistry()
 	for _, tc := range tests {
