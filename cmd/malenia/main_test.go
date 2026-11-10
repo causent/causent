@@ -10,7 +10,7 @@ import (
 )
 
 func TestDiagnosisTextUsesOneIncidentFindingAndPreservesEvidence(t *testing.T) {
-	data, err := os.ReadFile("../../internal/diagnosis/testdata/kubernetes-run44-contract.json")
+	data, err := os.ReadFile("../../internal/diagnosis/testdata/kubernetes-run45-contract.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,5 +30,8 @@ func TestDiagnosisTextUsesOneIncidentFindingAndPreservesEvidence(t *testing.T) {
 	}
 	if strings.Contains(text, "Candidate location X may explain") {
 		t.Fatalf("generic candidate hypothesis was rendered:\n%s", text)
+	}
+	if strings.Contains(text, "assessed hypotheses") {
+		t.Fatalf("empty or non-falsifiable hypothesis section was rendered:\n%s", text)
 	}
 }

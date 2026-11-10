@@ -705,12 +705,15 @@ func diagnosisText(report diagnosis.Report) string {
 			}
 		}
 	}
-	if len(report.Hypotheses) > 0 {
+	usefulHypotheses := make([]domain.Hypothesis, 0, len(report.Hypotheses))
+	for _, hypothesis := range report.Hypotheses {
+		if isFalsifiableHypothesis(hypothesis) {
+			usefulHypotheses = append(usefulHypotheses, hypothesis)
+		}
+	}
+	if len(usefulHypotheses) > 0 {
 		b.WriteString("\nassessed hypotheses (falsifiable mechanisms only):\n")
-		for _, hypothesis := range report.Hypotheses {
-			if !isFalsifiableHypothesis(hypothesis) {
-				continue
-			}
+		for _, hypothesis := range usefulHypotheses {
 			fmt.Fprintf(&b, "  %s v%d [%s relevance %.2f]: %s\n    supporting evidence: %s\n", hypothesis.ID, hypothesis.Version, hypothesis.Status, hypothesis.Relevance, hypothesis.Statement, strings.Join(idsToStrings(hypothesis.SupportingEvidenceIDs), ", "))
 		}
 	}

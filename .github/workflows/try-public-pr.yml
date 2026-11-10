@@ -398,10 +398,21 @@ jobs:
               echo "$files"
               echo
             fi
-            claims="$(jq -r '.claims[]? | "- " + .statement' "$report")"
-            if [ -n "$claims" ]; then
-              echo '**Hypotheses:**'
-              echo "$claims"
+            hypotheses="$(jq -r '
+              .hypotheses[]?
+              | select((.statement // "") != "")
+              | select((.supporting_evidence_ids // []) | length > 0)
+              | select((.contradicting_evidence_ids // []) | length > 0)
+              | select((.predicted_observations // []) | length > 0)
+              | select(((.statement // "") | startswith("Candidate location ")) | not)
+              | "- " + .statement
+                + " (supporting: " + ((.supporting_evidence_ids // []) | join(", "))
+                + "; contradicting: " + ((.contradicting_evidence_ids // []) | join(", "))
+                + "; distinguishes: " + ((.predicted_observations // []) | join("; ")) + ")"
+            ' "$report" 2>/dev/null || true)"
+            if [ -n "$hypotheses" ]; then
+              echo '**Causal hypotheses:**'
+              echo "$hypotheses"
               echo
             fi
             episodes="$(jq -r '.failure_episodes[]? | "- **" + (.test_identifier // "unknown failure") + "** — " + (.failure_message // "observed CI failure")' "$report" 2>/dev/null || true)"
