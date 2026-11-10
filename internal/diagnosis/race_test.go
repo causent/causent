@@ -25,6 +25,9 @@ func TestParseRaceReportsPreservesReadWriteAndCreationStacks(t *testing.T) {
 	if reports[0].ReadAddress != "0x00c0006135c0" || reports[0].WriteAddress != reports[0].ReadAddress {
 		t.Fatalf("race addresses were not preserved: %#v", reports[0])
 	}
+	if reports[0].ReadGoroutineID != 32511 || reports[0].WriteGoroutineID != 31033 {
+		t.Fatalf("race goroutine IDs were not preserved: %#v", reports[0])
+	}
 	if reports[0].ReadFrameRole != "goroutine_creation_or_wrapper" || reports[0].WriteFrameRole != "goroutine_creation_or_wrapper" {
 		t.Fatalf("wrapper frames were not classified: %#v", reports[0])
 	}

@@ -47,6 +47,13 @@ type Evidence struct {
 	RunID              string
 	Ordering           string
 	Revision           string
+	ExecutionID        string
+	BuildID            string
+	SourceRevision     string
+	TestAttemptID      string
+	ArtifactRef        string
+	ParserVersion      string
+	TraceFormat        string
 }
 
 // EvidenceType enumerates the types of evidence.

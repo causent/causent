@@ -368,6 +368,19 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
+	// Runtime metadata is additive and deliberately does not advance the
+	// historical schema version. This keeps version-seven databases compatible
+	// while creating the table for fresh and existing installations.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS evidence_runtime_metadata (
+		evidence_id TEXT PRIMARY KEY,
+		execution_id TEXT NOT NULL DEFAULT '', build_id TEXT NOT NULL DEFAULT '',
+		source_revision TEXT NOT NULL DEFAULT '', test_attempt_id TEXT NOT NULL DEFAULT '',
+		artifact_ref TEXT NOT NULL DEFAULT '', parser_version TEXT NOT NULL DEFAULT '',
+		trace_format TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY(evidence_id) REFERENCES evidence(id)
+	)`); err != nil {
+		return fmt.Errorf("create runtime evidence metadata: %w", err)
+	}
 
 	//Set artifacts root
 	artifactsRoot := os.Getenv("MALENIA_ARTIFACTS_ROOT")
@@ -536,6 +549,10 @@ func (s *Store) SaveEvidence(e domain.Evidence) error {
 		return err
 	}
 	_, err = s.db.Exec(`INSERT INTO evidence_contract (evidence_id, claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET claim_kind=excluded.claim_kind, basis=excluded.basis, declaration_id=excluded.declaration_id, access_id=excluded.access_id, instance_id=excluded.instance_id, run_id=excluded.run_id, ordering=excluded.ordering, revision=excluded.revision`, e.ID, e.ClaimKind, e.Basis, e.DeclarationID, e.AccessID, e.InstanceID, e.RunID, e.Ordering, e.Revision)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO evidence_runtime_metadata (evidence_id, execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET execution_id=excluded.execution_id, build_id=excluded.build_id, source_revision=excluded.source_revision, test_attempt_id=excluded.test_attempt_id, artifact_ref=excluded.artifact_ref, parser_version=excluded.parser_version, trace_format=excluded.trace_format`, e.ID, e.ExecutionID, e.BuildID, e.SourceRevision, e.TestAttemptID, e.ArtifactRef, e.ParserVersion, e.TraceFormat)
 	return err
 }
 
@@ -565,6 +582,7 @@ func (s *Store) ListEvidence(invID domain.ID) ([]domain.Evidence, error) {
 			return nil, err
 		}
 		_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, e.ID).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
+		_ = s.db.QueryRow(`SELECT execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format FROM evidence_runtime_metadata WHERE evidence_id=?`, e.ID).Scan(&e.ExecutionID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -584,6 +602,7 @@ func (s *Store) GetEvidence(id domain.ID) (domain.Evidence, error) {
 	_ = s.db.QueryRow(`SELECT provenance FROM evidence_provenance WHERE evidence_id=?`, id).Scan(&provenance)
 	e.Provenance = provenance
 	_ = s.db.QueryRow(`SELECT claim_kind, basis, declaration_id, access_id, instance_id, run_id, ordering, revision FROM evidence_contract WHERE evidence_id=?`, id).Scan(&e.ClaimKind, &e.Basis, &e.DeclarationID, &e.AccessID, &e.InstanceID, &e.RunID, &e.Ordering, &e.Revision)
+	_ = s.db.QueryRow(`SELECT execution_id, build_id, source_revision, test_attempt_id, artifact_ref, parser_version, trace_format FROM evidence_runtime_metadata WHERE evidence_id=?`, id).Scan(&e.ExecutionID, &e.BuildID, &e.SourceRevision, &e.TestAttemptID, &e.ArtifactRef, &e.ParserVersion, &e.TraceFormat)
 	return e, nil
 }
 

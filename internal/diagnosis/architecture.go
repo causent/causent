@@ -11,6 +11,7 @@ import (
 
 	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/localization"
+	"github.com/causent/malenia/internal/persistence"
 )
 
 var (
@@ -25,7 +26,7 @@ var (
 	raceFunction       = regexp.MustCompile(`^\s*(.+?\([^)]*\))(?:\s+\+0x[0-9a-fA-F]+)?\s*$`)
 	raceTestLine       = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT)\s+(.+)$`)
 	raceLocationLine   = regexp.MustCompile(`^\s+([^\s()]+\.go):([0-9]+)\s+\+0x[0-9a-fA-F]+`)
-	raceAddressLine    = regexp.MustCompile(`(?i)^(?:Previous )?(?:read|write) at (0x[0-9a-fA-F]+)`)
+	raceAccessHeader   = regexp.MustCompile(`(?i)^(?:Previous )?(read|write) at (0x[0-9a-fA-F]+)?(?: by goroutine ([0-9]+))?`)
 )
 
 type failureObservation struct {
@@ -64,15 +65,21 @@ func parseRaceReports(text string) []RaceReport {
 			section = "read"
 			pendingFunction = ""
 			current.ReadAccessType = "read"
-			if match := raceAddressLine.FindStringSubmatch(trimmed); len(match) > 1 {
-				current.ReadAddress = match[1]
+			if match := raceAccessHeader.FindStringSubmatch(trimmed); len(match) > 1 {
+				current.ReadAddress = match[2]
+				if len(match) > 3 && match[3] != "" {
+					current.ReadGoroutineID = int64(atoi(match[3]))
+				}
 			}
 		case strings.HasPrefix(trimmed, "Previous write at"), strings.HasPrefix(trimmed, "Write at"):
 			section = "write"
 			pendingFunction = ""
 			current.WriteAccessType = "write"
-			if match := raceAddressLine.FindStringSubmatch(trimmed); len(match) > 1 {
-				current.WriteAddress = match[1]
+			if match := raceAccessHeader.FindStringSubmatch(trimmed); len(match) > 1 {
+				current.WriteAddress = match[2]
+				if len(match) > 3 && match[3] != "" {
+					current.WriteGoroutineID = int64(atoi(match[3]))
+				}
 			}
 		case strings.Contains(trimmed, " created at:"):
 			section = "create"
@@ -367,11 +374,19 @@ func (d *Diagnoser) persistReportEvidence(report *Report) error {
 		return nil
 	}
 	for _, item := range report.Evidence {
-		if err := d.cfg.Store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: "diagnosis report evidence"}); err != nil {
+		if err := saveEvidenceItem(d.cfg.Store, report, item); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func saveEvidenceItem(store *persistence.Store, report *Report, item EvidenceItem) error {
+	provenance := item.Provenance
+	if provenance == "" {
+		provenance = "diagnosis report evidence"
+	}
+	return store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: provenance, ClaimKind: item.ClaimKind, Basis: item.Basis, DeclarationID: item.DeclarationID, AccessID: item.AccessID, InstanceID: item.InstanceID, RunID: item.RunID, Ordering: item.Ordering, Revision: item.Revision, ExecutionID: item.ExecutionID, BuildID: item.BuildID, SourceRevision: item.SourceRevision, TestAttemptID: item.TestAttemptID, ArtifactRef: item.ArtifactID, ParserVersion: item.ParserVersion, TraceFormat: item.TraceFormat})
 }
 
 func (d *Diagnoser) persistFailureEpisodes(report *Report, executionID string, baseline Baseline) ([]domain.FailureEpisode, error) {

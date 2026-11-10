@@ -117,6 +117,20 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 			report.RaceReports = append(report.RaceReports, race)
 		}
 	}
+	if len(report.RaceReports) > 0 {
+		runtimeExecution := ExecutionIdentity{WorkflowRunID: externalExecutionID, ExecutionID: executionID, SourceRevision: env.HeadCommit}
+		graph := IngestRuntimeRaceReports(report.RaceReports, runtimeExecution, "ci-race-report")
+		report.RuntimeEvidence = &graph
+		runtimeItems := RuntimeEvidenceItems(graph, "ci-race-report")
+		report.Evidence = append(report.Evidence, runtimeItems...)
+		if persist {
+			for _, item := range runtimeItems {
+				if err := saveEvidenceItem(d.cfg.Store, report, item); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	report.FailureIncidents = buildFailureIncidents(report)
 	stage.Count("episodes", len(failures))
 	stage.Done("completed", nil)

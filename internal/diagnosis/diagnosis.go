@@ -97,21 +97,28 @@ func (a Attempt) Passed() bool {
 // EvidenceItem is a fact recorded during the diagnosis. Hypotheses reference
 // these by ID; they never replace them.
 type EvidenceItem struct {
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	Source        string   `json:"source"`
-	Digest        string   `json:"digest"`
-	Detail        string   `json:"detail"`
-	Provenance    string   `json:"provenance,omitempty"`
-	Revision      string   `json:"revision,omitempty"`
-	Limitations   []string `json:"limitations,omitempty"`
-	ClaimKind     string   `json:"claim_kind,omitempty"`
-	Basis         string   `json:"basis,omitempty"`
-	DeclarationID string   `json:"declaration_id,omitempty"`
-	AccessID      string   `json:"access_id,omitempty"`
-	InstanceID    string   `json:"instance_id,omitempty"`
-	RunID         string   `json:"run_id,omitempty"`
-	Ordering      string   `json:"ordering,omitempty"`
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Source         string   `json:"source"`
+	Digest         string   `json:"digest"`
+	Detail         string   `json:"detail"`
+	Provenance     string   `json:"provenance,omitempty"`
+	Revision       string   `json:"revision,omitempty"`
+	Limitations    []string `json:"limitations,omitempty"`
+	ClaimKind      string   `json:"claim_kind,omitempty"`
+	Basis          string   `json:"basis,omitempty"`
+	DeclarationID  string   `json:"declaration_id,omitempty"`
+	AccessID       string   `json:"access_id,omitempty"`
+	InstanceID     string   `json:"instance_id,omitempty"`
+	RunID          string   `json:"run_id,omitempty"`
+	Ordering       string   `json:"ordering,omitempty"`
+	ExecutionID    string   `json:"execution_id,omitempty"`
+	BuildID        string   `json:"build_id,omitempty"`
+	SourceRevision string   `json:"source_revision,omitempty"`
+	TestAttemptID  string   `json:"test_attempt_id,omitempty"`
+	ArtifactID     string   `json:"artifact_id,omitempty"`
+	ParserVersion  string   `json:"parser_version,omitempty"`
+	TraceFormat    string   `json:"trace_format,omitempty"`
 }
 
 // RaceReport preserves the two sides of a Go race. A stack frame is evidence,
@@ -123,6 +130,8 @@ type RaceReport struct {
 	WriteAddress            string                 `json:"write_address,omitempty"`
 	ReadAccessType          string                 `json:"read_access_type,omitempty"`
 	WriteAccessType         string                 `json:"write_access_type,omitempty"`
+	ReadGoroutineID         int64                  `json:"read_goroutine_id,omitempty"`
+	WriteGoroutineID        int64                  `json:"write_goroutine_id,omitempty"`
 	ReadFrameRole           string                 `json:"read_frame_role,omitempty"`
 	WriteFrameRole          string                 `json:"write_frame_role,omitempty"`
 	ReadStack               []localization.Frame   `json:"read_stack,omitempty"`
@@ -367,6 +376,7 @@ type Report struct {
 	Localization               Localization                       `json:"localization"`
 	Evidence                   []EvidenceItem                     `json:"evidence"`
 	RaceReports                []RaceReport                       `json:"race_reports,omitempty"`
+	RuntimeEvidence            *RuntimeEvidenceGraph              `json:"runtime_evidence,omitempty"`
 	NormalizedEvidence         *NormalizedEvidence                `json:"normalized_evidence,omitempty"`
 	Candidates                 []domain.CandidateLocation         `json:"candidates,omitempty"`
 	Deltas                     []domain.CodeDelta                 `json:"deltas,omitempty"`
