@@ -23,6 +23,7 @@ type StackFrame struct {
 }
 
 var pythonFrameRE = regexp.MustCompile(`^\s*File "([^"]+)", line ([0-9]+), in (.+)$`)
+var pythonImportRE = regexp.MustCompile(`^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_.]*)`)
 
 // ParsePythonStackTrace extracts Python traceback frames without executing
 // anything or trusting paths outside the repository.
@@ -85,20 +86,23 @@ func repoFile(repo, candidate string) (string, bool) {
 	return full, err == nil && !info.IsDir()
 }
 
-func collectPythonTests(repo string, frames []StackFrame) string {
+func collectPythonTests(repo string, frames []StackFrame, command []string) string {
 	var roots []string
 	for _, frame := range frames {
 		if strings.HasSuffix(frame.File, ".py") {
 			roots = append(roots, frame.File)
 		}
 	}
+	for _, arg := range command {
+		if strings.HasSuffix(arg, ".py") {
+			roots = append(roots, arg)
+		}
+	}
 	var b strings.Builder
 	seen := map[string]bool{}
-	for _, root := range roots {
+	for index := 0; index < len(roots) && index < 24; index++ {
+		root := filepath.ToSlash(filepath.Clean(roots[index]))
 		base := filepath.Base(root)
-		if !strings.HasPrefix(base, "test_") && !strings.HasSuffix(base, "_test.py") {
-			continue
-		}
 		if seen[root] {
 			continue
 		}
@@ -111,7 +115,22 @@ func collectPythonTests(repo string, frames []StackFrame) string {
 		if err != nil {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("TEST %s\n%s\n", root, bounded(string(data), 6000)))
+		label := "SOURCE"
+		if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") {
+			label = "TEST"
+		}
+		b.WriteString(fmt.Sprintf("%s %s\n%s\n", label, root, bounded(string(data), 6000)))
+		for _, line := range strings.Split(string(data), "\n") {
+			match := pythonImportRE.FindStringSubmatch(line)
+			if len(match) != 2 {
+				continue
+			}
+			module := strings.ReplaceAll(match[1], ".", string(filepath.Separator))
+			candidate := module + ".py"
+			if _, ok := repoFile(repo, candidate); ok {
+				roots = append(roots, candidate)
+			}
+		}
 	}
 	// Fixture names are useful even when the traceback points into application
 	// code. Only names are collected here; contents remain bounded and local.
@@ -148,7 +167,7 @@ func (i *Investigator) collectEvidenceM4(ctx context.Context, inv domain.Investi
 			stack += fmt.Sprintf("%s:%d in %s\nCALLSITE: %s\nSOURCE:\n%s\n", frame.File, frame.Line, frame.Function, frame.CallSite, bounded(frame.Source, 1500))
 		}
 	}
-	tests := collectPythonTests(repo, frames)
+	tests := collectPythonTests(repo, frames, command)
 	gitEvidence, err := gitEvidence(ctx, repo)
 	if err != nil {
 		// A test may provide a repository-shaped directory without a complete

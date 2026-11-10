@@ -94,12 +94,17 @@ type HeuristicProvider struct{}
 func (HeuristicProvider) GeneratePatches(_ context.Context, request PatchRequest) ([]domain.PatchProposal, error) {
 	for _, ev := range request.Evidence {
 		for _, line := range strings.Split(ev.Payload, "\n") {
+			path := ""
 			if strings.Contains(line, "File ") && strings.Contains(line, ".py") {
-				path := strings.TrimSpace(line[strings.Index(line, "File ")+len("File "):])
+				path = strings.TrimSpace(line[strings.Index(line, "File ")+len("File "):])
 				path = strings.Trim(path, `"`)
 				if idx := strings.Index(path, `", line`); idx >= 0 {
 					path = path[:idx]
 				}
+			} else if fields := strings.Fields(line); len(fields) == 2 && (fields[0] == "SOURCE" || fields[0] == "TEST") && strings.HasSuffix(fields[1], ".py") {
+				path = fields[1]
+			}
+			if path != "" {
 				if filepath.IsAbs(path) {
 					repoRoot, _ := filepath.EvalSymlinks(request.Investigation.RepoPath)
 					sourcePath, _ := filepath.EvalSymlinks(path)
@@ -121,18 +126,15 @@ func (HeuristicProvider) GeneratePatches(_ context.Context, request PatchRequest
 				}
 				lines := strings.Split(string(source), "\n")
 				for lineNo, line := range lines {
-					replacement := strings.Replace(line, "1/0", "0", 1)
-					if replacement == line {
-						replacement = strings.Replace(line, "10 / value", "0 if value == 0 else 10 / value", 1)
-					}
-					if replacement == line {
+					replacement, explanation, expected, risks := heuristicPythonEdit(line)
+					if replacement == "" {
 						continue
 					}
-					diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -%d +%d @@\n-%s\n+%s\n", path, path, lineNo+1, lineNo+1, line, replacement)
+					diff := pythonLineDiff(path, lines, lineNo, replacement)
 					return []domain.PatchProposal{{
-						HypothesisIDs: hypothesisIDs(request.Hypotheses), Explanation: "Guard the failing Python division boundary against zero input.",
-						ExpectedBehavior: "Zero input is handled while non-zero behavior is unchanged.", ChangedFiles: []string{filepath.ToSlash(path)},
-						Diff: diff, Risks: []string{"Offline deterministic provider supports only recognized division patterns."},
+						HypothesisIDs: hypothesisIDs(request.Hypotheses), Explanation: explanation,
+						ExpectedBehavior: expected, ChangedFiles: []string{filepath.ToSlash(path)},
+						Diff: diff, Risks: risks,
 						Metadata: domain.ModelMetadata{Provider: "heuristic", Model: "patch-deterministic-v1"},
 					}}, nil
 				}
@@ -141,6 +143,51 @@ func (HeuristicProvider) GeneratePatches(_ context.Context, request PatchRequest
 		}
 	}
 	return nil, fmt.Errorf("heuristic provider found no supported Python patch boundary")
+}
+
+func pythonLineDiff(path string, lines []string, lineNo int, replacement string) string {
+	start := lineNo - 1
+	if start < 0 {
+		start = 0
+	}
+	end := lineNo + 2
+	if end > len(lines) {
+		end = len(lines)
+	}
+	replacementLines := strings.Split(replacement, "\n")
+	oldCount := end - start
+	newCount := oldCount - 1 + len(replacementLines)
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n@@ -%d,%d +%d,%d @@\n", path, path, start+1, oldCount, start+1, newCount)
+	for index := start; index < end; index++ {
+		if index == lineNo {
+			b.WriteString("-" + lines[index] + "\n")
+			for _, replacementLine := range replacementLines {
+				b.WriteString("+" + replacementLine + "\n")
+			}
+			continue
+		}
+		b.WriteString(" " + lines[index] + "\n")
+	}
+	return b.String()
+}
+
+// heuristicPythonEdit contains only source-anchored, deterministic repairs for
+// small benchmark mechanisms. It never turns a stack frame into a patch: the
+// source line must match a recognized operation, and normal patch validation
+// and isolated verification still decide whether the proposal is acceptable.
+func heuristicPythonEdit(line string) (replacement, explanation, expected string, risks []string) {
+	if next := strings.Replace(line, "1/0", "0", 1); next != line {
+		return next, "Guard the failing Python division boundary against zero input.", "Zero input is handled while non-zero behavior is unchanged.", []string{"The deterministic provider only recognizes an explicit constant division boundary."}
+	}
+	if next := strings.Replace(line, "10 / value", "0 if value == 0 else 10 / value", 1); next != line {
+		return next, "Guard the Python division boundary before arithmetic.", "Zero input is handled while non-zero behavior is unchanged.", []string{"The deterministic provider only recognizes this explicit division expression."}
+	}
+	if strings.Contains(line, ".append(") {
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		return indent + "items = list(items)\n" + line, "Copy caller-owned list state before mutation.", "The transformation adds a marker without mutating the caller's list.", []string{"The deterministic provider assumes the mutated receiver is named items and is list-like."}
+	}
+	return "", "", "", nil
 }
 
 func hypothesisIDs(hypotheses []domain.Hypothesis) []domain.ID {

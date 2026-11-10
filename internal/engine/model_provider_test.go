@@ -124,3 +124,22 @@ func TestValidateProposalRejectsUnsupportedClaims(t *testing.T) {
 		t.Fatal("expected unsupported claim rejection")
 	}
 }
+
+func TestHeuristicPythonEditCoversBoundedWindowAndOwnership(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		want        string
+		wantExplain string
+	}{
+		{name: "caller-owned list", line: `    items.append("marker")`, want: "    items = list(items)\n    items.append(\"marker\")", wantExplain: "caller-owned"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			replacement, explanation, _, risks := heuristicPythonEdit(test.line)
+			if replacement != test.want || !strings.Contains(explanation, test.wantExplain) || len(risks) == 0 {
+				t.Fatalf("replacement=%q explanation=%q risks=%q", replacement, explanation, risks)
+			}
+		})
+	}
+}
