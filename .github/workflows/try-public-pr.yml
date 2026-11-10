@@ -15,6 +15,16 @@ on:
         description: Test command to run at the PR head (for example, go test ./...)
         required: true
         type: string
+      malenia_version:
+        description: Prebuilt Malenia release to use; use source_build for unreleased code
+        required: false
+        default: latest
+        type: string
+      source_build:
+        description: Build Malenia from the checked-out source instead of using a release binary
+        required: false
+        default: false
+        type: boolean
       docker_image:
         description: Optional Docker image with the project's runtime and test tools
         required: false
@@ -215,16 +225,39 @@ jobs:
           fi
           git -C "$RUNNER_TEMP/target" checkout --detach "$HEAD_SHA"
 
-      - name: Set up Go for Malenia
+      - name: Set up Go for Malenia source build
+        if: inputs.source_build
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
 
-      - name: Build Malenia binary
+      - name: Build Malenia binary from source
+        if: inputs.source_build
         run: |
           set -euo pipefail
           go build -o "$RUNNER_TEMP/malenia" ./cmd/malenia
+          "$RUNNER_TEMP/malenia" version
+
+      - name: Install prebuilt Malenia release
+        if: ${{ !inputs.source_build }}
+        env:
+          MALENIA_VERSION: ${{ inputs.malenia_version }}
+        run: |
+          set -euo pipefail
+          if [[ "$MALENIA_VERSION" == "latest" ]]; then
+            base_url="https://github.com/Malenia-org/Malenia/releases/latest/download"
+          elif [[ "$MALENIA_VERSION" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            base_url="https://github.com/Malenia-org/Malenia/releases/download/$MALENIA_VERSION"
+          else
+            echo 'malenia_version must be latest or a release tag beginning with v' >&2
+            exit 2
+          fi
+          asset=malenia_linux_amd64
+          curl -fsSL "$base_url/$asset" -o "$RUNNER_TEMP/malenia"
+          curl -fsSL "$base_url/SHA256SUMS" -o "$RUNNER_TEMP/malenia.SHA256SUMS"
+          (cd "$RUNNER_TEMP" && grep "  $asset\$" malenia.SHA256SUMS | sed "s/$asset/malenia/" | sha256sum -c -)
+          chmod +x "$RUNNER_TEMP/malenia"
           "$RUNNER_TEMP/malenia" version
 
       - name: Resolve target Go version
