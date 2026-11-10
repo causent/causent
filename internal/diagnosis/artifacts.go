@@ -82,6 +82,56 @@ type ArtifactDecoderRegistry struct {
 	decoders []ArtifactDecoder
 }
 
+// DiscoverArtifactDescriptors enumerates artifacts without inspecting their
+// format. Providers can implement the same discovery contract and hand these
+// descriptors to the decoder registry. Unknown process identities remain
+// empty in the supplied context.
+func DiscoverArtifactDescriptors(root string, maxFiles int, context ArtifactDescriptor) ([]ArtifactDescriptor, []string, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("artifact path is not a directory")
+	}
+	if maxFiles <= 0 {
+		maxFiles = 20
+	}
+	var descriptors []ArtifactDescriptor
+	var limitations []string
+	filesSeen := 0
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		filesSeen++
+		if len(descriptors) >= maxFiles {
+			return nil
+		}
+		descriptor := context
+		descriptor.Name = entry.Name()
+		descriptor.Path = path
+		descriptor.StorageRef = path
+		if stat, statErr := entry.Info(); statErr == nil {
+			descriptor.Size = stat.Size()
+		} else {
+			limitations = append(limitations, fmt.Sprintf("%s: %v", path, statErr))
+		}
+		descriptors = append(descriptors, descriptor)
+		return nil
+	})
+	if err != nil {
+		return nil, limitations, err
+	}
+	if filesSeen > maxFiles {
+		limitations = append(limitations, fmt.Sprintf("artifact file limit reached (%d); additional files were not discovered", maxFiles))
+	}
+	return descriptors, limitations, nil
+}
+
 func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 	return &ArtifactDecoderRegistry{decoders: []ArtifactDecoder{
 		junitArtifactDecoder{},
@@ -163,13 +213,6 @@ func LoadArtifactEvidence(root string, maxFiles int, maxBytes int64) ([]Evidence
 // context contains identities already established by the CI adapter; empty
 // identities remain empty and are never derived from filenames or digests.
 func LoadArtifactEvidenceWithContext(root string, maxFiles int, maxBytes int64, context ArtifactDescriptor) ([]EvidenceItem, error) {
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("artifact path is not a directory")
-	}
 	if maxFiles <= 0 {
 		maxFiles = 20
 	}
@@ -178,33 +221,23 @@ func LoadArtifactEvidenceWithContext(root string, maxFiles int, maxBytes int64, 
 	}
 	registry := NewArtifactDecoderRegistry()
 	var evidence []EvidenceItem
-	var limitations []string
-	filesSeen := 0
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if filesSeen >= maxFiles || entry.IsDir() || !entry.Type().IsRegular() {
-			if filesSeen >= maxFiles {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	descriptors, limitations, err := DiscoverArtifactDescriptors(root, maxFiles, context)
+	if err != nil {
+		return nil, err
+	}
+	for _, descriptor := range descriptors {
+		path := descriptor.Path
 		data, readErr := readArtifactBytes(path, maxBytes)
 		if readErr != nil {
 			limitations = append(limitations, fmt.Sprintf("%s: %v", path, readErr))
-			return nil
+			continue
 		}
-		filesSeen++
 		rawSum := sha256.Sum256(data)
 		redacted := redactArtifact(data)
 		redactedSum := sha256.Sum256(redacted)
 		artifactID := "artifact:" + hex.EncodeToString(rawSum[:8])
-		desc := context
+		desc := descriptor
 		desc.ArtifactID = artifactID
-		desc.Name = entry.Name()
-		desc.Path = path
-		desc.StorageRef = path
 		desc.Digest = hex.EncodeToString(rawSum[:])
 		desc.Size = int64(len(data))
 		result := registry.Ingest(desc, redacted)
@@ -219,10 +252,6 @@ func LoadArtifactEvidenceWithContext(root string, maxFiles int, maxBytes int64, 
 			result.Evidence[i].Digest = hex.EncodeToString(redactedSum[:])
 		}
 		evidence = append(evidence, result.Evidence...)
-		return nil
-	})
-	if filesSeen >= maxFiles {
-		limitations = append(limitations, fmt.Sprintf("artifact file limit reached (%d); additional files were not ingested", maxFiles))
 	}
 	if len(limitations) > 0 {
 		evidence = append(evidence, EvidenceItem{ID: fmt.Sprintf("E-artifact-limitations-%d", len(evidence)+1), Kind: "ci_artifact_manifest", Source: root, Detail: strings.Join(limitations, "\n"), Provenance: root, Limitations: limitations, ArtifactCategory: string(ArtifactUnknown), DecoderStatus: string(ArtifactPartial)})

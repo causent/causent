@@ -56,6 +56,21 @@ func TestArtifactLoadPreservesEstablishedCIContextWithoutSynthesizingExecution(t
 	}
 }
 
+func TestArtifactDiscoveryDoesNotDecodeContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "report.xml")
+	if err := os.WriteFile(path, []byte(`<testsuite/>`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	descriptors, limitations, err := DiscoverArtifactDescriptors(root, 10, ArtifactDescriptor{Provider: "fixture"})
+	if err != nil || len(limitations) != 0 || len(descriptors) != 1 {
+		t.Fatalf("discovery = %#v, limitations = %#v, err = %v", descriptors, limitations, err)
+	}
+	if descriptors[0].Name != "report.xml" || descriptors[0].Path != path || descriptors[0].Provider != "fixture" || descriptors[0].Digest != "" || descriptors[0].Category != "" {
+		t.Fatalf("discovery decoded or synthesized format data: %#v", descriptors[0])
+	}
+}
+
 func TestArtifactIngestionStatusesAndIdempotency(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
