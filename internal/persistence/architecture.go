@@ -43,6 +43,37 @@ func (s *Store) SaveCodeLocation(v domain.CodeLocation) error {
 func (s *Store) SaveProgramNode(v domain.ProgramNode) error {
 	return s.saveArchitecture("program_node", v.ID, "", v)
 }
+
+// SaveProgramNodes persists an indexed snapshot in one transaction. Large
+// repositories make one SQLite transaction per node prohibitively expensive.
+func (s *Store) SaveProgramNodes(values []domain.ProgramNode) error {
+	return s.saveArchitectureBatch("program_node", values)
+}
+
+func (s *Store) saveArchitectureBatch(kind string, values []domain.ProgramNode) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO architecture_records(id,kind,investigation_id,data,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, value := range values {
+		b, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			_ = tx.Rollback()
+			return marshalErr
+		}
+		if _, err := stmt.Exec(value.ID, kind, nil, string(b), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
 func (s *Store) SaveCodeDelta(v domain.CodeDelta) error {
 	return s.saveArchitecture("code_delta", v.ID, "", v)
 }
@@ -79,6 +110,32 @@ func (s *Store) SaveRelationship(v domain.Relationship) error {
 	}
 	_, err = s.db.Exec(`INSERT INTO architecture_relationships(id,investigation_id,source_type,source_id,target_type,target_id,relationship_type,revision_id,evidence_ids,data,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,evidence_ids=excluded.evidence_ids`, v.ID, nullableID(v.InvestigationID), v.SourceType, v.SourceID, v.TargetType, v.TargetID, v.Type, v.RevisionID, mustJSON(v.EvidenceIDs), string(b), v.CreatedAt.UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+// SaveRelationships persists graph edges in one transaction.
+func (s *Store) SaveRelationships(values []domain.Relationship) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO architecture_relationships(id,investigation_id,source_type,source_id,target_type,target_id,relationship_type,revision_id,evidence_ids,data,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,evidence_ids=excluded.evidence_ids`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, value := range values {
+		b, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			_ = tx.Rollback()
+			return marshalErr
+		}
+		if _, err := stmt.Exec(value.ID, nullableID(value.InvestigationID), value.SourceType, value.SourceID, value.TargetType, value.TargetID, value.Type, value.RevisionID, mustJSON(value.EvidenceIDs), string(b), value.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveClaimValidation(v domain.ClaimValidation) error {

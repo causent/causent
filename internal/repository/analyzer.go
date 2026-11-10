@@ -244,14 +244,17 @@ func testOr(normal, rel, name string) string {
 
 func (a Analyzer) buildReferences(contents map[string]string, s *Snapshot) {
 	byName := map[string][]domain.ProgramNode{}
+	byFile := map[string][]domain.ProgramNode{}
 	for _, n := range s.Nodes {
 		if n.Type == "Function" || n.Type == "Method" || n.Type == "Test" || n.Type == "Class" {
 			byName[n.Name] = append(byName[n.Name], n)
+			byFile[n.FilePath] = append(byFile[n.FilePath], n)
 		}
 	}
 	seen := map[string]bool{}
+	const maxEdges = 20000
 	for _, file := range s.Nodes {
-		if file.Type != "File" {
+		if file.Type != "File" || len(s.Relationships) >= maxEdges {
 			continue
 		}
 		data := contents[file.FilePath]
@@ -260,8 +263,8 @@ func (a Analyzer) buildReferences(contents map[string]string, s *Snapshot) {
 				continue
 			}
 			for _, target := range targets {
-				for _, source := range s.Nodes {
-					if source.FilePath != file.FilePath || (source.Type != "Function" && source.Type != "Method" && source.Type != "Test") || source.ID == target.ID {
+				for _, source := range byFile[file.FilePath] {
+					if source.Type == "Class" || source.ID == target.ID {
 						continue
 					}
 					typ := "REFERENCES"
@@ -275,7 +278,16 @@ func (a Analyzer) buildReferences(contents map[string]string, s *Snapshot) {
 						addEdge(s, source.ID, source.Type, target.ID, target.Type, typ)
 						seen[key] = true
 					}
+					if len(s.Relationships) >= maxEdges {
+						break
+					}
 				}
+				if len(s.Relationships) >= maxEdges {
+					break
+				}
+			}
+			if len(s.Relationships) >= maxEdges {
+				break
 			}
 		}
 	}

@@ -14,6 +14,7 @@ const (
 	StageFailureIngestion     = "failure_ingestion"
 	StageFailureGrouping      = "failure_grouping"
 	StageIndexing             = "repository_indexing"
+	StagePersistence          = "architecture_persistence"
 	StageIncrementalIndexing  = "incremental_indexing"
 	StageCandidateGeneration  = "candidate_generation"
 	StageHypothesisGeneration = "hypothesis_generation"

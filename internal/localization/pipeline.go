@@ -126,6 +126,7 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 	}
 	candidates := map[string]*domain.CandidateLocation{}
 	relations := []domain.Relationship{}
+	const maxRelationships = 600
 	add := func(n domain.ProgramNode, score domain.ScoreVector, evidence []domain.ID, relationType string, failureIDs []string) {
 		if n.Type == "File" || n.Type == "Dependency" {
 			return
@@ -138,6 +139,9 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 		mergeScore(&c.Score, score)
 		c.SupportingEvidenceIDs = appendUnique(c.SupportingEvidenceIDs, evidence...)
 		for _, failureID := range failureIDs {
+			if len(relations) >= maxRelationships {
+				break
+			}
 			relations = append(relations, domain.Relationship{ID: "failure:" + failureID + ":" + c.ID + ":" + relationType, InvestigationID: input.InvestigationID, SourceType: "failure_episode", SourceID: failureID, TargetType: "candidate_location", TargetID: c.ID, Type: relationType, RevisionID: n.RevisionID, EvidenceIDs: evidence})
 		}
 	}
@@ -167,6 +171,13 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 	}
 	for _, n := range snapshot.Nodes {
 		if input.ChangedIdentities[n.Identity] || n.Changed {
+			// A changed symbol is useful supporting evidence, but a diff alone
+			// does not make it a failure candidate. Only promote it when it is
+			// already connected to execution/test evidence; otherwise unrelated
+			// changed files can outrank the actual failing stack frames.
+			if _, exists := candidates[n.ID]; !exists {
+				continue
+			}
 			ev := input.EvidenceIDs
 			add(n, evaluateSignals(CandidateContext{Changed: true, Evidence: ev}), ev, "ASSOCIATED_WITH", input.FailureIDs)
 		}

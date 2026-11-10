@@ -740,7 +740,7 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	report.Uncertainty = append(report.Uncertainty, evidence.Limitations...)
 	report.Uncertainty = append(report.Uncertainty, "local reproduction was deferred; classification is based on normalized CI evidence")
 	report.Partial = true
-	report.Localization = Localization{BisectStatus: "deferred: evidence-first diagnosis"}
+	report.Localization = Localization{HeadCommit: report.Environment.HeadCommit, BisectStatus: "deferred: evidence-first diagnosis"}
 	// Seed the focused index from locations observed in the original CI
 	// evidence. This avoids a repository-wide scan before the first finding.
 	report.Localization.LikelyFiles = observedFilesFromEvidence(report.Baseline, report.Evidence)

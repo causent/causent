@@ -16,8 +16,8 @@ import (
 var (
 	pythonFrame        = regexp.MustCompile(`File "([^"]+)", line ([0-9]+)`)
 	goFrame            = regexp.MustCompile(`([^\s()]+\.go):([0-9]+)`)
-	failureLine        = regexp.MustCompile(`(?m)^--- FAIL: ([^ (]+)`)
-	goFailureLine      = regexp.MustCompile(`(?m)^=== FAIL: ([^ (]+)`)
+	failureLine        = regexp.MustCompile(`(?m)^--- FAIL:\s+(.+?)(?:\s+\([0-9.]+s\))?\s*$`)
+	goFailureLine      = regexp.MustCompile(`(?m)^=== FAIL:\s+(.+?)(?:\s+\([0-9.]+s\))?\s*$`)
 	genericFailureLine = regexp.MustCompile(`(?m)^FAIL\s+([^ (]+)`)
 	pytestFailure      = regexp.MustCompile(`(?m)^FAILED\s+([^\s]+)(?:\s+-\s*(.*))?$`)
 	jestFailure        = regexp.MustCompile(`(?m)^\s*[●•]\s+(.+)$`)
@@ -29,9 +29,13 @@ type failureObservation struct {
 	Message string
 }
 
+func isCIEvidenceKind(kind string) bool {
+	return kind == "ci_log" || kind == "original_ci_log" || kind == "junit_report" || kind == "junit_xml" || kind == "ci_artifact"
+}
+
 func externalFailureEvidence(items []EvidenceItem) bool {
 	for _, item := range items {
-		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
+		if !isCIEvidenceKind(item.Kind) {
 			continue
 		}
 		if len(parseFailureObservations(item.Detail)) > 0 {
@@ -44,7 +48,7 @@ func externalFailureEvidence(items []EvidenceItem) bool {
 func artifactEvidenceAttempts(items []EvidenceItem) []Attempt {
 	var attempts []Attempt
 	for _, item := range items {
-		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
+		if !isCIEvidenceKind(item.Kind) {
 			continue
 		}
 		if len(parseFailureObservations(item.Detail)) == 0 {
@@ -179,7 +183,7 @@ func (d *Diagnoser) persistFailureEpisodes(report *Report, executionID string, b
 	// CI logs often contain failures from several jobs/tests but are not part
 	// of reproduction attempts. Treat them as observations, never as reruns.
 	for _, item := range report.Evidence {
-		if item.Kind != "original_ci_log" && item.Kind != "junit_report" && item.Kind != "junit_xml" && item.Kind != "ci_artifact" {
+		if !isCIEvidenceKind(item.Kind) {
 			continue
 		}
 		for _, observation := range parseFailureObservations(item.Detail) {
@@ -235,7 +239,7 @@ func failureText(b Baseline, evidence []EvidenceItem) string {
 		bld.WriteByte('\n')
 	}
 	for _, item := range evidence {
-		if item.Kind == "original_ci_log" || item.Kind == "junit_report" || item.Kind == "junit_xml" || item.Kind == "ci_artifact" {
+		if isCIEvidenceKind(item.Kind) {
 			bld.WriteString(item.Detail)
 			bld.WriteByte('\n')
 		}
@@ -268,7 +272,7 @@ func architectureFrames(b Baseline, failures []domain.FailureEpisode, evidence [
 		}
 	}
 	for _, item := range evidence {
-		if item.Kind == "original_ci_log" || item.Kind == "junit_report" || item.Kind == "junit_xml" || item.Kind == "ci_artifact" {
+		if isCIEvidenceKind(item.Kind) {
 			addFrames(item.Detail)
 		}
 	}

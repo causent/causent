@@ -127,16 +127,19 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 		indexStage.Done("skipped", nil)
 	}
 	if persist {
-		for _, n := range snapshot.Nodes {
-			if err := d.cfg.Store.SaveProgramNode(n); err != nil {
-				return err
-			}
+		persistStage := d.metrics.Begin(observability.StagePersistence)
+		persistStage.Meta("mode", "batched_snapshot")
+		if err := d.cfg.Store.SaveProgramNodes(snapshot.Nodes); err != nil {
+			persistStage.Done("failed", err)
+			return err
 		}
-		for _, r := range snapshot.Relationships {
-			if err := d.cfg.Store.SaveRelationship(r); err != nil {
-				return err
-			}
+		if err := d.cfg.Store.SaveRelationships(snapshot.Relationships); err != nil {
+			persistStage.Done("failed", err)
+			return err
 		}
+		persistStage.Count("nodes", len(snapshot.Nodes))
+		persistStage.Count("relationships", len(snapshot.Relationships))
+		persistStage.Done("completed", nil)
 	}
 	targetedEvidence := report.NormalizedEvidence != nil
 	if !evidenceOnly && d.cfg.BaseRef != "" && !targetedEvidence {
@@ -185,7 +188,11 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	candStage := d.metrics.Begin(observability.StageCandidateGeneration)
 	var candidates []domain.CandidateLocation
 	var relations []domain.Relationship
-	input := localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: 100}
+	maxCandidates := 100
+	if report.NormalizedEvidence != nil || report.Baseline.Source == "ci_artifact" {
+		maxCandidates = 25
+	}
+	input := localization.Input{InvestigationID: domain.ID(report.InvestigationID), RepositoryID: repoID, RevisionID: revisionID, FailureIDs: failureIDs, EvidenceIDs: evidenceIDs, StackFrames: frames, FailureText: failureText(baseline, report.Evidence), ChangedIdentities: changed, MaxDepth: 2, MaxCandidates: maxCandidates}
 	if evidenceOnly {
 		candidates, relations = localization.GenerateObserved(frames, input)
 	} else {
@@ -243,10 +250,8 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 				return err
 			}
 		}
-		for _, r := range relations {
-			if err := d.cfg.Store.SaveRelationship(r); err != nil {
-				return err
-			}
+		if err := d.cfg.Store.SaveRelationships(relations); err != nil {
+			return err
 		}
 	}
 
