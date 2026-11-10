@@ -227,6 +227,28 @@ type InvestigationAction struct {
 	EvidenceIDs []string `json:"evidence_ids,omitempty"`
 }
 
+type ConcurrencyAccess struct {
+	Access           string   `json:"access"`
+	File             string   `json:"file"`
+	Line             int      `json:"line"`
+	Function         string   `json:"function,omitempty"`
+	Expression       string   `json:"expression,omitempty"`
+	StateIdentifiers []string `json:"state_identifiers,omitempty"`
+	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
+}
+
+// ConcurrencyModel contains source-backed concurrency facts. Empty ordering
+// edges are meaningful: source inspection did not prove an ordering edge.
+type ConcurrencyModel struct {
+	GoroutineOwnership []string            `json:"goroutine_ownership,omitempty"`
+	Accesses           []ConcurrencyAccess `json:"accesses,omitempty"`
+	SharedState        []string            `json:"shared_state,omitempty"`
+	Synchronization    []string            `json:"synchronization,omitempty"`
+	HappensBefore      []string            `json:"verified_happens_before,omitempty"`
+	MissingOrdering    []string            `json:"missing_or_unverified_ordering,omitempty"`
+	EvidenceIDs        []string            `json:"evidence_ids,omitempty"`
+}
+
 // Environment is the bounded execution context. Secrets are never recorded.
 type Environment struct {
 	OS            string    `json:"os"`
@@ -294,6 +316,7 @@ type Report struct {
 	RootCause                  RootCauseAssessment            `json:"root_cause"`
 	Repair                     *RepairAssessment              `json:"repair,omitempty"`
 	InvestigationActions       []InvestigationAction          `json:"investigation_actions,omitempty"`
+	Concurrency                *ConcurrencyModel              `json:"concurrency_model,omitempty"`
 	Hypotheses                 []domain.Hypothesis            `json:"hypotheses,omitempty"`
 	Findings                   []domain.DiagnosticFinding     `json:"findings,omitempty"`
 	Preliminary                *domain.DiagnosticFinding      `json:"preliminary,omitempty"`
@@ -404,7 +427,7 @@ type EventRecord struct {
 }
 
 // Run performs the full diagnosis workflow.
-func Run(ctx context.Context, cfg Config) (Report, error) {
+func Run(ctx context.Context, cfg Config) (result Report, resultErr error) {
 	if cfg.Evidence != nil {
 		return diagnoseNormalizedEvidence(ctx, cfg, *cfg.Evidence)
 	}
@@ -491,6 +514,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		// Always persist terminal status and collected evidence, including after
 		// cancellation or timeout. Optional stages must not erase partial results.
 		finish(&report, d, workspace)
+		result = report
 	}()
 
 	artifactOnly := cfg.ArtifactFirst && externalFailureEvidence(report.Evidence)
@@ -834,14 +858,6 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 	// Seed the focused index from locations observed in the original CI
 	// evidence. This avoids a repository-wide scan before the first finding.
 	report.Localization.LikelyFiles = observedFilesFromEvidence(report.Baseline, report.Evidence)
-	if cfg.BaseRef != "" && cfg.RepoPath != "" {
-		base := strings.TrimSpace(gitOutput(cfg.RepoPath, "rev-parse", cfg.BaseRef))
-		if base != "" && report.Environment.HeadCommit != "" {
-			for _, path := range strings.Split(gitOutput(cfg.RepoPath, "diff", "--name-only", base, report.Environment.HeadCommit), "\n") {
-				path = strings.TrimSpace(path)
-			}
-		}
-	}
 	d.emit(EventDiagnosisStarted, domain.StatusCollectingEvidence, "evidence-first diagnosis started")
 	d.emit(EventReproductionCompleted, domain.StatusCollectingEvidence, "local reproduction deferred")
 	// Normalized CI evidence is still an input to the full investigation path.
@@ -1086,6 +1102,24 @@ func finish(report *Report, d *Diagnoser, workspace string) {
 		d.emit(EventDiagnosisCompleted, domain.StatusCompleted, string(report.Classification))
 	}
 	if d.metrics != nil {
+		ledger := make([]observability.ActionLedgerEntry, 0, len(report.InvestigationActions))
+		persisted := map[string]domain.Activity{}
+		if d.cfg.Store != nil {
+			if activities, err := d.cfg.Store.ListActivities(domain.ID(report.InvestigationID)); err == nil {
+				for _, activity := range activities {
+					persisted[activity.ID] = activity
+				}
+			}
+		}
+		for _, action := range report.InvestigationActions {
+			entry := observability.ActionLedgerEntry{Status: action.Status, EvidenceIDs: action.EvidenceIDs}
+			if activity, ok := persisted[action.ID]; ok {
+				entry.Status = string(activity.Status)
+				entry.EvidenceIDs = activity.OutputRefs
+			}
+			ledger = append(ledger, entry)
+		}
+		d.metrics.SetInvestigationActionLedger(ledger)
 		inconclusive := report.Refused || report.Classification == ClassNotReproduced || report.Partial
 		d.metrics.Finish(report.Partial, inconclusive)
 		clone := d.metrics.Clone()

@@ -3,6 +3,8 @@ package diagnosis
 import (
 	"fmt"
 	"strings"
+
+	"github.com/causent/malenia/internal/domain"
 )
 
 // ValidateContract checks that every claim is explicitly grounded in collected
@@ -29,6 +31,18 @@ func ValidateContract(report Report) error {
 		for _, id := range append(append([]string{}, c.Supporting...), c.Contradicting...) {
 			if !known[id] {
 				return fmt.Errorf("claim %q references unknown evidence %q", c.ID, id)
+			}
+		}
+	}
+	for _, hypothesis := range report.Hypotheses {
+		if hypothesis.Provenance == "deterministic source investigation" {
+			if strings.TrimSpace(hypothesis.Statement) == "" || strings.TrimSpace(hypothesis.Invariant) == "" || len(hypothesis.SupportingEvidenceIDs) == 0 || len(hypothesis.ContradictingEvidenceIDs) == 0 || len(hypothesis.PredictedObservations) == 0 {
+				return fmt.Errorf("source hypothesis %q is missing a mechanism, invariant, supporting/contradicting evidence, or prediction", hypothesis.ID)
+			}
+		}
+		for _, id := range append(append([]domain.ID{}, hypothesis.SupportingEvidenceIDs...), hypothesis.ContradictingEvidenceIDs...) {
+			if !known[string(id)] {
+				return fmt.Errorf("hypothesis %q references unknown evidence %q", hypothesis.ID, id)
 			}
 		}
 	}

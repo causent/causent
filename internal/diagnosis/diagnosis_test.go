@@ -530,6 +530,21 @@ func TestBundleCreationAndIntegrity(t *testing.T) {
 	if manifest.Diagnosis.Classification != report.Classification {
 		t.Fatalf("manifest classification = %s, want %s", manifest.Diagnosis.Classification, report.Classification)
 	}
+	if report.Metrics == nil || manifest.Diagnosis.Metrics == nil || report.Metrics.InvestigationActions != len(report.InvestigationActions) || manifest.Diagnosis.Metrics.InvestigationActions != len(report.InvestigationActions) {
+		t.Fatalf("action counts disagree: report=%+v manifest=%+v actions=%d", report.Metrics, manifest.Diagnosis.Metrics, len(report.InvestigationActions))
+	}
+	statusCount := 0
+	evidenceRefs := 0
+	for _, action := range report.InvestigationActions {
+		statusCount++
+		evidenceRefs += len(action.EvidenceIDs)
+		if len(action.EvidenceIDs) == 0 {
+			t.Fatalf("completed/partial action has no evidence references: %+v", action)
+		}
+	}
+	if statusCount != report.Metrics.InvestigationActionStatuses["completed"]+report.Metrics.InvestigationActionStatuses["partial"]+report.Metrics.InvestigationActionStatuses["failed"] || evidenceRefs != report.Metrics.InvestigationEvidenceReferences {
+		t.Fatalf("action status/evidence metrics disagree: metrics=%+v statuses=%d evidence=%d", report.Metrics, statusCount, evidenceRefs)
+	}
 
 	events := readEvents(t, filepath.Join(bundleDir, "events.jsonl"))
 	for _, required := range []string{

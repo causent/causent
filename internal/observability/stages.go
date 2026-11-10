@@ -42,21 +42,34 @@ type StageRecord struct {
 type Metrics struct {
 	mu sync.Mutex
 
-	InvestigationID      string        `json:"investigation_id"`
-	StartedAt            time.Time     `json:"started_at"`
-	FinishedAt           time.Time     `json:"finished_at,omitempty"`
-	TotalDuration        time.Duration `json:"total_duration,omitempty"`
-	TimeToFirstFinding   time.Duration `json:"time_to_first_useful_finding,omitempty"`
-	FirstFindingAt       time.Time     `json:"first_finding_at,omitempty"`
-	CacheHits            int           `json:"cache_hits"`
-	CacheMisses          int           `json:"cache_misses"`
-	FilesProcessed       int           `json:"files_processed"`
-	SymbolsProcessed     int           `json:"symbols_processed"`
-	InvestigationActions int           `json:"investigation_actions"`
-	Experiments          int           `json:"experiments"`
-	Partial              bool          `json:"partial"`
-	Inconclusive         bool          `json:"inconclusive"`
-	Stages               []StageRecord `json:"stages"`
+	InvestigationID                 string         `json:"investigation_id"`
+	StartedAt                       time.Time      `json:"started_at"`
+	FinishedAt                      time.Time      `json:"finished_at,omitempty"`
+	TotalDuration                   time.Duration  `json:"total_duration,omitempty"`
+	TimeToFirstFinding              time.Duration  `json:"time_to_first_useful_finding,omitempty"`
+	FirstFindingAt                  time.Time      `json:"first_finding_at,omitempty"`
+	CacheHits                       int            `json:"cache_hits"`
+	CacheMisses                     int            `json:"cache_misses"`
+	FilesProcessed                  int            `json:"files_processed"`
+	SymbolsProcessed                int            `json:"symbols_processed"`
+	InvestigationActions            int            `json:"investigation_actions"`
+	InvestigationActionStatuses     map[string]int `json:"investigation_action_statuses,omitempty"`
+	InvestigationEvidenceReferences int            `json:"investigation_evidence_references"`
+	Experiments                     int            `json:"experiments"`
+	Partial                         bool           `json:"partial"`
+	Inconclusive                    bool           `json:"inconclusive"`
+	Stages                          []StageRecord  `json:"stages"`
+}
+
+func cloneMap(values map[string]int) map[string]int {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]int, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 // NewMetrics starts instrumentation for one investigation.
@@ -160,6 +173,32 @@ func (m *Metrics) RecordCacheMiss() {
 	m.mu.Unlock()
 }
 
+// ActionLedgerEntry is the persisted action view used to derive investigation
+// metrics. Metrics must not infer action counts from stage timing alone.
+type ActionLedgerEntry struct {
+	Status      string
+	EvidenceIDs []string
+}
+
+// SetInvestigationActionLedger makes action metrics agree with the durable
+// investigation ledger at report finalization.
+func (m *Metrics) SetInvestigationActionLedger(entries []ActionLedgerEntry) {
+	if m == nil {
+		return
+	}
+	statuses := map[string]int{}
+	evidence := 0
+	for _, entry := range entries {
+		statuses[entry.Status]++
+		evidence += len(entry.EvidenceIDs)
+	}
+	m.mu.Lock()
+	m.InvestigationActions = len(entries)
+	m.InvestigationActionStatuses = statuses
+	m.InvestigationEvidenceReferences = evidence
+	m.mu.Unlock()
+}
+
 // MarkFirstFinding records time-to-first-useful-finding once.
 func (m *Metrics) MarkFirstFinding() {
 	if m == nil {
@@ -195,21 +234,23 @@ func (m *Metrics) Clone() Metrics {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return Metrics{
-		InvestigationID:      m.InvestigationID,
-		StartedAt:            m.StartedAt,
-		FinishedAt:           m.FinishedAt,
-		TotalDuration:        m.TotalDuration,
-		TimeToFirstFinding:   m.TimeToFirstFinding,
-		FirstFindingAt:       m.FirstFindingAt,
-		CacheHits:            m.CacheHits,
-		CacheMisses:          m.CacheMisses,
-		FilesProcessed:       m.FilesProcessed,
-		SymbolsProcessed:     m.SymbolsProcessed,
-		InvestigationActions: m.InvestigationActions,
-		Experiments:          m.Experiments,
-		Partial:              m.Partial,
-		Inconclusive:         m.Inconclusive,
-		Stages:               append([]StageRecord(nil), m.Stages...),
+		InvestigationID:                 m.InvestigationID,
+		StartedAt:                       m.StartedAt,
+		FinishedAt:                      m.FinishedAt,
+		TotalDuration:                   m.TotalDuration,
+		TimeToFirstFinding:              m.TimeToFirstFinding,
+		FirstFindingAt:                  m.FirstFindingAt,
+		CacheHits:                       m.CacheHits,
+		CacheMisses:                     m.CacheMisses,
+		FilesProcessed:                  m.FilesProcessed,
+		SymbolsProcessed:                m.SymbolsProcessed,
+		InvestigationActions:            m.InvestigationActions,
+		InvestigationActionStatuses:     cloneMap(m.InvestigationActionStatuses),
+		InvestigationEvidenceReferences: m.InvestigationEvidenceReferences,
+		Experiments:                     m.Experiments,
+		Partial:                         m.Partial,
+		Inconclusive:                    m.Inconclusive,
+		Stages:                          append([]StageRecord(nil), m.Stages...),
 	}
 }
 
@@ -217,37 +258,41 @@ func (m *Metrics) Clone() Metrics {
 func (m *Metrics) JSON() ([]byte, error) {
 	clone := m.Clone()
 	return json.MarshalIndent(struct {
-		InvestigationID      string        `json:"investigation_id"`
-		StartedAt            time.Time     `json:"started_at"`
-		FinishedAt           time.Time     `json:"finished_at,omitempty"`
-		TotalDuration        time.Duration `json:"total_duration,omitempty"`
-		TimeToFirstFinding   time.Duration `json:"time_to_first_useful_finding,omitempty"`
-		FirstFindingAt       time.Time     `json:"first_finding_at,omitempty"`
-		CacheHits            int           `json:"cache_hits"`
-		CacheMisses          int           `json:"cache_misses"`
-		FilesProcessed       int           `json:"files_processed"`
-		SymbolsProcessed     int           `json:"symbols_processed"`
-		InvestigationActions int           `json:"investigation_actions"`
-		Experiments          int           `json:"experiments"`
-		Partial              bool          `json:"partial"`
-		Inconclusive         bool          `json:"inconclusive"`
-		Stages               []StageRecord `json:"stages"`
+		InvestigationID                 string         `json:"investigation_id"`
+		StartedAt                       time.Time      `json:"started_at"`
+		FinishedAt                      time.Time      `json:"finished_at,omitempty"`
+		TotalDuration                   time.Duration  `json:"total_duration,omitempty"`
+		TimeToFirstFinding              time.Duration  `json:"time_to_first_useful_finding,omitempty"`
+		FirstFindingAt                  time.Time      `json:"first_finding_at,omitempty"`
+		CacheHits                       int            `json:"cache_hits"`
+		CacheMisses                     int            `json:"cache_misses"`
+		FilesProcessed                  int            `json:"files_processed"`
+		SymbolsProcessed                int            `json:"symbols_processed"`
+		InvestigationActions            int            `json:"investigation_actions"`
+		InvestigationActionStatuses     map[string]int `json:"investigation_action_statuses,omitempty"`
+		InvestigationEvidenceReferences int            `json:"investigation_evidence_references"`
+		Experiments                     int            `json:"experiments"`
+		Partial                         bool           `json:"partial"`
+		Inconclusive                    bool           `json:"inconclusive"`
+		Stages                          []StageRecord  `json:"stages"`
 	}{
-		InvestigationID:      clone.InvestigationID,
-		StartedAt:            clone.StartedAt,
-		FinishedAt:           clone.FinishedAt,
-		TotalDuration:        clone.TotalDuration,
-		TimeToFirstFinding:   clone.TimeToFirstFinding,
-		FirstFindingAt:       clone.FirstFindingAt,
-		CacheHits:            clone.CacheHits,
-		CacheMisses:          clone.CacheMisses,
-		FilesProcessed:       clone.FilesProcessed,
-		SymbolsProcessed:     clone.SymbolsProcessed,
-		InvestigationActions: clone.InvestigationActions,
-		Experiments:          clone.Experiments,
-		Partial:              clone.Partial,
-		Inconclusive:         clone.Inconclusive,
-		Stages:               clone.Stages,
+		InvestigationID:                 clone.InvestigationID,
+		StartedAt:                       clone.StartedAt,
+		FinishedAt:                      clone.FinishedAt,
+		TotalDuration:                   clone.TotalDuration,
+		TimeToFirstFinding:              clone.TimeToFirstFinding,
+		FirstFindingAt:                  clone.FirstFindingAt,
+		CacheHits:                       clone.CacheHits,
+		CacheMisses:                     clone.CacheMisses,
+		FilesProcessed:                  clone.FilesProcessed,
+		SymbolsProcessed:                clone.SymbolsProcessed,
+		InvestigationActions:            clone.InvestigationActions,
+		InvestigationActionStatuses:     clone.InvestigationActionStatuses,
+		InvestigationEvidenceReferences: clone.InvestigationEvidenceReferences,
+		Experiments:                     clone.Experiments,
+		Partial:                         clone.Partial,
+		Inconclusive:                    clone.Inconclusive,
+		Stages:                          clone.Stages,
 	}, "", "  ")
 }
 

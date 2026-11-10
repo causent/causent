@@ -32,6 +32,21 @@ func TestMetricsStageTimingAndFirstFinding(t *testing.T) {
 	}
 }
 
+func TestMetricsActionLedgerUsesPersistedStatusesAndEvidence(t *testing.T) {
+	m := NewMetrics("inv")
+	m.SetInvestigationActionLedger([]ActionLedgerEntry{
+		{Status: "completed", EvidenceIDs: []string{"e1", "e2"}},
+		{Status: "partial", EvidenceIDs: []string{"e3"}},
+	})
+	got := m.Clone()
+	if got.InvestigationActions != 2 || got.InvestigationEvidenceReferences != 3 {
+		t.Fatalf("action metrics: actions=%d evidence_references=%d", got.InvestigationActions, got.InvestigationEvidenceReferences)
+	}
+	if got.InvestigationActionStatuses["completed"] != 1 || got.InvestigationActionStatuses["partial"] != 1 {
+		t.Fatalf("action statuses=%v", got.InvestigationActionStatuses)
+	}
+}
+
 func TestStageHandleRecordsFailure(t *testing.T) {
 	m := NewMetrics("inv")
 	h := m.Begin(StageIndexing)

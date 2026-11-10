@@ -61,6 +61,7 @@ type Hypothesis struct {
 	Version                  int
 	SupersedesHypothesisID   ID
 	Statement                string
+	Invariant                string
 	AffectedComponent        string
 	RelatedFailureIDs        []string
 	CandidateLocationIDs     []string
@@ -109,6 +110,7 @@ const (
 	ActivityReady     ActivityStatus = "ready"
 	ActivityRunning   ActivityStatus = "running"
 	ActivityCompleted ActivityStatus = "completed"
+	ActivityPartial   ActivityStatus = "partial"
 	ActivityFailed    ActivityStatus = "failed"
 	ActivityBlocked   ActivityStatus = "blocked"
 	ActivityCancelled ActivityStatus = "cancelled"
