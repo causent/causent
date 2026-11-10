@@ -409,6 +409,40 @@ func saveEvidenceItem(store *persistence.Store, report *Report, item EvidenceIte
 	return store.SaveEvidence(domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Timestamp: report.CreatedAt, ContentRef: item.Kind, Digest: item.Digest, Payload: item.Detail, Provenance: provenance, ClaimKind: item.ClaimKind, Basis: item.Basis, DeclarationID: item.DeclarationID, AccessID: item.AccessID, InstanceID: item.InstanceID, RunID: item.RunID, Ordering: item.Ordering, Revision: item.Revision, ExecutionID: item.ExecutionID, WorkflowRunID: item.WorkflowRunID, BuildID: item.BuildID, SourceRevision: item.SourceRevision, TestAttemptID: item.TestAttemptID, ArtifactRef: item.ArtifactID, ParserVersion: item.ParserVersion, TraceFormat: item.TraceFormat, ReportID: item.ReportID, ArtifactDigest: item.ArtifactDigest, StorageRef: item.StorageRef, ParserName: item.ParserName, ArtifactCategory: item.ArtifactCategory, ArtifactFormat: item.ArtifactFormat, DecoderStatus: item.DecoderStatus})
 }
 
+func evidenceItemFromDomain(evidence domain.Evidence) EvidenceItem {
+	return EvidenceItem{
+		ID:               string(evidence.ID),
+		Kind:             string(evidence.Type),
+		ClaimKind:        evidence.ClaimKind,
+		Basis:            evidence.Basis,
+		DeclarationID:    evidence.DeclarationID,
+		AccessID:         evidence.AccessID,
+		InstanceID:       evidence.InstanceID,
+		RunID:            evidence.RunID,
+		Ordering:         evidence.Ordering,
+		Source:           evidence.Source,
+		Digest:           evidence.Digest,
+		Detail:           evidence.Payload,
+		Provenance:       evidence.Provenance,
+		Revision:         evidence.Revision,
+		ExecutionID:      evidence.ExecutionID,
+		WorkflowRunID:    evidence.WorkflowRunID,
+		BuildID:          evidence.BuildID,
+		SourceRevision:   evidence.SourceRevision,
+		TestAttemptID:    evidence.TestAttemptID,
+		ArtifactID:       string(evidence.ArtifactID),
+		ParserVersion:    evidence.ParserVersion,
+		TraceFormat:      evidence.TraceFormat,
+		ReportID:         evidence.ReportID,
+		ArtifactDigest:   evidence.ArtifactDigest,
+		StorageRef:       evidence.StorageRef,
+		ParserName:       evidence.ParserName,
+		ArtifactCategory: evidence.ArtifactCategory,
+		ArtifactFormat:   evidence.ArtifactFormat,
+		DecoderStatus:    evidence.DecoderStatus,
+	}
+}
+
 func (d *Diagnoser) persistFailureEpisodes(report *Report, executionID string, baseline Baseline) ([]domain.FailureEpisode, error) {
 	seen := map[string]bool{}
 	var episodes []domain.FailureEpisode

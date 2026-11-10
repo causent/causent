@@ -366,7 +366,7 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 					if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
 						return err
 					}
-					report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload})
+					report.Evidence = append(report.Evidence, evidenceItemFromDomain(evidence))
 				}
 				report.Candidates = localization.ApplyHistoricalEvidence(report.Candidates, evidenceIDsOfHistorical(historical.Evidence))
 				for _, candidate := range report.Candidates {

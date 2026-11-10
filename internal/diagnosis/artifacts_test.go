@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/causent/malenia/internal/domain"
 )
 
 func TestArtifactRegistryDetectsByContentAndPreservesRawProvenance(t *testing.T) {
@@ -183,5 +185,18 @@ func TestRuntimeExceptionArtifactParticipatesInCIFailureClassification(t *testin
 	observations := parseFailureObservations(text)
 	if len(observations) != 1 || observations[0].Test != "runtime exception" {
 		t.Fatalf("runtime exception was not normalized: %#v", observations)
+	}
+}
+
+func TestPersistedEvidenceRehydratesArtifactMetadata(t *testing.T) {
+	item := evidenceItemFromDomain(domain.Evidence{
+		ID: "evidence-1", Type: domain.EvidenceSourceCode, Source: "artifact",
+		WorkflowRunID: "workflow-1", ExecutionID: "", BuildID: "build-1", SourceRevision: "rev-1",
+		ArtifactID: "artifact-1", ArtifactDigest: "raw-digest", StorageRef: "artifact://raw",
+		ParserName: "sarif", ParserVersion: "v1", ArtifactCategory: "static_analysis",
+		ArtifactFormat: "sarif", DecoderStatus: "decoded",
+	})
+	if item.WorkflowRunID != "workflow-1" || item.ExecutionID != "" || item.ArtifactDigest != "raw-digest" || item.ParserName != "sarif" || item.ArtifactFormat != "sarif" {
+		t.Fatalf("persisted metadata was dropped during rehydration: %#v", item)
 	}
 }

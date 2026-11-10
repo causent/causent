@@ -207,7 +207,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
 				return fmt.Errorf("save adaptive evidence: %w", err)
 			}
-			report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), ClaimKind: evidence.ClaimKind, Basis: evidence.Basis, DeclarationID: evidence.DeclarationID, AccessID: evidence.AccessID, InstanceID: evidence.InstanceID, RunID: evidence.RunID, Ordering: evidence.Ordering, Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload, Provenance: evidence.Provenance, Revision: evidence.Revision})
+			report.Evidence = append(report.Evidence, evidenceItemFromDomain(evidence))
 		}
 		completed := investigation.Complete(activity, out.References)
 		completed.Executed = true
