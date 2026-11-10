@@ -550,7 +550,11 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	// Artifact-backed runs can still inspect the checked-out source, but must
 	// not rerun the configured command: adaptive rerun actions would turn an
 	// evidence-first diagnosis into an implicit reproduction.
-	skipDeep := artifactOnly || cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
+	// External CI evidence already contains the observed head execution. Do not
+	// silently rerun an expensive repository-wide command such as `make verify`
+	// in the evidence-first workflow; source investigation and hypothesis
+	// generation still run, while reproduction remains an explicit follow-up.
+	skipDeep := artifactOnly || report.NormalizedEvidence != nil || cfg.SkipAdaptive || reproductionInconclusive(baseline, report.Comparison)
 	if skipDeep && !cfg.SkipAdaptive {
 		report.Uncertainty = append(report.Uncertainty, "deep investigation skipped because reproduction or base comparison was inconclusive")
 		report.Partial = true
