@@ -99,7 +99,7 @@ func (a repositoryAction) Execute(ctx context.Context, input investigation.Actio
 	data, _ := json.Marshal(payload)
 	hash := sha256.Sum256(data)
 	e := domain.Evidence{ID: domain.ID("evidence:adaptive:" + hex.EncodeToString(hash[:8])), InvestigationID: input.InvestigationID, Type: domain.EvidenceSourceCode, Source: "adaptive:" + a.kind, Timestamp: time.Now().UTC(), ContentRef: "repository-snapshot", Digest: hex.EncodeToString(hash[:]), Payload: string(data), Provenance: "deterministic repository analyzer; revision-scoped snapshot"}
-	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind}}, nil
+	return investigation.ActionOutput{References: []string{string(e.ID)}, Evidence: []domain.Evidence{e}, Metadata: map[string]string{"dimension": "dependency", "action": a.kind, "target": a.target}}, nil
 }
 
 type compareRevisionsAction struct {

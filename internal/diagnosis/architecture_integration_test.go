@@ -2,13 +2,72 @@ package diagnosis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/causent/malenia/internal/domain"
 	"github.com/causent/malenia/internal/persistence"
 )
+
+func TestEvidenceFirstContinuesIntoAdaptiveController(t *testing.T) {
+	dir := newRepo(t)
+	cacherPath := "staging/src/k8s.io/apiserver/pkg/storage/cacher/cacher.go"
+	setupPath := "staging/src/k8s.io/apiserver/pkg/storage/cacher/testing/setup/setup.go"
+	cacher := "package cacher\n\ntype Cacher struct{}\nfunc (c *Cacher) startBackgroundResync() {}\nfunc (c *Cacher) Stop() {}\nfunc NewCacherFromConfig() *Cacher {\n\tcacher := &Cacher{}\n" + strings.Repeat("\t// context\n", 489) + "\tgo cacher.startBackgroundResync()\n\treturn cacher\n}\n"
+	setup := "package setup\n\ntype raw struct{}\nfunc (raw) Stop() {}\nfunc SetupWithCacher() {\n\trawCacher := raw{}\n" + strings.Repeat("\t// context\n", 180) + "\trawCacher.Stop()\n}\n"
+	commit(t, dir, "kubernetes race source", map[string]string{cacherPath: cacher, setupPath: setup})
+	logData, err := os.ReadFile("testdata/kubernetes-race.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := ParseCITextEvidence(string(logData), EvidenceProvenance{Provider: "fixture"})
+	store, err := persistence.Open(filepath.Join(t.TempDir(), "adaptive-evidence.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	report, err := DiagnoseEvidence(context.Background(), Config{RepoPath: dir, Command: []string{"go", "test", "-race"}, Store: store, AdaptiveMaxIterations: 2, AdaptiveMaxActivities: 2, AdaptiveMaxExperiments: 1}, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.StoppingReason == "execution_unavailable" || report.AdaptiveIterations == 0 {
+		t.Fatalf("evidence-first controller did not execute adaptive work: stopping=%q iterations=%d objective=%#v actions=%#v", report.StoppingReason, report.AdaptiveIterations, report.InvestigationObjective, report.InvestigationActions)
+	}
+	if report.InvestigationObjective == nil || report.InvestigationObjective.Status == "investigating" {
+		t.Fatalf("adaptive controller left an invalid terminal objective: %#v", report.InvestigationObjective)
+	}
+	if report.RootCause.Status == "confirmed" {
+		t.Fatalf("fixture did not justify a causal conclusion: %#v", report.RootCause)
+	}
+	stopInspected := false
+	for _, item := range report.Evidence {
+		if item.Kind == "source related function" && strings.Contains(item.Detail, "func (raw) Stop") {
+			stopInspected = true
+		}
+	}
+	if !stopInspected {
+		t.Fatalf("cleanup implementation was not followed: %#v", report.InvestigationActions)
+	}
+	activities, err := store.ListActivities(domain.ID(report.InvestigationID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) == 0 {
+		t.Fatal("adaptive action was not persisted")
+	}
+	adaptivePersisted := false
+	for _, activity := range activities {
+		if strings.Contains(string(activity.ID), ":adaptive:") && activity.SelectionReason != "" {
+			adaptivePersisted = true
+		}
+	}
+	if !adaptivePersisted {
+		t.Fatalf("persisted activities did not include an adaptive selection: %#v", activities)
+	}
+}
 
 func TestDiagnosisPersistsRepositoryGraphAndLocalization(t *testing.T) {
 	dir := newRepo(t)

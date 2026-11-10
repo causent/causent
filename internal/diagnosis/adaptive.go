@@ -78,18 +78,20 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	}
 	registry := investigation.NewRegistry()
 	register := func(action investigation.Action) error { return registry.Register(action) }
-	for _, kind := range []string{"InspectSymbol", "FindReferences", "ExpandCallers", "ExpandCallees", "InspectDependency", "InspectTest"} {
+	for _, kind := range []string{"InspectSymbol", "InspectFunction", "TraceVariable", "FindReferences", "InspectGoroutineLifecycle", "InspectSynchronization", "InspectCleanup", "TraceCallers", "TraceCallees", "ExpandCallers", "ExpandCallees", "InspectDependency", "InspectTest"} {
 		if err := register(repositoryAction{diagnoser: d, workspace: workspace, kind: kind, target: firstCandidateSymbol(report)}); err != nil {
 			return err
 		}
 	}
-	if err := register(rerunAction{diagnoser: d, workspace: workspace, kind: "RunTargetedTest"}); err != nil {
-		return err
+	if report.NormalizedEvidence == nil {
+		if err := register(rerunAction{diagnoser: d, workspace: workspace, kind: "RunTargetedTest"}); err != nil {
+			return err
+		}
+		if err := register(rerunAction{diagnoser: d, workspace: workspace}); err != nil {
+			return err
+		}
 	}
-	if err := register(rerunAction{diagnoser: d, workspace: workspace}); err != nil {
-		return err
-	}
-	if d.cfg.BaseRef != "" {
+	if d.cfg.BaseRef != "" && report.NormalizedEvidence == nil {
 		if err := register(compareRevisionsAction{diagnoser: d, baseline: report.Baseline, headCommit: report.Environment.HeadCommit, kind: "CompareRevisions"}); err != nil {
 			return err
 		}
@@ -104,7 +106,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 	}
 	// Architecture stages are prerequisites, not adaptive budget consumption.
 	for _, activity := range activities {
-		if isAdaptiveActivity(activity.Type) && activity.Status == domain.ActivityCompleted {
+		if strings.Contains(string(activity.ID), ":adaptive:") && activity.Status == domain.ActivityCompleted {
 			state.Budget.ActivitiesUsed++
 		}
 	}
@@ -168,6 +170,7 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 			if err := d.cfg.Store.SaveEvidence(evidence); err != nil {
 				return fmt.Errorf("save adaptive evidence: %w", err)
 			}
+			report.Evidence = append(report.Evidence, EvidenceItem{ID: string(evidence.ID), Kind: string(evidence.Type), Source: evidence.Source, Digest: evidence.Digest, Detail: evidence.Payload, Provenance: evidence.Provenance, Revision: report.Environment.HeadCommit})
 		}
 		completed := investigation.Complete(activity, out.References)
 		if execErr != nil {
@@ -199,6 +202,10 @@ func (d *Diagnoser) runAdaptiveLoop(ctx context.Context, report *Report, workspa
 		if ex.ID != "" {
 			if err := d.reassessHypotheses(report, out.Evidence, ex); err != nil {
 				return fmt.Errorf("reassess adaptive hypotheses: %w", err)
+			}
+		} else if len(out.Evidence) > 0 {
+			if err := d.reassessSourceHypotheses(report, out.Evidence, decision.Selected.ActionType); err != nil {
+				return fmt.Errorf("reassess source hypotheses: %w", err)
 			}
 		}
 		state.Iterations++
@@ -339,6 +346,59 @@ func (d *Diagnoser) reassessHypotheses(report *Report, evidence []domain.Evidenc
 	return nil
 }
 
+func (d *Diagnoser) reassessSourceHypotheses(report *Report, evidence []domain.Evidence, actionType string) error {
+	for index := range report.Hypotheses {
+		before := report.Hypotheses[index]
+		next := before
+		relevant := false
+		switch {
+		case strings.Contains(strings.ToLower(string(before.AffectedComponent)), "lifecycle"):
+			relevant = actionType == "InspectGoroutineLifecycle" || actionType == "InspectCleanup" || actionType == "InspectSynchronization" || actionType == "TraceCallees"
+		case strings.Contains(strings.ToLower(string(before.AffectedComponent)), "memory"):
+			relevant = actionType == "InspectFunction" || actionType == "TraceVariable" || actionType == "FindReferences" || actionType == "InspectSymbol"
+		}
+		if !relevant {
+			continue
+		}
+		for _, item := range evidence {
+			if containsAny(strings.ToLower(item.Payload), "verified happens-before", "ordering established") && strings.Contains(strings.ToLower(string(before.AffectedComponent)), "lifecycle") {
+				next.ContradictingEvidenceIDs = appendUnique(next.ContradictingEvidenceIDs, item.ID)
+			} else {
+				next.SupportingEvidenceIDs = appendUnique(next.SupportingEvidenceIDs, item.ID)
+			}
+		}
+		next.MissingEvidence = append([]string(nil), before.MissingEvidence...)
+		next.UpdatedAt = time.Now().UTC()
+		next = reasoning.Assess(next, evidenceMapFromReport(report), nil, nil).Hypothesis
+		next = reasoning.Version(next, &before)
+		report.Hypotheses[index] = next
+		if err := d.cfg.Store.SaveHypothesis(next); err != nil {
+			return err
+		}
+		if err := d.cfg.Store.SaveHypothesisHistory(domain.HypothesisHistory{ID: domain.NewID(), HypothesisID: next.ID, InvestigationID: next.InvestigationID, PreviousStatus: before.Status, NextStatus: next.Status, PreviousConfidence: before.Confidence, NextConfidence: next.Confidence, Evaluation: "adaptive source evidence reassessment", CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func evidenceMapFromReport(report *Report) map[domain.ID]domain.Evidence {
+	out := make(map[domain.ID]domain.Evidence, len(report.Evidence))
+	for _, item := range report.Evidence {
+		out[domain.ID(item.ID)] = domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind), Source: item.Source, Digest: item.Digest, Payload: item.Detail, Provenance: item.Provenance}
+	}
+	return out
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func hypothesisIDs(values []domain.Hypothesis) []domain.ID {
 	out := make([]domain.ID, 0, len(values))
 	for _, h := range values {
@@ -389,7 +449,7 @@ func firstCandidateSymbol(report *Report) string {
 
 func isAdaptiveActivity(kind string) bool {
 	switch kind {
-	case "InspectSymbol", "FindReferences", "ExpandCallers", "ExpandCallees", "InspectDependency", "InspectTest", "RunTargetedTest", "RerunFailingTest", "CompareBaseAndHead", "CompareRevisions":
+	case "InspectSymbol", "InspectFunction", "TraceVariable", "FindReferences", "InspectGoroutineLifecycle", "InspectSynchronization", "InspectCleanup", "TraceCallers", "TraceCallees", "ExpandCallers", "ExpandCallees", "InspectDependency", "InspectTest", "RunTargetedTest", "RerunFailingTest", "CompareBaseAndHead", "CompareRevisions":
 		return true
 	default:
 		return false

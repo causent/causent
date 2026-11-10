@@ -796,6 +796,23 @@ func relatedImplementationNodes(snapshot programrepo.Snapshot, node *domain.Prog
 			}
 		}
 	}
+	if method != "" {
+		matches := 0
+		for _, candidate := range snapshot.Nodes {
+			if seen[candidate.ID] || candidate.Type != "Method" || candidate.Name != method {
+				continue
+			}
+			// A name-only fallback is explicitly an unresolved candidate set,
+			// not proof of dispatch. It ensures cleanup implementations such as
+			// Stop are inspected when the index lacks a typed call edge.
+			result = append(result, candidate)
+			seen[candidate.ID] = true
+			matches++
+			if matches >= 6 {
+				break
+			}
+		}
+	}
 	return result
 }
 

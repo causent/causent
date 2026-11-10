@@ -872,6 +872,21 @@ func DiagnoseEvidence(ctx context.Context, cfg Config, evidence NormalizedEviden
 }
 
 func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence NormalizedEvidence) (Report, error) {
+	if cfg.AdaptiveMaxIterations <= 0 {
+		cfg.AdaptiveMaxIterations = 4
+	}
+	if cfg.AdaptiveMaxActivities <= 0 {
+		cfg.AdaptiveMaxActivities = 4
+	}
+	if cfg.AdaptiveMaxExperiments <= 0 {
+		cfg.AdaptiveMaxExperiments = 2
+	}
+	if cfg.AdaptiveTimeout <= 0 {
+		cfg.AdaptiveTimeout = cfg.InvestigationTimeout
+		if cfg.AdaptiveTimeout <= 0 {
+			cfg.AdaptiveTimeout = DefaultTimeout
+		}
+	}
 	if cfg.InvestigationID == "" {
 		cfg.InvestigationID = newID()
 	}
@@ -913,9 +928,18 @@ func diagnoseNormalizedEvidence(ctx context.Context, cfg Config, evidence Normal
 			report.Uncertainty = append(report.Uncertainty, "evidence processing incomplete: "+err.Error())
 		}
 	}
-	if report.InvestigationObjective != nil && !allObjectivesResolved(&report) {
+	if cfg.RepoPath != "" && !cfg.SkipAdaptive {
+		if cfg.Store == nil {
+			report.StoppingReason = "execution_unavailable"
+			report.Uncertainty = append(report.Uncertainty, "adaptive investigation requires durable state persistence")
+		} else if err := d.runAdaptiveLoop(ctx, &report, cfg.RepoPath); err != nil {
+			report.Uncertainty = append(report.Uncertainty, "adaptive investigation incomplete: "+err.Error())
+			report.StoppingReason = "execution_unavailable"
+		}
+	}
+	if report.InvestigationObjective != nil && report.StoppingReason == "" && !allObjectivesResolved(&report) {
 		report.InvestigationObjective.Status = "blocked"
-		report.InvestigationObjective.StoppingReason = "adaptive investigation was unavailable for evidence-first execution; unresolved dependencies remain"
+		report.InvestigationObjective.StoppingReason = "adaptive investigation was skipped or unavailable; unresolved dependencies remain"
 		report.StoppingReason = "investigation_blocked"
 	}
 	report.FailureIncidents = buildFailureIncidents(&report)

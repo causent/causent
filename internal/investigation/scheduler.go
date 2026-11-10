@@ -101,7 +101,11 @@ func Select(state State, registry *Registry, policy ScorePolicy) Decision {
 }
 func completed(state State, kind string) bool {
 	for _, a := range state.Activities {
-		if a.Type == kind && a.Status == domain.ActivityCompleted {
+		// Source-stage activities carry an input target. They must not block a
+		// later adaptive action of the same kind when the controller is pursuing
+		// a different unresolved dependency. Adaptive activities have no input
+		// target here and remain idempotently completed.
+		if a.Type == kind && a.Status == domain.ActivityCompleted && len(a.InputRefs) == 0 {
 			return true
 		}
 	}
