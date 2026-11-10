@@ -160,7 +160,11 @@ func Generate(snapshot programrepo.Snapshot, input Input) ([]domain.CandidateLoc
 				continue
 			}
 			ev := append(append([]domain.ID{}, input.EvidenceIDs...), frame.EvidenceIDs...)
-			add(n, evaluateSignals(CandidateContext{Execution: true, Evidence: ev}), ev, "MANIFESTED_AT", frame.FailureIDs)
+			scoreEvidence := frame.EvidenceIDs
+			if len(scoreEvidence) == 0 {
+				scoreEvidence = input.EvidenceIDs
+			}
+			add(n, evaluateSignals(CandidateContext{Execution: true, Evidence: scoreEvidence}), ev, "MANIFESTED_AT", frame.FailureIDs)
 		}
 	}
 	for _, n := range snapshot.Nodes {

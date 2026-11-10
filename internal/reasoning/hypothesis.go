@@ -33,6 +33,7 @@ func Generate(inv domain.ID, groups []domain.FailureGroup, candidates []domain.C
 			statement := fmt.Sprintf("Candidate location %s may explain the observed failure episode(s) %s", c.Location.SymbolIdentity, join(group.FailureIDs))
 			id := domain.ID("hypothesis:" + c.ID + ":" + group.ID)
 			h := domain.Hypothesis{ID: id, InvestigationID: inv, HypothesisGroupID: domain.ID(group.ID), Version: 1, Statement: statement, AffectedComponent: c.Location.FilePath + ":" + fmt.Sprint(c.Location.StartLine), RelatedFailureIDs: append([]string{}, group.FailureIDs...), CandidateLocationIDs: []string{c.ID}, SupportingEvidenceIDs: append([]domain.ID{}, c.SupportingEvidenceIDs...), Status: domain.HypProposed, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Provenance: "deterministic candidate and relationship evidence", Relevance: localization.Aggregate(c.Score, localization.DefaultWeights)}
+			h.Confidence = hypothesisEvidenceConfidence(c)
 			out = append(out, h)
 			used[c.ID] = true
 			if len(out) > 100 {
@@ -53,6 +54,23 @@ func Generate(inv domain.ID, groups []domain.FailureGroup, candidates []domain.C
 	}
 	_ = byCandidate
 	return out
+}
+
+func hypothesisEvidenceConfidence(c domain.CandidateLocation) float64 {
+	confidence := 0.25
+	if c.Score.ExecutionRelevance > 0 {
+		confidence += 0.15
+	}
+	if c.Score.BehaviouralRelevance > 0 {
+		confidence += 0.1
+	}
+	if c.Score.ChangeRelevance > 0 {
+		confidence += 0.05
+	}
+	if confidence > 0.6 {
+		return 0.6
+	}
+	return confidence
 }
 
 func containsString(values []string, target string) bool {

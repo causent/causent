@@ -369,7 +369,7 @@ jobs:
             fi
             echo
             # Extract and display specific lint/test failures from normalized evidence
-            findings="$(jq -r '.normalized_evidence.executions[0].tests[]? | "- **" + .name + "**: `" + .file + ":" + (.line|tostring) + "` - " + .message' "$report" 2>/dev/null || true)"
+            findings="$(jq -r '.normalized_evidence.executions[]?.tests[]? | "- **" + (.name // "unknown test") + "**" + (if .file then ": `" + .file + (if .line then ":" + (.line|tostring) else "" end) + "`" else "" end) + (if .message then " — " + .message else "" end)' "$report" 2>/dev/null || true)"
             if [ -n "$findings" ]; then
               echo '**Findings:**'
               echo "$findings"
@@ -385,6 +385,12 @@ jobs:
             if [ -n "$claims" ]; then
               echo '**Hypotheses:**'
               echo "$claims"
+              echo
+            fi
+            episodes="$(jq -r '.failure_episodes[]? | "- **" + (.test_identifier // "unknown failure") + "** — " + (.failure_message // "observed CI failure")' "$report" 2>/dev/null || true)"
+            if [ -n "$episodes" ]; then
+              echo '**Failure episodes:**'
+              echo "$episodes"
               echo
             fi
             if [ "${{ steps.evidence.outputs.available }}" = "true" ]; then

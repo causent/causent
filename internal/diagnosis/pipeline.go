@@ -164,6 +164,13 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	}
 
 	frames := architectureFrames(baseline, failures, report.Evidence)
+	frameEvidence := observedFrameEvidence(frames)
+	report.Evidence = append(report.Evidence, frameEvidence...)
+	for i := range frames {
+		if i < len(frameEvidence) {
+			frames[i].EvidenceIDs = []domain.ID{domain.ID(frameEvidence[i].ID)}
+		}
+	}
 	var evidenceIDs []domain.ID
 	for _, e := range report.Evidence {
 		evidenceIDs = append(evidenceIDs, domain.ID(e.ID))
@@ -315,7 +322,16 @@ func (d *Diagnoser) runStagedIntelligence(ctx context.Context, report *Report, w
 	}
 
 	hypStage := d.metrics.Begin(observability.StageHypothesisGeneration)
-	report.Hypotheses = reasoning.Generate(domain.ID(report.InvestigationID), discovery.Groups, candidates)
+	hypothesisCandidates := candidates
+	if report.NormalizedEvidence != nil || report.Baseline.Source == "ci_artifact" {
+		hypothesisCandidates = make([]domain.CandidateLocation, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.Score.ExecutionRelevance > 0 || candidate.Score.BehaviouralRelevance > 0 {
+				hypothesisCandidates = append(hypothesisCandidates, candidate)
+			}
+		}
+	}
+	report.Hypotheses = reasoning.Generate(domain.ID(report.InvestigationID), discovery.Groups, hypothesisCandidates)
 	evidenceMap := map[domain.ID]domain.Evidence{}
 	for _, item := range report.Evidence {
 		evidenceMap[domain.ID(item.ID)] = domain.Evidence{ID: domain.ID(item.ID), InvestigationID: domain.ID(report.InvestigationID), Type: domain.EvidenceType(item.Kind)}

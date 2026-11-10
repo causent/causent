@@ -400,6 +400,19 @@ func failureIDsForText(text string, failures []domain.FailureEpisode) []string {
 	}
 	return out
 }
+
+func observedFrameEvidence(frames []localization.Frame) []EvidenceItem {
+	out := make([]EvidenceItem, 0, len(frames))
+	for _, frame := range frames {
+		detail := fmt.Sprintf("CI execution stack frame observed at %s:%d; this establishes a reported location, not causality", frame.File, frame.Line)
+		out = append(out, EvidenceItem{
+			ID:   "E-frame-" + digestString(frame.File + ":" + fmt.Sprint(frame.Line))[:12],
+			Kind: "execution_stack_frame", Source: frame.File, Digest: digestString(detail), Detail: detail,
+			Provenance: "parsed from original CI failure evidence",
+		})
+	}
+	return out
+}
 func atoi(v string) int {
 	var n int
 	for _, r := range v {
