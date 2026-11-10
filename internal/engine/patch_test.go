@@ -351,6 +351,75 @@ func TestInvestigateRunsCompletePythonPatchWorkflow(t *testing.T) {
 	}
 }
 
+func TestInvestigateRunsBoundedPythonRepairBenchmarkCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		files      map[string]string
+		command    []string
+		changed    string
+		wantSource string
+	}{
+		{
+			name: "division by zero",
+			files: map[string]string{
+				"bug.py":      "def divide(value):\n    return 10 / value\n",
+				"test_bug.py": "from bug import divide\ndivide(0)\n",
+			},
+			command:    []string{"python3", "test_bug.py"},
+			changed:    "bug.py",
+			wantSource: "return 0 if value == 0 else 10 / value",
+		},
+		{
+			name: "ownership mutation",
+			files: map[string]string{
+				"bug.py":      "def add_marker(items):\n    items.append(\"marker\")\n",
+				"test_bug.py": "from bug import add_marker\nitems = []\nadd_marker(items)\nassert items == []\n",
+			},
+			command:    []string{"python3", "test_bug.py"},
+			changed:    "bug.py",
+			wantSource: "items = list(items)",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := t.TempDir()
+			initGitRepo(t, repo, test.files)
+			store, err := persistence.Open(filepath.Join(t.TempDir(), "workflow.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+
+			investigator := &Investigator{
+				Store:    store,
+				Executor: realPythonExecutor(t, repo),
+				Provider: HeuristicProvider{},
+			}
+			_, result, err := investigator.Investigate(context.Background(), repo, test.command, 5*time.Second, 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Patch == nil || result.Patch.VerificationStatus != string(domain.VerificationPassed) {
+				t.Fatalf("workflow did not verify patch: patch=%+v report=%s", result.Patch, result.FinalReport)
+			}
+			if len(result.Patch.ChangedFiles) != 1 || result.Patch.ChangedFiles[0] != test.changed {
+				t.Fatalf("changed files=%v, want [%s]", result.Patch.ChangedFiles, test.changed)
+			}
+			if !strings.Contains(result.Patch.Diff, test.wantSource) {
+				t.Fatalf("verified patch does not contain expected bounded repair %q: %s", test.wantSource, result.Patch.Diff)
+			}
+			patched, err := os.ReadFile(filepath.Join(repo, test.changed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(patched), test.wantSource) {
+				t.Fatalf("original repository was modified: %q", patched)
+			}
+		})
+	}
+}
+
 func realPythonExecutor(t *testing.T, repo string) *execution.LocalExecutor {
 	t.Helper()
 	return execution.NewLocalExecutor(execution.Policy{
