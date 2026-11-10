@@ -129,17 +129,28 @@ func TestArtifactRegistryDecodesGenericFormats(t *testing.T) {
 		{name: "lcov", data: "TN:\nSF:pkg/main.go\nDA:1,1\nend_of_record\n", format: "lcov", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "cobertura", data: `<?xml version="1.0"?><coverage><packages/></coverage>`, format: "cobertura_xml", kind: "coverage_report", cat: ArtifactCoverage},
 		{name: "jacoco", data: `<?xml version="1.0"?><report name="unit"><package name="pkg"/></report>`, format: "jacoco_xml", kind: "coverage_report", cat: ArtifactCoverage},
+		{name: "trace", data: `{"format_version":"structured-trace-v1","events":[{"goroutine_id":7,"kind":"created","timestamp":10}]}`, format: "structured-trace-v1", kind: "execution_trace_observation", cat: ArtifactTrace},
 	}
 	registry := NewArtifactDecoderRegistry()
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result := registry.Ingest(ArtifactDescriptor{ArtifactID: "artifact:" + tc.name, StorageRef: "artifact://" + tc.name, Name: tc.name}, []byte(tc.data))
-			if result.Status != ArtifactDecoded || len(result.Evidence) != 1 {
+			if result.Status != ArtifactDecoded || len(result.Evidence) == 0 {
 				t.Fatalf("result = %#v", result)
 			}
 			item := result.Evidence[0]
 			if item.Kind != tc.kind || item.ArtifactFormat != tc.format || item.ArtifactCategory != string(tc.cat) || item.DecoderStatus != string(ArtifactDecoded) {
 				t.Fatalf("normalized evidence = %#v", item)
+			}
+			if tc.name == "trace" && len(result.Evidence) != 2 {
+				t.Fatalf("trace evidence count = %d, want trace plus lifecycle", len(result.Evidence))
+			}
+			if tc.name == "trace" {
+				for _, evidence := range result.Evidence {
+					if evidence.ClaimKind == "HappensBefore" || evidence.ClaimKind == "RuntimeObjectIdentity" || evidence.Ordering != "" {
+						t.Fatalf("trace decoder produced causal claim: %#v", evidence)
+					}
+				}
 			}
 		})
 	}

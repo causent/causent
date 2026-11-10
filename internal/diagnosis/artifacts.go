@@ -89,6 +89,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		sarifArtifactDecoder{},
 		tapArtifactDecoder{},
 		coverageArtifactDecoder{},
+		structuredTraceArtifactDecoder{},
 		jsonArtifactDecoder{},
 		textArtifactDecoder{},
 	}}
@@ -380,6 +381,40 @@ func (coverageArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, dete
 		}
 	}
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "coverage_report", ClaimKind: "coverage_observation", Basis: "Observed", Detail: string(data), Provenance: desc.StorageRef}}}
+}
+
+type structuredTraceArtifactDecoder struct{}
+
+func (structuredTraceArtifactDecoder) Name() string    { return "structured-execution-trace" }
+func (structuredTraceArtifactDecoder) Version() string { return "v1" }
+func (structuredTraceArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	var document JSONTraceDocument
+	if json.Unmarshal(data, &document) != nil || document.FormatVersion == "" || len(document.Events) == 0 {
+		return ArtifactDetection{Confidence: "none"}
+	}
+	return ArtifactDetection{Format: document.FormatVersion, Category: ArtifactTrace, Confidence: "high", Reason: "structured lifecycle trace format and events"}
+}
+func (structuredTraceArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	meta := ExecutionTraceObservation{
+		Execution: ExecutionIdentity{
+			WorkflowRunID:  desc.WorkflowRunID,
+			ReportID:       desc.ArtifactID,
+			BuildID:        desc.BuildID,
+			SourceRevision: desc.SourceRevision,
+			TestAttemptID:  desc.TestAttemptID,
+		},
+		TraceFormat:    detection.Format,
+		ArtifactDigest: desc.Digest,
+		ArtifactRef:    desc.StorageRef,
+		ParserVersion:  "v1",
+	}
+	parsedMeta, lifecycle, err := ParseStructuredTraceObservation(data, meta)
+	if err != nil {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+	}
+	evidence := []EvidenceItem{RuntimeTraceEvidenceItem(parsedMeta)}
+	evidence = append(evidence, RuntimeLifecycleEvidenceItems(lifecycle, parsedMeta)...)
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: evidence}
 }
 
 type jsonArtifactDecoder struct{}
