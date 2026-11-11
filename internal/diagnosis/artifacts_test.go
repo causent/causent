@@ -1,6 +1,7 @@
 package diagnosis
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/causent/malenia/internal/domain"
+	pprofprofile "github.com/google/pprof/profile"
 )
 
 func TestArtifactRegistryDetectsByContentAndPreservesRawProvenance(t *testing.T) {
@@ -235,6 +237,25 @@ func TestMemoryDumpIsExplicitlyUnsupported(t *testing.T) {
 	minidump := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:minidump"}, []byte("MDMP\x00\x00"))
 	if minidump.Status != ArtifactUnsupported || minidump.Detection.Format != "minidump" {
 		t.Fatalf("minidump result = %#v", minidump)
+	}
+}
+
+func TestPprofProfileIsParsedAsObservation(t *testing.T) {
+	profile := &pprofprofile.Profile{SampleType: []*pprofprofile.ValueType{{Type: "samples", Unit: "count"}}, Sample: []*pprofprofile.Sample{{Value: []int64{1}}}}
+	var data bytes.Buffer
+	if err := profile.Write(&data); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+	result := NewArtifactDecoderRegistry().Ingest(ArtifactDescriptor{ArtifactID: "artifact:profile", Name: "cpu.pprof", StorageRef: "artifact://profile"}, data.Bytes())
+	if result.Status != ArtifactDecoded || result.DecoderName != "pprof-profile" || len(result.Evidence) != 1 {
+		t.Fatalf("profile result = %#v", result)
+	}
+	item := result.Evidence[0]
+	if item.Kind != "performance_profile" || item.ArtifactFormat != "pprof" || item.ArtifactCategory != string(ArtifactPerformance) || item.DecoderStatus != string(ArtifactDecoded) {
+		t.Fatalf("profile evidence = %#v", item)
+	}
+	if item.ClaimKind != "PerformanceProfileObservation" || item.Ordering != "" || item.InstanceID != "" {
+		t.Fatalf("profile made unsupported claims: %#v", item)
 	}
 }
 

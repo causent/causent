@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	pprofprofile "github.com/google/pprof/profile"
 )
 
 type ArtifactCategory string
@@ -182,6 +184,7 @@ func NewArtifactDecoderRegistry() *ArtifactDecoderRegistry {
 		nativeGoTraceArtifactDecoder{},
 		coreDumpArtifactDecoder{},
 		buildDiagnosticArtifactDecoder{},
+		pprofArtifactDecoder{},
 		containerLogArtifactDecoder{},
 		flamegraphArtifactDecoder{},
 		jsonArtifactDecoder{},
@@ -650,6 +653,34 @@ func (buildDiagnosticArtifactDecoder) Detect(desc ArtifactDescriptor, data []byt
 func (buildDiagnosticArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
 	count := len(buildDiagnosticLine.FindAllString(string(data), -1))
 	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "build_diagnostic", ClaimKind: "BuildDiagnosticObservation", Basis: "Observed", Detail: fmt.Sprintf("compiler/build report with %d diagnostic error(s): %s", count, string(data)), Provenance: desc.StorageRef}}}
+}
+
+type pprofArtifactDecoder struct{}
+
+func (pprofArtifactDecoder) Name() string    { return "pprof-profile" }
+func (pprofArtifactDecoder) Version() string { return "v1" }
+func (pprofArtifactDecoder) Detect(desc ArtifactDescriptor, data []byte) ArtifactDetection {
+	lowerName := strings.ToLower(desc.Name)
+	nameHint := strings.Contains(lowerName, "pprof") || strings.Contains(lowerName, "profile") || strings.Contains(lowerName, "heap") || strings.Contains(lowerName, "cpu")
+	binaryHint := (len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b) || bytes.IndexByte(data, 0) >= 0
+	if nameHint && binaryHint {
+		return ArtifactDetection{Format: "pprof", Category: ArtifactPerformance, Confidence: "high", Reason: "profile artifact name and binary/gzip profile payload"}
+	}
+	return ArtifactDetection{Confidence: "none"}
+}
+func (pprofArtifactDecoder) Decode(desc ArtifactDescriptor, data []byte, detection ArtifactDetection) ArtifactIngestionResult {
+	parsed, err := pprofprofile.ParseData(data)
+	if err != nil {
+		return ArtifactIngestionResult{Status: ArtifactMalformed, Limitations: []string{err.Error()}}
+	}
+	sampleTypes := make([]string, 0, len(parsed.SampleType))
+	for _, sampleType := range parsed.SampleType {
+		if sampleType != nil {
+			sampleTypes = append(sampleTypes, sampleType.Type+"/"+sampleType.Unit)
+		}
+	}
+	detail := fmt.Sprintf("pprof profile with %d sample(s), %d function(s), types=%s, duration_nanos=%d", len(parsed.Sample), len(parsed.Function), strings.Join(sampleTypes, ","), parsed.DurationNanos)
+	return ArtifactIngestionResult{Status: ArtifactDecoded, Evidence: []EvidenceItem{{ID: "E-" + desc.ArtifactID, Kind: "performance_profile", ClaimKind: "PerformanceProfileObservation", Basis: "Observed", Detail: detail, Provenance: desc.StorageRef}}}
 }
 
 type containerLogArtifactDecoder struct{}
